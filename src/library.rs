@@ -158,22 +158,6 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
             }
         }
     }
-    scan.tracks.sort_by(|a, b| {
-        (
-            &a.track.album_artist,
-            &a.track.album,
-            a.track.disc_number,
-            a.track.track_number,
-            &a.track.title,
-        )
-            .cmp(&(
-                &b.track.album_artist,
-                &b.track.album,
-                b.track.disc_number,
-                b.track.track_number,
-                &b.track.title,
-            ))
-    });
     Ok(scan)
 }
 
