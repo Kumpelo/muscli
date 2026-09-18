@@ -2,9 +2,11 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     time::UNIX_EPOCH,
 };
+
+#[cfg(unix)]
+use std::process::Command;
 
 use anyhow::{Context, Result};
 use lofty::{
@@ -308,6 +310,7 @@ fn cached_cover_is_valid(path: &Path) -> bool {
         && image::image_dimensions(path).is_ok_and(|(width, height)| width <= 512 && height <= 512)
 }
 
+#[cfg(unix)]
 fn source_id(root: &Path) -> String {
     let mount_field = |field: &str| {
         Command::new("findmnt")
@@ -322,6 +325,37 @@ fn source_id(root: &Path) -> String {
     let uuid = mount_field("UUID");
     let mount_target = mount_field("TARGET").map(PathBuf::from);
     let identity = source_identity(uuid.as_deref(), mount_target.as_deref(), root);
+    blake3::hash(identity.as_bytes()).to_hex().to_string()
+}
+
+#[cfg(windows)]
+fn source_id(root: &Path) -> String {
+    use windows::{
+        Win32::Storage::FileSystem::{GetVolumeNameForVolumeMountPointW, GetVolumePathNameW},
+        core::PCWSTR,
+    };
+
+    let wide: Vec<u16> = root
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut mount = vec![0u16; 1024];
+    let volume = unsafe { GetVolumePathNameW(PCWSTR(wide.as_ptr()), &mut mount) }
+        .ok()
+        .and_then(|_| {
+            let mount_len = mount.iter().position(|value| *value == 0)?;
+            let mount_path = PathBuf::from(String::from_utf16_lossy(&mount[..mount_len]));
+            let mut name = vec![0u16; 1024];
+            unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(mount.as_ptr()), &mut name) }.ok()?;
+            let name_len = name.iter().position(|value| *value == 0)?;
+            Some((String::from_utf16_lossy(&name[..name_len]), mount_path))
+        });
+    let identity = match volume {
+        Some((volume, mount)) => source_identity(Some(&volume), Some(&mount), root),
+        None => source_identity(None, None, root),
+    };
     blake3::hash(identity.as_bytes()).to_hex().to_string()
 }
 

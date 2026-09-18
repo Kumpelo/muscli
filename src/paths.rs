@@ -53,7 +53,7 @@ impl AppPaths {
     }
 
     pub fn mpv_socket(&self) -> PathBuf {
-        self.runtime_dir.join("mpv.sock")
+        ipc_path("mpv", &self.runtime_dir)
     }
 
     pub fn lock_file(&self) -> PathBuf {
@@ -61,10 +61,25 @@ impl AppPaths {
     }
 
     pub fn control_socket(&self) -> PathBuf {
-        self.runtime_dir.join("control.sock")
+        ipc_path("control", &self.runtime_dir)
     }
 
     pub fn image_protocol_file(&self) -> PathBuf {
         self.data_dir.join("image-protocol.txt")
     }
+}
+
+#[cfg(unix)]
+fn ipc_path(name: &str, runtime_dir: &std::path::Path) -> PathBuf {
+    runtime_dir.join(format!("{name}.sock"))
+}
+
+#[cfg(windows)]
+fn ipc_path(name: &str, _runtime_dir: &std::path::Path) -> PathBuf {
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
+    let safe_user: String = user
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .collect();
+    PathBuf::from(format!(r"\\.\pipe\muscli-{name}-{safe_user}"))
 }

@@ -62,8 +62,8 @@ pub fn start(
 }
 
 pub fn analyze(path: &Path, target_lufs: f64) -> Result<ReplayGainAnalysis> {
-    let output = Command::new("ionice")
-        .args(["-c", "3", "nice", "-n", "10", "ffmpeg", "-nostdin"])
+    let output = ffmpeg_command()
+        .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-i")
         .arg(path)
@@ -83,6 +83,28 @@ pub fn analyze(path: &Path, target_lufs: f64) -> Result<ReplayGainAnalysis> {
     }
     parse_summary(&String::from_utf8_lossy(&output.stderr), target_lufs)
         .context("ffmpeg did not return an EBU R128 summary")
+}
+
+#[cfg(unix)]
+fn ffmpeg_command() -> Command {
+    let mut command = Command::new("ionice");
+    command.args(["-c", "3", "nice", "-n", "10", "ffmpeg"]);
+    command
+}
+
+#[cfg(windows)]
+fn ffmpeg_command() -> Command {
+    use std::os::windows::process::CommandExt;
+    use windows::Win32::System::Threading::BELOW_NORMAL_PRIORITY_CLASS;
+
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.join("ffmpeg.exe")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+    let mut command = Command::new(bundled);
+    command.creation_flags(BELOW_NORMAL_PRIORITY_CLASS.0);
+    command
 }
 
 fn parse_summary(output: &str, target_lufs: f64) -> Option<ReplayGainAnalysis> {

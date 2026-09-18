@@ -72,7 +72,7 @@ impl Config {
         let target = paths.config_file();
         let tmp = target.with_extension("toml.tmp");
         fs::write(&tmp, rendered)?;
-        fs::rename(tmp, target)?;
+        atomic_replace(&tmp, &target)?;
         Ok(())
     }
 
@@ -100,6 +100,44 @@ impl Config {
     }
 }
 
+#[cfg(unix)]
+fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
+    fs::rename(source, target)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
+    use windows::{
+        Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        },
+        core::PCWSTR,
+    };
+
+    let source: Vec<u16> = source
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let target: Vec<u16> = target
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(target.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    }?;
+    Ok(())
+}
+
+#[cfg(unix)]
 pub fn discover_removable_roots() -> Vec<PathBuf> {
     let user = std::env::var("USER").unwrap_or_default();
     let mut found = Vec::new();
@@ -120,6 +158,26 @@ pub fn discover_removable_roots() -> Vec<PathBuf> {
     found.sort();
     found.dedup();
     found
+}
+
+#[cfg(windows)]
+pub fn discover_removable_roots() -> Vec<PathBuf> {
+    use windows::{
+        Win32::Storage::FileSystem::{DRIVE_REMOVABLE, GetDriveTypeW, GetLogicalDrives},
+        core::PCWSTR,
+    };
+
+    let drives = unsafe { GetLogicalDrives() };
+    (0..26)
+        .filter(|index| drives & (1 << index) != 0)
+        .filter_map(|index| {
+            let letter = (b'A' + index as u8) as char;
+            let root = format!("{letter}:\\");
+            let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+            (unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) } == DRIVE_REMOVABLE)
+                .then(|| PathBuf::from(root))
+        })
+        .collect()
 }
 
 pub fn all_sources(config: &Config) -> Vec<PathBuf> {

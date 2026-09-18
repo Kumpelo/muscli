@@ -20,22 +20,7 @@ pub struct Check {
 }
 
 pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
-    let mut checks = vec![
-        command_check("mpv", &["--version"], "Install with `omarchy pkg add mpv`"),
-        command_check(
-            "ffmpeg",
-            &["-version"],
-            "Install FFmpeg to analyze ReplayGain",
-        ),
-        command_check("ionice", &["--version"], "Install util-linux"),
-        command_check("findmnt", &["--version"], "Install util-linux"),
-        command_check("omarchy", &["version"], "Omarchy was not found"),
-        command_check(
-            "busctl",
-            &["--user", "status"],
-            "A user D-Bus session is required",
-        ),
-    ];
+    let mut checks = platform_checks();
     let sources = all_sources(config);
     checks.push(Check {
         ok: sources.iter().any(|p| p.exists()),
@@ -55,7 +40,7 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
         name: "database",
         detail: paths.database_file().display().to_string(),
     });
-    let discord_socket = find_discord_socket();
+    let discord_socket = find_discord_ipc();
     checks.push(Check {
         ok: !config.discord_enabled
             || (config.discord_application_id.is_some() && discord_socket.is_some()),
@@ -68,7 +53,7 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
                         .discord_application_id
                         .as_deref()
                         .unwrap_or("missing ID"),
-                    socket.display()
+                    socket
                 ),
                 None => "enabled, but Discord/Vesktop IPC is not available".into(),
             }
@@ -76,16 +61,19 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
             "disabled; run `muscli setup discord APPLICATION_ID`".into()
         },
     });
-    let widget = omarchy_media_enabled();
-    checks.push(Check {
-        ok: widget,
-        name: "Omarchy media widget",
-        detail: if widget {
-            "enabled".into()
-        } else {
-            "disabled; run `muscli setup omarchy`".into()
-        },
-    });
+    #[cfg(unix)]
+    {
+        let widget = omarchy_media_enabled();
+        checks.push(Check {
+            ok: widget,
+            name: "Omarchy media widget",
+            detail: if widget {
+                "enabled".into()
+            } else {
+                "disabled; run `muscli setup omarchy`".into()
+            },
+        });
+    }
     let term = std::env::var("TERM").unwrap_or_else(|_| "unknown".into());
     let protocol = fs::read_to_string(paths.image_protocol_file())
         .ok()
@@ -178,6 +166,7 @@ fn directory_size(path: &Path) -> u64 {
         .sum()
 }
 
+#[cfg(unix)]
 fn instance_is_alive(lock: &Path) -> bool {
     fs::read_to_string(lock)
         .ok()
@@ -185,7 +174,27 @@ fn instance_is_alive(lock: &Path) -> bool {
         .is_some_and(|pid| PathBuf::from(format!("/proc/{pid}")).is_dir())
 }
 
-fn find_discord_socket() -> Option<PathBuf> {
+#[cfg(windows)]
+fn instance_is_alive(_lock: &Path) -> bool {
+    use windows::{
+        Win32::{
+            Foundation::CloseHandle,
+            System::Threading::{MUTEX_ALL_ACCESS, OpenMutexW},
+        },
+        core::PCWSTR,
+    };
+
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
+    let name = format!("Local\\muscli-{user}");
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let Ok(handle) = (unsafe { OpenMutexW(MUTEX_ALL_ACCESS, false, PCWSTR(wide.as_ptr())) }) else {
+        return false;
+    };
+    unsafe { CloseHandle(handle) }.is_ok()
+}
+
+#[cfg(unix)]
+fn find_discord_ipc() -> Option<String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)?;
     let roots = [
         runtime.clone(),
@@ -204,7 +213,71 @@ fn find_discord_socket() -> Option<PathBuf> {
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name.starts_with("discord-ipc-"))
             })
+            .map(|path| path.display().to_string())
     })
+}
+
+#[cfg(windows)]
+fn find_discord_ipc() -> Option<String> {
+    let output = Command::new("tasklist")
+        .args(["/NH", "/FO", "CSV"])
+        .output()
+        .ok()?;
+    let tasks = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+    (tasks.contains("discord.exe") || tasks.contains("vesktop.exe"))
+        .then_some(r"\\.\pipe\discord-ipc-*".into())
+}
+
+#[cfg(unix)]
+fn platform_checks() -> Vec<Check> {
+    vec![
+        command_check("mpv", &["--version"], "Install with `omarchy pkg add mpv`"),
+        command_check(
+            "ffmpeg",
+            &["-version"],
+            "Install FFmpeg to analyze ReplayGain",
+        ),
+        command_check("ionice", &["--version"], "Install util-linux"),
+        command_check("findmnt", &["--version"], "Install util-linux"),
+        command_check("omarchy", &["version"], "Omarchy was not found"),
+        command_check(
+            "busctl",
+            &["--user", "status"],
+            "A user D-Bus session is required",
+        ),
+    ]
+}
+
+#[cfg(windows)]
+fn platform_checks() -> Vec<Check> {
+    let app_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let mpv = app_dir.as_ref().map(|path| path.join("mpv.exe"));
+    let ffmpeg = app_dir.as_ref().map(|path| path.join("ffmpeg.exe"));
+    vec![
+        Check {
+            ok: mpv.as_ref().is_some_and(|path| path.is_file()),
+            name: "mpv",
+            detail: mpv.map_or_else(
+                || "application directory unavailable".into(),
+                |path| path.display().to_string(),
+            ),
+        },
+        Check {
+            ok: ffmpeg.as_ref().is_some_and(|path| path.is_file()),
+            name: "ffmpeg",
+            detail: ffmpeg.map_or_else(
+                || "application directory unavailable".into(),
+                |path| path.display().to_string(),
+            ),
+        },
+        Check {
+            ok: true,
+            name: "Windows media controls",
+            detail: "SMTC integration enabled".into(),
+        },
+    ]
 }
 
 fn command_check(name: &'static str, args: &[&str], help: &str) -> Check {
@@ -227,6 +300,7 @@ fn parent_writable(path: &Path) -> bool {
         .is_some_and(|p| p.exists() || std::fs::create_dir_all(p).is_ok())
 }
 
+#[cfg(unix)]
 pub fn omarchy_media_enabled() -> bool {
     Command::new("omarchy")
         .args(["plugin", "list", "--json"])
@@ -241,4 +315,9 @@ pub fn omarchy_media_enabled() -> bool {
                     && item.get("enabled").and_then(|v| v.as_bool()) == Some(true)
             })
         })
+}
+
+#[cfg(windows)]
+pub fn omarchy_media_enabled() -> bool {
+    false
 }

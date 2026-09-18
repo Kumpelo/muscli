@@ -1,14 +1,17 @@
 [package]
 name = "muscli"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 edition = "2024"
 rust-version = "1.90"
-description = "A fast local FLAC library and terminal player for Omarchy"
+description = "A fast local FLAC library and terminal player for Linux and Windows"
 license = "MIT"
+repository = "https://github.com/Kumpelo/muscli"
+readme = "README.md"
+keywords = ["flac", "music", "terminal", "tui", "mpv"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
 anyhow = "1.0"
-blake3 = "1.8"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.29"
@@ -16,8 +19,8 @@ directories = "6.0"
 discord-rich-presence = "1.1"
 fs4 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+interprocess = "2.4.4"
 lofty = "0.25.2"
-mpris-server = { version = "0.10.0", features = ["tokio"] }
 notify = "8.2"
 rand = "0.9"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "all-widgets"] }
@@ -28,8 +31,29 @@ serde_json = "1.0"
 tokio = { version = "1.48", features = ["macros", "rt", "sync", "time", "signal"] }
 toml = "0.9"
 unicode-normalization = "0.1"
-url = "2.5"
 walkdir = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+blake3 = "1.8"
+mpris-server = { version = "0.10.0", features = ["tokio"] }
+url = "2.5"
+
+[target.'cfg(windows)'.dependencies]
+blake3 = { version = "1.8", features = ["pure"] }
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Media",
+    "Media_Playback",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Media",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tempfile = "3.23"
