@@ -220,7 +220,9 @@ enum ScanMessage {
         moved_tracks: Vec<(String, String)>,
     },
     Error(String),
-    Done { changed: bool },
+    Done {
+        changed: bool,
+    },
 }
 
 struct CoverState {
@@ -948,10 +950,12 @@ impl App {
     fn refresh_smart_playlists(&mut self) -> Result<()> {
         self.smart_playlists = self.db.load_smart_playlists()?;
         self.rebuild_smart_matches();
-        if self
-            .opened_smart_playlist
-            .is_some_and(|id| !self.smart_playlists.iter().any(|playlist| playlist.id == id))
-        {
+        if self.opened_smart_playlist.is_some_and(|id| {
+            !self
+                .smart_playlists
+                .iter()
+                .any(|playlist| playlist.id == id)
+        }) {
             self.opened_smart_playlist = None;
             if self.view == View::SmartPlaylistDetail {
                 self.view = View::SmartPlaylists;
@@ -1076,16 +1080,13 @@ impl App {
                     }
                 }
                 match prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes) {
-                    Ok(removed) => {
-                        match db.clear_cover_paths(&removed) {
-                            Ok(count) => changed |= count > 0,
-                            Err(error) => {
-                                let _ = tx.send(ScanMessage::Error(format!(
-                                    "Caché de portadas: {error:#}"
-                                )));
-                            }
+                    Ok(removed) => match db.clear_cover_paths(&removed) {
+                        Ok(count) => changed |= count > 0,
+                        Err(error) => {
+                            let _ = tx
+                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
                         }
-                    }
+                    },
                     Err(error) => {
                         let _ =
                             tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
@@ -1229,7 +1230,9 @@ impl App {
         }
         self.search_matches = result.matches;
         if self.view == View::Search {
-            self.selected = self.selected.min(self.search_matches.len().saturating_sub(1));
+            self.selected = self
+                .selected
+                .min(self.search_matches.len().saturating_sub(1));
         }
         self.dirty = true;
     }
