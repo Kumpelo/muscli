@@ -851,10 +851,8 @@ impl App {
                     let scan = match scan_source_with_database(&paths, &root, &db) {
                         Ok(scan) => scan,
                         Err(error) => {
-                            let _ = tx.send(ScanMessage::Error(format!(
-                                "{}: {error:#}",
-                                root.display()
-                            )));
+                            let _ = tx
+                                .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
                             continue;
                         }
                     };
@@ -868,20 +866,13 @@ impl App {
                     ) {
                         Ok(moved) => moved,
                         Err(error) => {
-                            let _ = tx.send(ScanMessage::Error(format!(
-                                "{}: {error:#}",
-                                scan.label
-                            )));
+                            let _ =
+                                tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
                             continue;
                         }
                     };
-                    if let Err(error) =
-                        db.prune_missing_for_source(&scan.id, &scan.failed_paths)
-                    {
-                        let _ = tx.send(ScanMessage::Error(format!(
-                            "{}: {error:#}",
-                            scan.label
-                        )));
+                    if let Err(error) = db.prune_missing_for_source(&scan.id, &scan.failed_paths) {
+                        let _ = tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
                     }
                     if tx
                         .send(ScanMessage::Source {
@@ -903,29 +894,25 @@ impl App {
                         if let Err(error) =
                             prune_unreferenced_covers(&paths.cover_cache_dir(), &referenced)
                         {
-                            let _ = tx.send(ScanMessage::Error(format!(
-                                "Caché de portadas: {error:#}"
-                            )));
+                            let _ = tx
+                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
                         }
                     }
                     Err(error) => {
-                        let _ = tx.send(ScanMessage::Error(format!(
-                            "Caché de portadas: {error:#}"
-                        )));
+                        let _ =
+                            tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
                     }
                 }
                 match prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes) {
                     Ok(removed) => {
                         if let Err(error) = db.clear_cover_paths(&removed) {
-                            let _ = tx.send(ScanMessage::Error(format!(
-                                "Caché de portadas: {error:#}"
-                            )));
+                            let _ = tx
+                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
                         }
                     }
                     Err(error) => {
-                        let _ = tx.send(ScanMessage::Error(format!(
-                            "Caché de portadas: {error:#}"
-                        )));
+                        let _ =
+                            tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
                     }
                 }
                 let _ = tx.send(ScanMessage::Done);
