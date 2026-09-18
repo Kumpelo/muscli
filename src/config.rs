@@ -163,7 +163,10 @@ pub fn discover_removable_roots() -> Vec<PathBuf> {
 #[cfg(windows)]
 pub fn discover_removable_roots() -> Vec<PathBuf> {
     use windows::{
-        Win32::Storage::FileSystem::{DRIVE_REMOVABLE, GetDriveTypeW, GetLogicalDrives},
+        Win32::{
+            Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives},
+            System::WindowsProgramming::DRIVE_REMOVABLE,
+        },
         core::PCWSTR,
     };
 
