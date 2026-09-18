@@ -532,21 +532,32 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .iter()
         .filter_map(|&index| app.albums[index].cover_path.clone())
         .collect::<BTreeSet<_>>();
-    app.album_covers
-        .retain(|path, _| desired_covers.contains(path));
-    for path in desired_covers {
-        if app.album_covers.contains_key(&path) {
+    for path in &desired_covers {
+        app.album_cover_order.retain(|cached| cached != path);
+        app.album_cover_order.push_back(path.clone());
+        if app.album_covers.contains_key(path) {
             continue;
         }
-        if let Some(image) = image::ImageReader::open(&path)
+        if let Some(image) = image::ImageReader::open(path)
             .ok()
             .and_then(|reader| reader.decode().ok())
         {
             app.album_covers.insert(
-                path,
+                path.clone(),
                 app.picker.new_resize_protocol(image.thumbnail(256, 256)),
             );
         }
+    }
+    let cover_capacity = 64usize.max(desired_covers.len());
+    while app.album_covers.len() > cover_capacity {
+        let Some(oldest) = app.album_cover_order.pop_front() else {
+            break;
+        };
+        if desired_covers.contains(&oldest) {
+            app.album_cover_order.push_back(oldest);
+            continue;
+        }
+        app.album_covers.remove(&oldest);
     }
     for (position, &index) in album_indices.iter().enumerate().take(last).skip(first) {
         let (title, artist, track_count, available_tracks, cover_path) = {

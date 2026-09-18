@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet, hash_map::DefaultHasher},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -369,6 +369,7 @@ struct App {
     cover_sig: u64,
     cover_sig_now: u64,
     album_covers: HashMap<PathBuf, StatefulProtocol>,
+    album_cover_order: VecDeque<PathBuf>,
     album_columns: usize,
     last_mpris_signature: String,
     last_discord_signature: String,
@@ -514,6 +515,7 @@ async fn run_inner(
         cover_sig: 0,
         cover_sig_now: 0,
         album_covers: HashMap::new(),
+        album_cover_order: VecDeque::new(),
         album_columns: 1,
         last_mpris_signature: String::new(),
         last_discord_signature: String::new(),
@@ -2336,6 +2338,7 @@ impl App {
         if !self.config.show_covers {
             self.cover = None;
             self.album_covers.clear();
+            self.album_cover_order.clear();
             return;
         }
         let path = self
