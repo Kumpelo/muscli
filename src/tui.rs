@@ -394,7 +394,15 @@ struct App {
     cover_decode_rx: tokio_mpsc::UnboundedReceiver<CoverDecodeResult>,
     cover_decode_pending: HashSet<(PathBuf, u32)>,
     album_columns: usize,
-    last_mpris_signature: Option<(Option<u64>, PlaybackStatus, u64, bool, RepeatMode, bool, bool)>,
+    last_mpris_signature: Option<(
+        Option<u64>,
+        PlaybackStatus,
+        u64,
+        bool,
+        RepeatMode,
+        bool,
+        bool,
+    )>,
     last_mpris_position_signature: Option<(u64, u64)>,
     last_discord_signature: Option<(Option<u64>, PlaybackStatus, u64, u64)>,
     theme: UiTheme,
@@ -2514,10 +2522,8 @@ impl App {
                 }
             }
             256 => {
-                self.album_covers.insert(
-                    result.path.clone(),
-                    self.picker.new_resize_protocol(image),
-                );
+                self.album_covers
+                    .insert(result.path.clone(), self.picker.new_resize_protocol(image));
                 self.album_cover_order.retain(|path| path != &result.path);
                 self.album_cover_order.push_back(result.path);
                 self.dirty = true;

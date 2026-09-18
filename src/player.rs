@@ -142,8 +142,10 @@ impl MpvPlayer {
     pub fn seek_relative(&self, seconds: f64) -> Result<()> {
         let current = self.position_ms.load(Ordering::Relaxed) as i128;
         let delta = (seconds * 1000.0) as i128;
-        self.position_ms
-            .store((current + delta).max(0).min(u64::MAX as i128) as u64, Ordering::Relaxed);
+        self.position_ms.store(
+            (current + delta).max(0).min(u64::MAX as i128) as u64,
+            Ordering::Relaxed,
+        );
         self.command(json!(["seek", seconds, "relative", "exact"]))
     }
 
