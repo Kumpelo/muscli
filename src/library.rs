@@ -254,11 +254,10 @@ fn find_or_cache_cover(
     tag: Option<&lofty::tag::Tag>,
     track_path: &Path,
 ) -> Result<Option<PathBuf>> {
-    if let Some(picture) = tag.and_then(|tag| tag.pictures().first()) {
-        let data = picture.data();
-        if let Ok(image) = image::load_from_memory(data) {
-            return cache_cover(paths, &cover_cache_key(data), image).map(Some);
-        }
+    if let Some(picture) = tag.and_then(|tag| tag.pictures().first())
+        && let Some(cached) = cache_cover_data(paths, picture.data())?
+    {
+        return Ok(Some(cached));
     }
 
     let Some(dir) = track_path.parent() else {
@@ -280,16 +279,27 @@ fn find_or_cache_cover(
         let Ok(data) = fs::read(&candidate) else {
             continue;
         };
-        let Ok(image) = image::load_from_memory(&data) else {
-            continue;
-        };
-        return cache_cover(paths, &cover_cache_key(&data), image).map(Some);
+        if let Some(cached) = cache_cover_data(paths, &data)? {
+            return Ok(Some(cached));
+        }
     }
     Ok(None)
 }
 
 fn cover_cache_key(data: &[u8]) -> String {
     blake3::hash(data).to_hex().to_string()
+}
+
+fn cache_cover_data(paths: &AppPaths, data: &[u8]) -> Result<Option<PathBuf>> {
+    let key = cover_cache_key(data);
+    let target = paths.cover_cache_dir().join(format!("{key}.png"));
+    if cached_cover_is_valid(&target) {
+        return Ok(Some(target));
+    }
+    let Ok(image) = image::load_from_memory(data) else {
+        return Ok(None);
+    };
+    cache_cover(paths, &key, image).map(Some)
 }
 
 fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Result<PathBuf> {
