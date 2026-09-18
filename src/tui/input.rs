@@ -184,7 +184,12 @@ impl App {
     }
 
     fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
-        match self.input.clone().unwrap() {
+        // Only reached while a modal is open, but a panic here would leave the
+        // terminal in raw mode with no way back.
+        let Some(mode) = self.input.clone() else {
+            return Ok(());
+        };
+        match mode {
             InputMode::ChoosePlaylist {
                 track_id,
                 mut selected,

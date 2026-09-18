@@ -401,3 +401,30 @@ fn a_second_source_is_indexed_independently() {
     assert_eq!(report.tracks, 2);
     assert_eq!(titles(&db), ["First", "Second"]);
 }
+
+#[test]
+fn pruning_leaves_in_flight_cover_writes_alone() {
+    // cache_cover writes to a dot-prefixed scratch file before renaming it into
+    // place. Pruning runs concurrently with scanning, and deleting a scratch
+    // file mid-write would corrupt the cover that is about to be committed.
+    let fixture = Fixture::new();
+    let cache = fixture.paths().cover_cache_dir();
+    let scratch = cache.join(".abc123.4242.0.tmp");
+    let orphan = cache.join("orphan.png");
+    fs::write(&scratch, [0u8; 16]).expect("writing a scratch file");
+    fs::write(&orphan, [0u8; 16]).expect("writing an unreferenced cover");
+
+    let removed = muscli::library::prune_unreferenced_covers(&cache, &Default::default())
+        .expect("pruning unreferenced covers");
+
+    assert_eq!(removed, [orphan], "only the committed orphan is removed");
+    assert!(scratch.exists(), "an in-flight write must survive pruning");
+
+    // The byte-budget pass must ignore them too, or it would delete the same
+    // file by a different route.
+    muscli::library::prune_cover_cache(&cache, 0).expect("pruning to an empty budget");
+    assert!(
+        scratch.exists(),
+        "the budget pass must skip scratch files too"
+    );
+}

@@ -13,8 +13,34 @@ use crate::model::{
     SavedQueue, SmartMatch, SmartPlaylist, Track, TrackStats,
 };
 
+/// Three connections write concurrently: the UI, the scanner thread and
+/// ReplayGain analysis. Upserting a large source can hold the write lock for
+/// well over a second, and the previous two-second budget turned that into
+/// spurious SQLITE_BUSY failures on unrelated writes.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct Database {
     conn: Connection,
+}
+
+/// Apply the connection settings every database uses.
+///
+/// `open_memory` previously set none of these, which meant the unit tests ran
+/// without foreign keys while production ran with them - the suite could not
+/// see a constraint violation that a user would hit.
+fn configure(conn: &Connection, on_disk: bool) -> Result<()> {
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    if on_disk {
+        // Meaningless for an in-memory database, which has no journal or file
+        // to map.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", -16_384i64)?;
+        conn.pragma_update(None, "mmap_size", 134_217_728i64)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,13 +125,7 @@ impl Database {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("could not open database {}", path.display()))?;
-        conn.busy_timeout(Duration::from_secs(2))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "temp_store", "MEMORY")?;
-        conn.pragma_update(None, "cache_size", -16_384i64)?;
-        conn.pragma_update(None, "mmap_size", 134_217_728i64)?;
+        configure(&conn, true)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 1 && path.exists() {
             let stamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -121,7 +141,7 @@ impl Database {
 
     pub fn open_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.busy_timeout(Duration::from_secs(2))?;
+        configure(&conn, false)?;
         let mut db = Self { conn };
         db.migrate()?;
         db.seed_smart_playlists()?;
@@ -509,24 +529,29 @@ impl Database {
         Ok(moved_tracks)
     }
 
-    pub fn mark_missing_sources(&self, available_ids: &BTreeSet<String>) -> Result<usize> {
-        let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
-        let ids = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+    pub fn mark_missing_sources(&mut self, available_ids: &BTreeSet<String>) -> Result<usize> {
+        let ids = {
+            let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
+            stmt.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
         let mut changed = 0;
+        // One transaction: a source and its tracks must never be left disagreeing
+        // about whether the drive is connected.
+        let tx = self.conn.transaction()?;
         for id in ids {
             if !available_ids.contains(&id) {
-                changed += self.conn.execute(
+                changed += tx.execute(
                     "UPDATE sources SET available=0 WHERE id=?1 AND available!=0",
                     [&id],
                 )?;
-                changed += self.conn.execute(
+                changed += tx.execute(
                     "UPDATE tracks SET available=0 WHERE source_id=?1 AND available!=0",
                     [&id],
                 )?;
             }
         }
+        tx.commit()?;
         Ok(changed)
     }
 
@@ -1196,20 +1221,24 @@ impl Database {
                     .fold(f64::NEG_INFINITY, f64::max),
             }))
         } else {
-            self.conn
+            // A track that is not in the index has no gain; that is an answer,
+            // not an error. Returning QueryReturnedNoRows here aborted playback
+            // of a track the scanner had just pruned.
+            Ok(self
+                .conn
                 .query_row(
                     "SELECT gain_db,true_peak_db FROM tracks WHERE id=?1",
                     [track_id],
                     |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?)),
                 )
-                .map(|(gain, peak)| {
+                .optional()?
+                .and_then(|(gain, peak)| {
                     gain.zip(peak)
                         .map(|(gain_db, true_peak_db)| ReplayGainAnalysis {
                             gain_db,
                             true_peak_db,
                         })
-                })
-                .map_err(Into::into)
+                }))
         }
     }
 }
