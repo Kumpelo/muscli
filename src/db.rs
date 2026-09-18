@@ -748,8 +748,8 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn update_history(
-        &mut self,
+    fn update_history_tx(
+        tx: &rusqlite::Transaction<'_>,
         history_id: i64,
         track_id: &str,
         listened_delta_ms: u64,
@@ -758,7 +758,6 @@ impl Database {
         count_now: bool,
         completed: bool,
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
         tx.execute(
             "UPDATE history SET listened_ms=listened_ms+?2,position_ms=?3,counted=counted OR ?4,completed=completed OR ?5 WHERE id=?1",
             params![history_id, listened_delta_ms.min(i64::MAX as u64) as i64, position_ms.min(i64::MAX as u64) as i64, count_now, completed],
@@ -777,6 +776,62 @@ impl Database {
                 listened_delta_ms.min(i64::MAX as u64) as i64,
                 if completed { 0 } else { position_ms }.min(i64::MAX as u64) as i64,
             ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_history(
+        &mut self,
+        history_id: i64,
+        track_id: &str,
+        listened_delta_ms: u64,
+        position_ms: u64,
+        was_counted: bool,
+        count_now: bool,
+        completed: bool,
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        Self::update_history_tx(
+            &tx,
+            history_id,
+            track_id,
+            listened_delta_ms,
+            position_ms,
+            was_counted,
+            count_now,
+            completed,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn update_history_and_playback(
+        &mut self,
+        history_id: i64,
+        track_id: &str,
+        listened_delta_ms: u64,
+        position_ms: u64,
+        was_counted: bool,
+        count_now: bool,
+        completed: bool,
+        state: &SavedPlayback,
+    ) -> Result<()> {
+        let playback = serde_json::to_string(state)?;
+        let tx = self.conn.transaction()?;
+        Self::update_history_tx(
+            &tx,
+            history_id,
+            track_id,
+            listened_delta_ms,
+            position_ms,
+            was_counted,
+            count_now,
+            completed,
+        )?;
+        tx.execute(
+            "INSERT INTO app_state(key,value) VALUES('playback',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [playback],
         )?;
         tx.commit()?;
         Ok(())
