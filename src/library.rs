@@ -85,6 +85,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         .and_then(|db| db.scan_cache(&id))
         .unwrap_or_default();
     let mut cover_validity = HashMap::<PathBuf, bool>::new();
+    let mut external_cover_cache = HashMap::<PathBuf, Option<PathBuf>>::new();
     let mut scan = SourceScan {
         id: id.clone(),
         root: root.clone(),
@@ -137,7 +138,14 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
                 item
             });
         let result = unchanged.map(Ok).unwrap_or_else(|| {
-            read_track(paths, &id, &root, entry.path(), fingerprint)
+            read_track(
+                paths,
+                &id,
+                &root,
+                entry.path(),
+                fingerprint,
+                &mut external_cover_cache,
+            )
         });
         match result {
             Ok(track) => scan.tracks.push(track),
@@ -173,6 +181,7 @@ fn read_track(
     root: &Path,
     path: &Path,
     fingerprint: Option<(u64, i64)>,
+    external_cover_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> Result<ScannedTrack> {
     let (file_size, modified_ns) = match fingerprint {
         Some(value) => value,
@@ -232,7 +241,7 @@ fn read_track(
     let id = blake3::hash(format!("{source_id}\0{relative}").as_bytes())
         .to_hex()
         .to_string();
-    let cover_path = find_or_cache_cover(paths, tag, path)?;
+    let cover_path = find_or_cache_cover(paths, tag, path, external_cover_cache)?;
     let duration_ms = tagged
         .properties()
         .duration()
@@ -267,6 +276,7 @@ fn find_or_cache_cover(
     paths: &AppPaths,
     tag: Option<&lofty::tag::Tag>,
     track_path: &Path,
+    external_cover_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> Result<Option<PathBuf>> {
     if let Some(picture) = tag.and_then(|tag| tag.pictures().first())
         && let Some(cached) = cache_cover_data(paths, picture.data())?
@@ -277,6 +287,11 @@ fn find_or_cache_cover(
     let Some(dir) = track_path.parent() else {
         return Ok(None);
     };
+    if let Some(cached) = external_cover_cache.get(dir) {
+        return Ok(cached.clone());
+    }
+
+    let mut found = None;
     for name in [
         "cover.jpg",
         "cover.jpeg",
@@ -294,10 +309,12 @@ fn find_or_cache_cover(
             continue;
         };
         if let Some(cached) = cache_cover_data(paths, &data)? {
-            return Ok(Some(cached));
+            found = Some(cached);
+            break;
         }
     }
-    Ok(None)
+    external_cover_cache.insert(dir.to_path_buf(), found.clone());
+    Ok(found)
 }
 
 fn cover_cache_key(data: &[u8]) -> String {
