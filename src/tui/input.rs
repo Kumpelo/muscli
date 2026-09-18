@@ -4,40 +4,49 @@
 //! takes over entirely and interprets the same keys per `InputMode`. Both are
 //! reached through `handle_terminal_event`, which is what the event loop calls.
 
+use super::keys::{self, Action, SettingInput};
 use super::*;
 
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        // A modal owns the keyboard completely while it is open.
         if self.input.is_some() {
             return self.handle_input(key);
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return Ok(());
+        match keys::resolve(&key, self.view, self.focus) {
+            Some(action) => self.apply(action),
+            None => Ok(()),
         }
-        match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc if self.view == View::AlbumDetail => self.close_album_detail(),
-            KeyCode::Esc if self.view == View::ArtistDetail => self.close_artist_detail(),
-            KeyCode::Esc if self.view == View::GenreDetail => {
-                self.view = View::Genres;
-                self.selected = self.genre_return_selection;
-                self.opened_genre_name = None;
-            }
-            KeyCode::Esc if self.view == View::SmartPlaylistDetail => {
-                self.view = View::SmartPlaylists;
-                self.opened_smart_playlist = None;
+    }
+
+    /// Carry out a resolved action.
+    ///
+    /// Bindings decide *where* a key applies; this decides whether the action
+    /// is possible right now. An action with nothing to act on is a no-op, not
+    /// an error: pressing `f` with no track selected should do nothing.
+    fn apply(&mut self, action: Action) -> Result<()> {
+        match action {
+            Action::Quit => self.should_quit = true,
+            Action::Back => match self.view {
+                View::AlbumDetail => self.close_album_detail(),
+                View::ArtistDetail => self.close_artist_detail(),
+                View::GenreDetail => {
+                    self.view = View::Genres;
+                    self.selected = self.genre_return_selection;
+                    self.opened_genre_name = None;
+                }
+                View::SmartPlaylistDetail => {
+                    self.view = View::SmartPlaylists;
+                    self.opened_smart_playlist = None;
+                    self.selected = 0;
+                }
+                _ => {}
+            },
+            Action::OpenView(view) => {
+                self.view = view;
                 self.selected = 0;
             }
-            KeyCode::Char('?') => {
-                self.view = View::Help;
-                self.selected = 0;
-            }
-            KeyCode::Char(',') => {
-                self.view = View::Settings;
-                self.selected = 0;
-            }
-            KeyCode::Char('m') => {
+            Action::ToggleCompact => {
                 self.compact = !self.compact;
                 resize_terminal_for_mode(self.compact)?;
                 self.status = if self.compact {
@@ -47,7 +56,7 @@ impl App {
                 }
                 .into();
             }
-            KeyCode::Char('/') => {
+            Action::OpenSearch => {
                 self.view = View::Search;
                 self.selected = 0;
                 self.query.clear();
@@ -55,11 +64,11 @@ impl App {
                 self.input = Some(InputMode::Search);
                 self.input_buffer.clear();
             }
-            KeyCode::Char('c') => {
+            Action::NewPlaylist => {
                 self.input = Some(InputMode::NewPlaylist);
                 self.input_buffer.clear();
             }
-            KeyCode::Char('P') => {
+            Action::AddSelectedToPlaylist => {
                 if let Some(id) = self.selected_track_id() {
                     if self.playlists.is_empty() {
                         let playlist = self.db.create_playlist("Mi playlist")?;
@@ -74,82 +83,55 @@ impl App {
                     }
                 }
             }
-            KeyCode::Tab if self.view == View::GenreDetail => {
+            Action::NextGenreTab => {
                 self.genre_tab = (self.genre_tab + 1) % 3;
                 self.selected = 0;
             }
-            KeyCode::Tab => {
+            Action::ToggleFocus => {
                 self.focus = if self.focus == Focus::Sidebar {
                     Focus::Content
                 } else {
                     Focus::Sidebar
                 };
             }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.view == View::Settings => {
-                self.adjust_setting(key.code)?
-            }
-            KeyCode::Left | KeyCode::Char('h') if self.view == View::AlbumDetail => {
-                self.close_album_detail()
-            }
-            KeyCode::Left | KeyCode::Char('h')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(-1)
-            }
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Sidebar,
-            KeyCode::Right | KeyCode::Char('l')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(1)
-            }
-            KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Content,
-            KeyCode::Up | KeyCode::Char('k')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(-(self.album_columns as isize))
-            }
-            KeyCode::Down | KeyCode::Char('j')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(self.album_columns as isize)
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Home => {
+            Action::FocusSidebar => self.focus = Focus::Sidebar,
+            Action::FocusContent => self.focus = Focus::Content,
+            Action::MoveSelection(amount) => self.move_selection(amount),
+            Action::AlbumStep(amount) => self.move_album_selection(amount),
+            Action::AlbumRow(rows) => self.move_album_selection(rows * self.album_columns as isize),
+            Action::SelectFirst => {
                 self.selected = 0;
                 self.dirty = true;
             }
-            KeyCode::End => {
+            Action::SelectLast => {
                 self.selected = self.item_count().saturating_sub(1);
                 self.dirty = true;
             }
-            KeyCode::Enter if self.view == View::Settings => {
-                self.adjust_setting(KeyCode::Char(' '))?
+            Action::Activate => self.activate_or_open()?,
+            Action::OpenContextMenu => {
+                if self.selected_track_id().is_some() {
+                    self.input = Some(InputMode::Context { selected: 0 });
+                }
             }
-            KeyCode::Enter => self.activate_or_open()?,
-            KeyCode::Char('x') if self.selected_track_id().is_some() => {
-                self.input = Some(InputMode::Context { selected: 0 })
+            Action::QueueMove(amount) => self.move_queue_item(amount),
+            Action::QueueRemove => self.remove_queue_item(),
+            Action::QueueClear => {
+                if !self.queue.is_empty() {
+                    self.input = Some(InputMode::ConfirmClearQueue);
+                }
             }
-            KeyCode::Char('J') if self.view == View::Queue => self.move_queue_item(1),
-            KeyCode::Char('K') if self.view == View::Queue => self.move_queue_item(-1),
-            KeyCode::Delete | KeyCode::Char('d') if self.view == View::Queue => {
-                self.remove_queue_item()
+            Action::QueueSave => {
+                if !self.queue.is_empty() {
+                    self.input_buffer.clear();
+                    self.input = Some(InputMode::SaveQueue);
+                }
             }
-            KeyCode::Char('C') if self.view == View::Queue && !self.queue.is_empty() => {
-                self.input = Some(InputMode::ConfirmClearQueue)
+            Action::QueueLoad => {
+                if !self.saved_queues.is_empty() {
+                    self.input = Some(InputMode::LoadQueue { selected: 0 });
+                }
             }
-            KeyCode::Char('S') if self.view == View::Queue && !self.queue.is_empty() => {
-                self.input_buffer.clear();
-                self.input = Some(InputMode::SaveQueue)
-            }
-            KeyCode::Char('L') if self.view == View::Queue && !self.saved_queues.is_empty() => {
-                self.input = Some(InputMode::LoadQueue { selected: 0 })
-            }
-            KeyCode::Char('e') if self.view == View::SmartPlaylists => {
+            Action::EditSmartPlaylist => {
                 if let Some(playlist) = self.smart_playlists.get(self.selected).cloned() {
                     self.input = Some(InputMode::SmartEditor {
                         playlist,
@@ -157,10 +139,8 @@ impl App {
                     });
                 }
             }
-            KeyCode::Char(' ') => self.handle_action(PlayerAction::Toggle)?,
-            KeyCode::Char('n') => self.handle_action(PlayerAction::Next)?,
-            KeyCode::Char('p') => self.handle_action(PlayerAction::Previous)?,
-            KeyCode::Char('s') => {
+            Action::Player(player_action) => self.handle_action(player_action)?,
+            Action::ToggleShuffle => {
                 self.shuffle = !self.shuffle;
                 self.status = format!(
                     "Aleatorio {}",
@@ -172,12 +152,12 @@ impl App {
                 );
                 self.dirty = true;
             }
-            KeyCode::Char('r') => {
+            Action::CycleRepeat => {
                 self.repeat = self.repeat.next();
                 self.status = format!("Repetir: {:?}", self.repeat);
                 self.dirty = true;
             }
-            KeyCode::Char('a') => {
+            Action::EnqueueSelected => {
                 if let Some(id) = self.selected_track_id() {
                     self.queue.push(id);
                     self.queue_dirty = true;
@@ -185,7 +165,7 @@ impl App {
                     self.dirty = true;
                 }
             }
-            KeyCode::Char('f') => {
+            Action::ToggleFavorite => {
                 if let Some(id) = self.selected_track_id() {
                     let value = self.db.toggle_favorite(&id)?;
                     self.set_favorite_local(&id, value);
@@ -197,11 +177,8 @@ impl App {
                     .into();
                 }
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.handle_remote_action(RemoteCommand::VolumeUp)?
-            }
-            KeyCode::Char('-') => self.handle_remote_action(RemoteCommand::VolumeDown)?,
-            _ => {}
+            Action::Remote(command) => self.handle_remote_action(command)?,
+            Action::Setting(input) => self.adjust_setting(input)?,
         }
         Ok(())
     }
@@ -413,16 +390,10 @@ impl App {
 
     pub(super) fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> Result<()> {
         match mouse.kind {
-            MouseEventKind::ScrollUp
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
+            MouseEventKind::ScrollUp if keys::Scope::AlbumGrid.matches(self.view, self.focus) => {
                 self.move_album_selection(-(self.album_columns as isize))
             }
-            MouseEventKind::ScrollDown
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
+            MouseEventKind::ScrollDown if keys::Scope::AlbumGrid.matches(self.view, self.focus) => {
                 self.move_album_selection(self.album_columns as isize)
             }
             MouseEventKind::ScrollUp => self.move_selection(-1),
@@ -521,9 +492,9 @@ impl App {
         Ok(())
     }
 
-    fn adjust_setting(&mut self, key: KeyCode) -> Result<()> {
-        let increase = matches!(key, KeyCode::Right);
-        let horizontal = matches!(key, KeyCode::Left | KeyCode::Right);
+    fn adjust_setting(&mut self, input: SettingInput) -> Result<()> {
+        let increase = input.increases();
+        let horizontal = input.is_horizontal();
         match self.selected {
             0 => self.config.replaygain_enabled = !self.config.replaygain_enabled,
             1 => {

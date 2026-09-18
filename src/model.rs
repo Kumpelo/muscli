@@ -186,7 +186,7 @@ impl Default for PlaybackState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlayerAction {
     Play,
     Pause,

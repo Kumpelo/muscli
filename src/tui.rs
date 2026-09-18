@@ -1307,6 +1307,7 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
 
 mod covers;
 mod input;
+mod keys;
 mod library;
 mod playback;
 mod render;
