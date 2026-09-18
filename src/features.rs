@@ -242,7 +242,10 @@ mod tests {
 
     #[test]
     fn search_index_reuses_normalized_track_fields() {
-        let tracks = vec![track("Música", "House", false), track("Other", "Jazz", false)];
+        let tracks = vec![
+            track("Música", "House", false),
+            track("Other", "Jazz", false),
+        ];
         let index = SearchIndex::build(&tracks);
         assert_eq!(index.search("musica", 10), [0]);
         assert_eq!(index.search("jazz", 10), [1]);
