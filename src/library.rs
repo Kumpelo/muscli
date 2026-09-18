@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::UNIX_EPOCH,
 };
 
@@ -18,6 +19,7 @@ use walkdir::WalkDir;
 
 use crate::{
     db::{Database, ScannedTrack},
+    fsutil::atomic_replace,
     model::{Track, normalize_text, parse_slash_number},
     paths::AppPaths,
 };
@@ -361,19 +363,38 @@ fn cache_cover_data(
     Ok(cached)
 }
 
+/// Distinguishes concurrent writes of the same cover.
+///
+/// Covers are keyed by artwork content, so two tracks sharing art race for the
+/// same cache entry. A shared scratch name would have them interleave writes
+/// into one file and produce a truncated image; the process id and counter make
+/// each attempt write somewhere of its own before the atomic rename.
+fn scratch_name(key: &str) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        ".{key}.{}.{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Result<PathBuf> {
     fs::create_dir_all(paths.cover_cache_dir())?;
     let target = paths.cover_cache_dir().join(format!("{key}.png"));
     if !cached_cover_is_valid(&target) {
         let thumbnail = image.thumbnail(512, 512);
-        let temporary = paths.cover_cache_dir().join(format!(".{key}.tmp"));
+        let temporary = paths.cover_cache_dir().join(scratch_name(key));
         thumbnail.save_with_format(&temporary, image::ImageFormat::Png)?;
-        if target.exists() {
-            fs::remove_file(&target)?;
-        }
-        fs::rename(temporary, &target)?;
+        atomic_replace(&temporary, &target)?;
     }
     Ok(target)
+}
+
+/// A scratch file a cover write has not committed yet.
+fn is_scratch(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
 }
 
 fn cached_cover_is_valid(path: &Path) -> bool {
@@ -470,7 +491,7 @@ pub fn prune_cover_cache(dir: &Path, max_bytes: u64) -> Result<Vec<PathBuf>> {
         .flatten()
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
-            if !meta.is_file() {
+            if !meta.is_file() || is_scratch(&entry.path()) {
                 return None;
             }
             let last_used = meta
@@ -508,6 +529,11 @@ pub fn prune_unreferenced_covers(
     let mut removed = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
+        // Dot-prefixed entries are in-flight scratch files from cache_cover;
+        // they are not referenced yet and deleting one corrupts a live write.
+        if is_scratch(&path) {
+            continue;
+        }
         if path.is_file() && !referenced.contains(&path) && fs::remove_file(&path).is_ok() {
             removed.push(path);
         }
