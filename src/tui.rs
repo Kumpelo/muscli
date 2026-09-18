@@ -5,8 +5,11 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::time::SystemTime;
 
 use anyhow::Result;
 use crossterm::event::{
@@ -261,6 +264,7 @@ impl Default for UiTheme {
 }
 
 impl UiTheme {
+    #[cfg(unix)]
     fn source_paths() -> [Option<PathBuf>; 2] {
         let state_home = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
@@ -276,6 +280,7 @@ impl UiTheme {
         ]
     }
 
+    #[cfg(unix)]
     fn load_with_source() -> (Self, Option<PathBuf>, Option<SystemTime>) {
         for path in Self::source_paths().into_iter().flatten() {
             if let Some(theme) = Self::from_file(&path) {
@@ -288,6 +293,7 @@ impl UiTheme {
         (Self::default(), None, None)
     }
 
+    #[cfg(unix)]
     fn from_file(path: &Path) -> Option<Self> {
         let raw = fs::read_to_string(path).ok()?;
         let value = toml::from_str::<toml::Value>(&raw).ok()?;
@@ -307,6 +313,7 @@ impl UiTheme {
     }
 }
 
+#[cfg(unix)]
 fn parse_hex_color(value: &str) -> Option<Color> {
     let hex = value.strip_prefix('#')?;
     if hex.len() != 6 {
@@ -414,7 +421,9 @@ struct App {
     last_mpris_position_signature: Option<(u64, u64)>,
     last_discord_signature: Option<(Option<u64>, PlaybackStatus, u64, u64)>,
     theme: UiTheme,
+    #[cfg(unix)]
     theme_path: Option<PathBuf>,
+    #[cfg(unix)]
     theme_modified: Option<SystemTime>,
     history_id: Option<i64>,
     history_track_id: Option<String>,
@@ -481,7 +490,10 @@ async fn run_inner(
         None
     };
     let compact = compact_requested || config.compact_default;
+    #[cfg(unix)]
     let (theme, theme_path, theme_modified) = UiTheme::load_with_source();
+    #[cfg(windows)]
+    let theme = UiTheme::default();
     let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
     let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
     start_cover_decode_worker(cover_decode_requests, cover_results_tx);
@@ -570,7 +582,9 @@ async fn run_inner(
         last_mpris_position_signature: None,
         last_discord_signature: None,
         theme,
+        #[cfg(unix)]
         theme_path,
+        #[cfg(unix)]
         theme_modified,
         history_id: None,
         history_track_id: None,
