@@ -45,6 +45,17 @@ const WINDOW_BLOCK: &str = r#"-- >>> muscli player window >>>
 o.window({ class = "^muscli-compact$" }, {
   float = true,
   center = true,
+  size = { 1800, 980 },
+})
+-- <<< muscli player window <<<
+"#;
+
+// Tamaño anterior de la ventana del modo completo. Se conserva para que el setup
+// sepa reconocerlo y pueda migrarlo en vez de negarse a tocar el archivo.
+const LEGACY_PLAYER_WINDOW_BLOCK: &str = r#"-- >>> muscli player window >>>
+o.window({ class = "^muscli-compact$" }, {
+  float = true,
+  center = true,
   size = { 1280, 800 },
 })
 -- <<< muscli player window <<<
@@ -249,16 +260,19 @@ fn install_hyprland(state: &mut SetupState) -> Result<()> {
     let hyprland = config.join("hyprland.lua");
     let bindings_backup =
         install_managed_block(&bindings, BINDINGS_BLOCK, &[LEGACY_BINDINGS_BLOCK])?;
-    let hyprland_backup =
-        match install_managed_block(&hyprland, WINDOW_BLOCK, &[LEGACY_WINDOW_BLOCK]) {
-            Ok(backup) => backup,
-            Err(error) => {
-                if let Some(backup) = &bindings_backup {
-                    let _ = fs::copy(backup, &bindings);
-                }
-                return Err(error);
+    let hyprland_backup = match install_managed_block(
+        &hyprland,
+        WINDOW_BLOCK,
+        &[LEGACY_WINDOW_BLOCK, LEGACY_PLAYER_WINDOW_BLOCK],
+    ) {
+        Ok(backup) => backup,
+        Err(error) => {
+            if let Some(backup) = &bindings_backup {
+                let _ = fs::copy(backup, &bindings);
             }
-        };
+            return Err(error);
+        }
+    };
     let installed_bindings = bindings_backup.is_some();
     let installed_window = hyprland_backup.is_some();
     state.bindings_file = Some(bindings.clone());
