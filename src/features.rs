@@ -227,14 +227,24 @@ fn rule_matches(rule: &SmartRule, folded_string: Option<&str>, context: &RuleCon
 }
 
 pub fn fold(value: &str) -> String {
-    value
+    let mut output = String::with_capacity(value.len());
+    let mut pending_space = false;
+    for character in value
         .nfkd()
         .filter(|character| !is_combining_mark(*character))
         .flat_map(char::to_lowercase)
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    {
+        if character.is_whitespace() {
+            pending_space = !output.is_empty();
+            continue;
+        }
+        if pending_space {
+            output.push(' ');
+            pending_space = false;
+        }
+        output.push(character);
+    }
+    output
 }
 
 fn levenshtein(left: &str, right: &str) -> usize {

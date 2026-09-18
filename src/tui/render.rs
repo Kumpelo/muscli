@@ -307,9 +307,20 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn list_viewport(total: usize, selected: usize, area_height: u16) -> std::ops::Range<usize> {
+    let visible_rows = area_height as usize;
+    if total == 0 || visible_rows == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(total - 1);
+    let first = selected.saturating_sub(visible_rows - 1);
+    first..(first + visible_rows).min(total)
+}
+
 fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let items = app
-        .genres
+    let viewport = list_viewport(app.genres.len(), app.selected, area.height);
+    let first = viewport.start;
+    let items = app.genres[viewport]
         .iter()
         .map(|genre| {
             ListItem::new(format!(
@@ -319,7 +330,8 @@ fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default().with_selected(Some(app.selected));
+    let mut state =
+        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -355,30 +367,35 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         rows[0],
     );
+    let total = match app.genre_tab {
+        0 => app.genre_album_indices().len(),
+        1 => app.genre_artist_indices().len(),
+        _ => app.genre_track_ids().len(),
+    };
+    let viewport = list_viewport(total, app.selected, rows[1].height);
+    let first = viewport.start;
     let items: Vec<ListItem<'_>> = match app.genre_tab {
-        0 => app
-            .genre_album_indices()
-            .iter()
-            .copied()
+        0 => viewport
+            .clone()
+            .filter_map(|position| app.genre_album_indices().get(position).copied())
             .map(|index| {
                 let album = &app.albums[index];
                 ListItem::new(format!("󰀥  {} — {}", album.title, album.artist))
             })
             .collect(),
-        1 => app
-            .genre_artist_indices()
-            .iter()
-            .copied()
+        1 => viewport
+            .clone()
+            .filter_map(|position| app.genre_artist_indices().get(position).copied())
             .map(|index| ListItem::new(format!("󰠃  {}", app.artists[index].name)))
             .collect(),
-        _ => app
-            .genre_track_ids()
-            .iter()
+        _ => viewport
+            .filter_map(|position| app.genre_track_ids().get(position))
             .filter_map(|id| app.track_index.get(id).map(|index| &app.tracks[*index]))
             .map(|track| ListItem::new(format!("󰎆  {} — {}", track.title, track.artist)))
             .collect(),
     };
-    let mut state = ListState::default().with_selected(Some(app.selected));
+    let mut state =
+        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -644,8 +661,9 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let items = app
-        .artists
+    let viewport = list_viewport(app.artists.len(), app.selected, area.height);
+    let first = viewport.start;
+    let items = app.artists[viewport]
         .iter()
         .map(|artist| {
             ListItem::new(format!(
@@ -656,7 +674,8 @@ fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default().with_selected(Some(app.selected));
+    let mut state =
+        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -679,8 +698,9 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     }
-    let items = app
-        .playlists
+    let viewport = list_viewport(app.playlists.len(), app.selected, area.height);
+    let first = viewport.start;
+    let items = app.playlists[viewport]
         .iter()
         .map(|playlist| {
             ListItem::new(format!(
@@ -690,7 +710,8 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut state = ListState::default().with_selected(Some(app.selected));
+    let mut state =
+        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
