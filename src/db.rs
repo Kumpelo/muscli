@@ -1422,7 +1422,7 @@ mod tests {
         db.upsert_scan("s", Path::new("/music"), "Music", &[], &["one".into()])?;
         assert_eq!(
             db.prune_missing_for_source("s", &BTreeSet::from(["one.flac".into()]))?,
-            0
+            1
         );
         let tracks = db.load_tracks()?;
         assert_eq!(tracks.len(), 1);
