@@ -1197,14 +1197,21 @@ impl App {
         self.artists.get(index)
     }
 
-    fn visible_album_indices(&self) -> Vec<usize> {
+    fn visible_album_len(&self) -> usize {
+        if self.view == View::ArtistDetail {
+            self.artist_release_keys.len()
+        } else {
+            self.albums.len()
+        }
+    }
+
+    fn visible_album_index_at(&self, position: usize) -> Option<usize> {
         if self.view == View::ArtistDetail {
             self.artist_release_keys
-                .iter()
-                .filter_map(|key| self.album_index.get(key).copied())
-                .collect()
+                .get(position)
+                .and_then(|key| self.album_index.get(key).copied())
         } else {
-            (0..self.albums.len()).collect()
+            (position < self.albums.len()).then_some(position)
         }
     }
 

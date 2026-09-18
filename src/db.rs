@@ -47,6 +47,9 @@ impl Database {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+        conn.pragma_update(None, "cache_size", -16_384i64)?;
+        conn.pragma_update(None, "mmap_size", 134_217_728i64)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 1 && path.exists() {
             let stamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -56,6 +59,7 @@ impl Database {
         let mut db = Self { conn };
         db.migrate()?;
         db.seed_smart_playlists()?;
+        db.conn.execute_batch("PRAGMA optimize;")?;
         Ok(db)
     }
 
