@@ -319,6 +319,17 @@ fn parse_hex_color(value: &str) -> Option<Color> {
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MediaSessionSignature {
+    track_hash: Option<u64>,
+    status: PlaybackStatus,
+    volume_bits: u64,
+    shuffle: bool,
+    repeat: RepeatMode,
+    can_previous: bool,
+    can_next: bool,
+}
+
 struct App {
     paths: AppPaths,
     config: Config,
@@ -399,15 +410,7 @@ struct App {
     cover_decode_rx: tokio_mpsc::UnboundedReceiver<CoverDecodeResult>,
     cover_decode_pending: HashSet<(PathBuf, u32)>,
     album_columns: usize,
-    last_mpris_signature: Option<(
-        Option<u64>,
-        PlaybackStatus,
-        u64,
-        bool,
-        RepeatMode,
-        bool,
-        bool,
-    )>,
+    last_mpris_signature: Option<MediaSessionSignature>,
     last_mpris_position_signature: Option<(u64, u64)>,
     last_discord_signature: Option<(Option<u64>, PlaybackStatus, u64, u64)>,
     theme: UiTheme,
@@ -2610,15 +2613,15 @@ impl App {
 
     async fn sync_mpris(&mut self) {
         let index = self.queue_index.unwrap_or(0);
-        let state_signature = (
-            self.current_track_hash(),
-            self.playback.status,
-            self.playback.volume.to_bits(),
-            self.shuffle,
-            self.repeat,
-            index > 0,
-            index + 1 < self.queue.len(),
-        );
+        let state_signature = MediaSessionSignature {
+            track_hash: self.current_track_hash(),
+            status: self.playback.status,
+            volume_bits: self.playback.volume.to_bits(),
+            shuffle: self.shuffle,
+            repeat: self.repeat,
+            can_previous: index > 0,
+            can_next: index + 1 < self.queue.len(),
+        };
         let position_signature = (self.playback.duration_ms, self.playback.position_ms / 1000);
 
         if let Some(mpris) = &self.mpris {
@@ -2629,8 +2632,8 @@ impl App {
                         &self.playback,
                         self.shuffle,
                         self.repeat,
-                        state_signature.5,
-                        state_signature.6,
+                        state_signature.can_previous,
+                        state_signature.can_next,
                     )
                     .await;
                 self.last_mpris_signature = Some(state_signature);
