@@ -1,3 +1,13 @@
+//! Rendering for the terminal UI.
+//!
+//! This module draws `App`; it never mutates application state except for the
+//! image protocols and cover-placement signature that drawing itself owns.
+//!
+//! `use super::*` pulls in `App`, the view enums, the shared constants and the
+//! imports declared in the parent module.
+
+use super::*;
+
 /// Mezcla en la firma qué imagen se dibuja y en qué rectángulo.
 fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
     let mut h = DefaultHasher::new();
@@ -6,7 +16,7 @@ fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
     *sig = sig.rotate_left(13) ^ h.finish();
 }
 
-fn draw(frame: &mut Frame<'_>, app: &mut App) {
+pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.cover_sig_now = 0;
     let area = frame.area();
     frame.render_widget(
@@ -330,8 +340,7 @@ fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -394,8 +403,7 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .map(|track| ListItem::new(format!("󰎆  {} — {}", track.title, track.artist)))
             .collect(),
     };
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -682,8 +690,7 @@ fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -718,8 +725,7 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ))
         })
         .collect::<Vec<_>>();
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -732,7 +738,11 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn track_viewport(total: usize, selected: usize, area_height: u16) -> std::ops::Range<usize> {
+pub(super) fn track_viewport(
+    total: usize,
+    selected: usize,
+    area_height: u16,
+) -> std::ops::Range<usize> {
     let visible_rows = area_height.saturating_sub(1) as usize;
     if total == 0 || visible_rows == 0 {
         return 0..0;
@@ -764,16 +774,16 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = viewport.filter_map(|position| {
         let index = app.track_index_at_view_position(position)?;
         let track = &app.tracks[index];
-            let marker = if app
-                .current_track()
-                .is_some_and(|current| current.id == track.id)
-            {
-                "▶"
-            } else if track.favorite {
-                "♥"
-            } else {
-                " "
-            };
+        let marker = if app
+            .current_track()
+            .is_some_and(|current| current.id == track.id)
+        {
+            "▶"
+        } else if track.favorite {
+            "♥"
+        } else {
+            " "
+        };
         Some(
             Row::new(vec![
                 Cell::from(format!(
