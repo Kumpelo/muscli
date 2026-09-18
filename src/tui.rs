@@ -993,7 +993,10 @@ impl App {
                 if let Some(genre) = track_genre.get(track_id.as_str())
                     && seen.insert(*genre)
                 {
-                    album_cache.entry((*genre).to_owned()).or_default().push(index);
+                    album_cache
+                        .entry((*genre).to_owned())
+                        .or_default()
+                        .push(index);
                 }
             }
         }

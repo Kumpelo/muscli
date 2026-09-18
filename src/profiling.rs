@@ -1,10 +1,4 @@
-use std::{
-    fs::OpenOptions,
-    io::Write,
-    path::PathBuf,
-    sync::OnceLock,
-    time::Instant,
-};
+use std::{fs::OpenOptions, io::Write, path::PathBuf, sync::OnceLock, time::Instant};
 
 static PROFILE_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
 
