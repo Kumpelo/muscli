@@ -1255,8 +1255,9 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
             &track.album_artist
         };
         let key = (artist.to_lowercase(), track.album.to_lowercase());
-        let album = grouped.entry(key.clone()).or_insert_with(|| Album {
-            key: format!("{}\u{1f}{}", key.0, key.1),
+        let album_key = format!("{}\u{1f}{}", key.0, key.1);
+        let album = grouped.entry(key).or_insert_with(|| Album {
+            key: album_key,
             title: track.album.clone(),
             artist: artist.clone(),
             year: track.year,
@@ -1274,27 +1275,21 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
 }
 
 pub fn group_artists(tracks: &[Track]) -> Vec<Artist> {
-    let mut tracks_by_artist: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut albums_by_artist: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, (Vec<String>, BTreeSet<String>)> = BTreeMap::new();
     for track in tracks {
         let artist = if track.artist.is_empty() {
             "Unknown Artist"
         } else {
             &track.artist
         };
-        tracks_by_artist
-            .entry(artist.to_owned())
-            .or_default()
-            .push(track.id.clone());
-        albums_by_artist
-            .entry(artist.to_owned())
-            .or_default()
-            .insert(track.album.to_lowercase());
+        let (track_ids, albums) = grouped.entry(artist.to_owned()).or_default();
+        track_ids.push(track.id.clone());
+        albums.insert(track.album.to_lowercase());
     }
-    tracks_by_artist
+    grouped
         .into_iter()
-        .map(|(name, track_ids)| Artist {
-            album_count: albums_by_artist.get(&name).map_or(0, BTreeSet::len),
+        .map(|(name, (track_ids, albums))| Artist {
+            album_count: albums.len(),
             name,
             track_ids,
         })
