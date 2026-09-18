@@ -754,7 +754,40 @@ impl App {
         self.tracks = library.tracks;
         self.stats = library.stats;
         self.added_at = library.added_at;
-        self.search_index = SearchIndex::build(&self.tracks);
+        let (search_index, albums, artists, genres) = if self.tracks.len() >= 2_000 {
+            thread::scope(|scope| -> Result<_> {
+                let tracks = &self.tracks;
+                let search = scope.spawn(|| SearchIndex::build(tracks));
+                let albums = scope.spawn(|| group_albums(tracks));
+                let artists = scope.spawn(|| group_artists(tracks));
+                let genres = scope.spawn(|| group_genres(tracks));
+                Ok((
+                    search
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("search index worker panicked"))?,
+                    albums
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("album grouping worker panicked"))?,
+                    artists
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("artist grouping worker panicked"))?,
+                    genres
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("genre grouping worker panicked"))?,
+                ))
+            })?
+        } else {
+            (
+                SearchIndex::build(&self.tracks),
+                group_albums(&self.tracks),
+                group_artists(&self.tracks),
+                group_genres(&self.tracks),
+            )
+        };
+        self.search_index = search_index;
+        self.albums = albums;
+        self.artists = artists;
+        self.genres = genres;
         self.refresh_search();
         self.track_index = self
             .tracks
@@ -768,21 +801,18 @@ impl App {
             .enumerate()
             .filter_map(|(index, track)| track.favorite.then_some(index))
             .collect();
-        self.albums = group_albums(&self.tracks);
         self.album_index = self
             .albums
             .iter()
             .enumerate()
             .map(|(index, album)| (album.key.clone(), index))
             .collect();
-        self.artists = group_artists(&self.tracks);
         self.artist_index = self
             .artists
             .iter()
             .enumerate()
             .map(|(index, artist)| (artist.name.clone(), index))
             .collect();
-        self.genres = group_genres(&self.tracks);
         self.rebuild_genre_indices();
         self.playlists = self.db.load_playlists()?;
         self.smart_playlists = self.db.load_smart_playlists()?;
