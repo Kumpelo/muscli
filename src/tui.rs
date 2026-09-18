@@ -26,6 +26,7 @@ use ratatui::{
     },
 };
 use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
+use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::{
     config::{Config, ReplayGainMode, all_sources},
@@ -345,8 +346,8 @@ struct App {
     mpv: MpvPlayer,
     mpris: Option<MprisBridge>,
     discord: Option<DiscordPresence>,
-    actions: Receiver<PlayerAction>,
-    remote_actions: Receiver<RemoteCommand>,
+    actions: tokio_mpsc::UnboundedReceiver<PlayerAction>,
+    remote_actions: tokio_mpsc::UnboundedReceiver<RemoteCommand>,
     _control_server: ControlServer,
     gain_rx: Option<Receiver<GainMessage>>,
     gain_progress: Option<(usize, usize)>,
@@ -423,7 +424,7 @@ async fn run_inner(
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     let saved_volume = saved.volume.clamp(0.0, 1.0);
     mpv.set_volume(saved_volume)?;
-    let (action_tx, actions) = mpsc::channel();
+    let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
         Err(error) => (None, Some(format!("MPRIS no disponible: {error}"))),
@@ -557,21 +558,47 @@ async fn run_inner(
     app.start_scan();
     app.start_gain_analysis()?;
 
-    let shutdown_rx = start_shutdown_listener()?;
+    let mut shutdown_rx = start_shutdown_listener()?;
+    let mut terminal_events = start_terminal_event_reader();
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let loop_result: Result<()> = async {
         while !app.should_quit {
-            if shutdown_rx.try_recv().is_ok() {
-                app.should_quit = true;
-                continue;
-            }
-            while event::poll(Duration::ZERO)? {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key)?,
-                    Event::Mouse(mouse) => app.handle_mouse(mouse)?,
-                    Event::Resize(_, _) => app.dirty = true,
-                    _ => {}
+            let maintenance_delay = if app.playback.status == PlaybackStatus::Playing
+                || app.scan_running
+                || app.gain_rx.is_some()
+            {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_millis(250)
+            };
+
+            tokio::select! {
+                event = terminal_events.recv() => {
+                    if let Some(event) = event {
+                        handle_terminal_event(&mut app, event)?;
+                    }
                 }
+                action = app.actions.recv() => {
+                    if let Some(action) = action {
+                        app.handle_action(action)?;
+                    }
+                }
+                action = app.remote_actions.recv() => {
+                    if let Some(action) = action {
+                        app.handle_remote_action(action)?;
+                    }
+                }
+                shutdown = shutdown_rx.recv() => {
+                    if shutdown.is_some() {
+                        app.should_quit = true;
+                        continue;
+                    }
+                }
+                _ = tokio::time::sleep(maintenance_delay) => {}
+            }
+
+            while let Ok(event) = terminal_events.try_recv() {
+                handle_terminal_event(&mut app, event)?;
             }
             while let Some(event) = app.mpv.try_event() {
                 app.handle_player_event(event)?;
@@ -620,7 +647,6 @@ async fn run_inner(
                 app.dirty = false;
                 last_draw = Instant::now();
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
         Ok(())
     }
@@ -2538,9 +2564,36 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
         .ok();
 }
 
+fn start_terminal_event_reader() -> tokio_mpsc::UnboundedReceiver<Event> {
+    let (tx, rx) = tokio_mpsc::unbounded_channel();
+    thread::Builder::new()
+        .name("muscli-terminal-events".into())
+        .spawn(move || {
+            while let Ok(event) = event::read() {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        })
+        .ok();
+    rx
+}
+
+fn handle_terminal_event(app: &mut App, event: Event) -> Result<()> {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
+        Event::Mouse(mouse) => app.handle_mouse(mouse),
+        Event::Resize(_, _) => {
+            app.dirty = true;
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(unix)]
-fn start_shutdown_listener() -> Result<Receiver<()>> {
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
+    let (shutdown_tx, shutdown_rx) = tokio_mpsc::unbounded_channel();
     for kind in [
         tokio::signal::unix::SignalKind::interrupt(),
         tokio::signal::unix::SignalKind::terminate(),
@@ -2557,8 +2610,8 @@ fn start_shutdown_listener() -> Result<Receiver<()>> {
 }
 
 #[cfg(windows)]
-fn start_shutdown_listener() -> Result<Receiver<()>> {
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
+    let (shutdown_tx, shutdown_rx) = tokio_mpsc::unbounded_channel();
     tokio::task::spawn_local(async move {
         let _ = tokio::signal::ctrl_c().await;
         let _ = shutdown_tx.send(());
