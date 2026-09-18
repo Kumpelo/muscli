@@ -303,6 +303,7 @@ struct App {
     albums: Vec<Album>,
     album_index: HashMap<String, usize>,
     artists: Vec<Artist>,
+    artist_index: HashMap<String, usize>,
     playlists: Vec<Playlist>,
     smart_playlists: Vec<SmartPlaylist>,
     smart_matches: HashMap<i64, Vec<String>>,
@@ -446,6 +447,7 @@ async fn run_inner(
         albums: Vec::new(),
         album_index: HashMap::new(),
         artists: Vec::new(),
+        artist_index: HashMap::new(),
         playlists: Vec::new(),
         smart_playlists: Vec::new(),
         smart_matches: HashMap::new(),
@@ -645,6 +647,12 @@ impl App {
             .map(|(index, album)| (album.key.clone(), index))
             .collect();
         self.artists = group_artists(&self.tracks);
+        self.artist_index = self
+            .artists
+            .iter()
+            .enumerate()
+            .map(|(index, artist)| (artist.name.clone(), index))
+            .collect();
         self.genres = group_genres(&self.tracks);
         self.rebuild_genre_indices();
         self.playlists = self.db.load_playlists()?;
@@ -1089,12 +1097,14 @@ impl App {
 
     fn opened_album(&self) -> Option<&Album> {
         let key = self.opened_album_key.as_deref()?;
-        self.albums.iter().find(|album| album.key == key)
+        let index = self.album_index.get(key).copied()?;
+        self.albums.get(index)
     }
 
     fn opened_artist(&self) -> Option<&Artist> {
         let name = self.opened_artist_name.as_deref()?;
-        self.artists.iter().find(|artist| artist.name == name)
+        let index = self.artist_index.get(name).copied()?;
+        self.artists.get(index)
     }
 
     fn visible_album_indices(&self) -> Vec<usize> {
@@ -1123,7 +1133,11 @@ impl App {
             self.artist_release_keys.clear();
             return;
         };
-        let Some(artist) = self.artists.iter().find(|artist| artist.name == name) else {
+        let Some(artist) = self
+            .artist_index
+            .get(name)
+            .and_then(|index| self.artists.get(*index))
+        else {
             self.artist_release_keys.clear();
             return;
         };
@@ -1165,7 +1179,7 @@ impl App {
                         .iter()
                         .position(|index| self.artists[*index].name == name)
                 } else {
-                    self.artists.iter().position(|artist| artist.name == name)
+                    self.artist_index.get(name).copied()
                 }
             })
             .unwrap_or(self.artist_return_selection)
