@@ -27,6 +27,13 @@ pub struct HistoryUpdate<'a> {
     pub completed: bool,
 }
 
+#[derive(Debug, Default)]
+pub struct LibraryState {
+    pub tracks: Vec<Track>,
+    pub stats: HashMap<String, TrackStats>,
+    pub added_at: HashMap<String, i64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LibraryHealth {
     pub tracks: usize,
@@ -603,6 +610,44 @@ impl Database {
             dangling_covers: dangling.len(),
             sources,
         })
+    }
+
+    pub fn load_library_state(&self) -> Result<LibraryState> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.source_id, t.relative_path, t.path, t.title, t.artist, t.album_artist,
+                    t.album, t.genre, t.year, t.disc_number, t.track_number, t.duration_ms,
+                    t.cover_path, t.available, t.favorite, t.added_at,
+                    s.track_id, s.play_count, s.total_listen_ms, s.last_played_at,
+                    s.resume_position_ms
+             FROM tracks t
+             LEFT JOIN track_stats s ON s.track_id=t.id
+             ORDER BY t.album_artist COLLATE NOCASE, t.album COLLATE NOCASE,
+                      t.disc_number, t.track_number, t.title COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let track = row_to_track(row)?;
+            let added_at = row.get::<_, i64>(16)?;
+            let stats_id = row.get::<_, Option<String>>(17)?;
+            let stats = stats_id.map(|track_id| TrackStats {
+                track_id,
+                play_count: row.get::<_, Option<i64>>(18).unwrap_or_default().unwrap_or_default().max(0) as u64,
+                total_listen_ms: row.get::<_, Option<i64>>(19).unwrap_or_default().unwrap_or_default().max(0) as u64,
+                last_played_at: row.get::<_, Option<i64>>(20).unwrap_or_default(),
+                resume_position_ms: row.get::<_, Option<i64>>(21).unwrap_or_default().unwrap_or_default().max(0) as u64,
+            });
+            Ok((track, added_at, stats))
+        })?;
+
+        let mut state = LibraryState::default();
+        for row in rows {
+            let (track, added_at, stats) = row?;
+            state.added_at.insert(track.id.clone(), added_at);
+            if let Some(stats) = stats {
+                state.stats.insert(track.id.clone(), stats);
+            }
+            state.tracks.push(track);
+        }
+        Ok(state)
     }
 
     pub fn load_tracks(&self) -> Result<Vec<Track>> {

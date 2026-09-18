@@ -710,7 +710,10 @@ async fn run_inner(
 impl App {
     fn reload_library(&mut self) -> Result<()> {
         let _profile = crate::profiling::span("reload_library");
-        self.tracks = self.db.load_tracks()?;
+        let library = self.db.load_library_state()?;
+        self.tracks = library.tracks;
+        self.stats = library.stats;
+        self.added_at = library.added_at;
         self.search_index = SearchIndex::build(&self.tracks);
         self.refresh_search();
         self.track_index = self
@@ -744,8 +747,6 @@ impl App {
         self.playlists = self.db.load_playlists()?;
         self.smart_playlists = self.db.load_smart_playlists()?;
         self.saved_queues = self.db.load_saved_queues()?;
-        self.stats = self.db.load_track_stats()?;
-        self.added_at = self.db.load_added_at()?;
         self.history = self.db.load_history(500)?;
         self.rebuild_home_tracks();
         let now = chrono::Utc::now().timestamp();
