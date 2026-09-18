@@ -71,7 +71,7 @@ pub fn scan_to_database(
             Err(error) => report.errors.push(format!("{}: {error:#}", root.display())),
         }
     }
-    db.mark_missing_sources(&ids)?;
+    let _ = db.mark_missing_sources(&ids)?;
     prune_unreferenced_covers(&paths.cover_cache_dir(), &db.referenced_cover_paths()?)?;
     let removed = prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes)?;
     db.clear_cover_paths(&removed)?;
