@@ -52,11 +52,12 @@ impl SearchIndex {
             return Vec::new();
         }
 
+        let max_distance = (query.chars().count() / 3).max(1);
         let mut best = BinaryHeap::<Reverse<(usize, Reverse<usize>)>>::with_capacity(limit + 1);
         for (index, fields) in self.fields.iter().enumerate() {
             let Some(score) = fields
                 .iter()
-                .filter_map(|field| fuzzy_score(field, &query))
+                .filter_map(|field| fuzzy_score(field, &query, max_distance))
                 .max()
             else {
                 continue;
@@ -104,7 +105,7 @@ pub fn fuzzy_search(tracks: &[Track], query: &str, limit: usize) -> Vec<usize> {
     SearchIndex::build(tracks).search(query, limit)
 }
 
-fn fuzzy_score(value: &str, query: &str) -> Option<usize> {
+fn fuzzy_score(value: &str, query: &str, max_distance: usize) -> Option<usize> {
     if value == query {
         return Some(10_000);
     }
@@ -116,9 +117,8 @@ fn fuzzy_score(value: &str, query: &str) -> Option<usize> {
     }
     value
         .split_whitespace()
-        .map(|word| levenshtein(word, query))
+        .filter_map(|word| levenshtein_bounded(word, query, max_distance))
         .min()
-        .filter(|distance| *distance <= (query.chars().count() / 3).max(1))
         .map(|distance| 5_000usize.saturating_sub(distance * 100))
 }
 
@@ -247,20 +247,31 @@ pub fn fold(value: &str) -> String {
     output
 }
 
-fn levenshtein(left: &str, right: &str) -> usize {
+fn levenshtein_bounded(left: &str, right: &str, max_distance: usize) -> Option<usize> {
+    let left_len = left.chars().count();
     let right = right.chars().collect::<Vec<_>>();
+    if left_len.abs_diff(right.len()) > max_distance {
+        return None;
+    }
+
     let mut previous = (0..=right.len()).collect::<Vec<_>>();
     let mut current = vec![0; right.len() + 1];
     for (row, left_char) in left.chars().enumerate() {
         current[0] = row + 1;
+        let mut row_min = current[0];
         for (column, right_char) in right.iter().enumerate() {
             current[column + 1] = (previous[column + 1] + 1)
                 .min(current[column] + 1)
                 .min(previous[column] + usize::from(left_char != *right_char));
+            row_min = row_min.min(current[column + 1]);
+        }
+        if row_min > max_distance {
+            return None;
         }
         std::mem::swap(&mut previous, &mut current);
     }
-    previous[right.len()]
+
+    (previous[right.len()] <= max_distance).then_some(previous[right.len()])
 }
 
 #[cfg(test)]
@@ -307,6 +318,13 @@ mod tests {
         let index = SearchIndex::build(&tracks);
         assert_eq!(index.search("musica", 10), [0]);
         assert_eq!(index.search("jazz", 10), [1]);
+    }
+
+    #[test]
+    fn bounded_levenshtein_stops_impossible_matches() {
+        assert_eq!(levenshtein_bounded("radiohead", "radiohed", 2), Some(1));
+        assert_eq!(levenshtein_bounded("radiohead", "x", 2), None);
+        assert_eq!(levenshtein_bounded("abcdef", "uvwxyz", 1), None);
     }
 
     #[test]
