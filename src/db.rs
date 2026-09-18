@@ -445,6 +445,30 @@ impl Database {
             stmt.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<(String, String)>>>()?
         };
+        let playback_queue: Option<String> = tx
+            .query_row(
+                "SELECT value FROM app_state WHERE key='playback_queue'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(raw) = playback_queue
+            && let Ok(mut queue) = serde_json::from_str::<Vec<String>>(&raw)
+        {
+            let mut changed = false;
+            for id in &mut queue {
+                if let Some((_, new_id)) = moved_tracks.iter().find(|(old_id, _)| id == old_id) {
+                    *id = new_id.clone();
+                    changed = true;
+                }
+            }
+            if changed {
+                tx.execute(
+                    "UPDATE app_state SET value=?1 WHERE key='playback_queue'",
+                    [serde_json::to_string(&queue)?],
+                )?;
+            }
+        }
         for (old_id, new_id) in &moved_tracks {
             tx.execute(
                 "UPDATE tracks
@@ -1330,11 +1354,14 @@ mod tests {
         db.toggle_favorite("old-id")?;
         let playlist = db.create_playlist("Mix")?;
         db.add_to_playlist(playlist, "old-id")?;
-        db.save_playback(&SavedPlayback {
-            queue: vec!["old-id".into()],
-            current_index: Some(0),
-            ..SavedPlayback::default()
-        })?;
+        db.save_playback(
+            &SavedPlayback {
+                queue: Vec::new(),
+                current_index: Some(0),
+                ..SavedPlayback::default()
+            },
+            Some(&["old-id".into()]),
+        )?;
 
         let mut moved_track = track("new-id", 1);
         moved_track.title = "old-id".into();
