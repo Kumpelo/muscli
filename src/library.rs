@@ -217,7 +217,7 @@ fn read_track(paths: &AppPaths, source_id: &str, root: &Path, path: &Path) -> Re
     let id = blake3::hash(format!("{source_id}\0{relative}").as_bytes())
         .to_hex()
         .to_string();
-    let cover_path = find_or_cache_cover(paths, tag, path, &album_artist, &album)?;
+    let cover_path = find_or_cache_cover(paths, tag, path)?;
     let duration_ms = tagged
         .properties()
         .duration()
@@ -252,18 +252,14 @@ fn find_or_cache_cover(
     paths: &AppPaths,
     tag: Option<&lofty::tag::Tag>,
     track_path: &Path,
-    artist: &str,
-    album: &str,
 ) -> Result<Option<PathBuf>> {
-    let key = blake3::hash(format!("{artist}\0{album}").as_bytes())
-        .to_hex()
-        .to_string();
-    if let Some(image) = tag
-        .and_then(|t| t.pictures().first())
-        .and_then(|picture| image::load_from_memory(picture.data()).ok())
-    {
-        return cache_cover(paths, &key, image).map(Some);
+    if let Some(picture) = tag.and_then(|tag| tag.pictures().first()) {
+        let data = picture.data();
+        if let Ok(image) = image::load_from_memory(data) {
+            return cache_cover(paths, &cover_cache_key(data), image).map(Some);
+        }
     }
+
     let Some(dir) = track_path.parent() else {
         return Ok(None);
     };
@@ -277,20 +273,22 @@ fn find_or_cache_cover(
         "Folder.jpg",
     ] {
         let candidate = dir.join(name);
-        if candidate.is_file() {
-            let Ok(reader) = image::ImageReader::open(&candidate) else {
-                continue;
-            };
-            let Ok(reader) = reader.with_guessed_format() else {
-                continue;
-            };
-            let Ok(image) = reader.decode() else {
-                continue;
-            };
-            return cache_cover(paths, &key, image).map(Some);
+        if !candidate.is_file() {
+            continue;
         }
+        let Ok(data) = fs::read(&candidate) else {
+            continue;
+        };
+        let Ok(image) = image::load_from_memory(&data) else {
+            continue;
+        };
+        return cache_cover(paths, &cover_cache_key(&data), image).map(Some);
     }
     Ok(None)
+}
+
+fn cover_cache_key(data: &[u8]) -> String {
+    blake3::hash(data).to_hex().to_string()
 }
 
 fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Result<PathBuf> {
@@ -493,6 +491,12 @@ mod tests {
             source_identity(Some("ABCD-1234"), Some(root), &root.join("Jazz")),
             source_identity(Some("ABCD-1234"), Some(root), &root.join("Rock")),
         );
+    }
+
+    #[test]
+    fn cover_cache_key_tracks_artwork_content() {
+        assert_eq!(cover_cache_key(b"same artwork"), cover_cache_key(b"same artwork"));
+        assert_ne!(cover_cache_key(b"first artwork"), cover_cache_key(b"second artwork"));
     }
 
     #[test]
