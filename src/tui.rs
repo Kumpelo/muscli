@@ -301,9 +301,11 @@ struct App {
     tracks: Vec<Track>,
     track_index: HashMap<String, usize>,
     albums: Vec<Album>,
+    album_index: HashMap<String, usize>,
     artists: Vec<Artist>,
     playlists: Vec<Playlist>,
     smart_playlists: Vec<SmartPlaylist>,
+    smart_matches: HashMap<i64, Vec<String>>,
     saved_queues: Vec<SavedQueue>,
     stats: HashMap<String, TrackStats>,
     added_at: HashMap<String, i64>,
@@ -439,9 +441,11 @@ async fn run_inner(
         tracks: Vec::new(),
         track_index: HashMap::new(),
         albums: Vec::new(),
+        album_index: HashMap::new(),
         artists: Vec::new(),
         playlists: Vec::new(),
         smart_playlists: Vec::new(),
+        smart_matches: HashMap::new(),
         saved_queues: Vec::new(),
         stats: HashMap::new(),
         added_at: HashMap::new(),
@@ -627,6 +631,12 @@ impl App {
             .map(|(i, t)| (t.id.clone(), i))
             .collect();
         self.albums = group_albums(&self.tracks);
+        self.album_index = self
+            .albums
+            .iter()
+            .enumerate()
+            .map(|(index, album)| (album.key.clone(), index))
+            .collect();
         self.artists = group_artists(&self.tracks);
         self.genres = group_genres(&self.tracks);
         self.playlists = self.db.load_playlists()?;
@@ -635,6 +645,23 @@ impl App {
         self.stats = self.db.load_track_stats()?;
         self.added_at = self.db.load_added_at()?;
         self.history = self.db.load_history(500)?;
+        let now = chrono::Utc::now().timestamp();
+        self.smart_matches = self
+            .smart_playlists
+            .iter()
+            .map(|playlist| {
+                (
+                    playlist.id,
+                    evaluate_smart_playlist(
+                        playlist,
+                        &self.tracks,
+                        &self.stats,
+                        &self.added_at,
+                        now,
+                    ),
+                )
+            })
+            .collect();
         self.refresh_artist_releases();
         if self.view == View::AlbumDetail && self.opened_album().is_none() {
             self.view = self.album_parent_view;
@@ -967,13 +994,18 @@ impl App {
     }
 
     fn evaluate_smart(&self, playlist: &SmartPlaylist) -> Vec<String> {
-        evaluate_smart_playlist(
-            playlist,
-            &self.tracks,
-            &self.stats,
-            &self.added_at,
-            chrono::Utc::now().timestamp(),
-        )
+        self.smart_matches
+            .get(&playlist.id)
+            .cloned()
+            .unwrap_or_else(|| {
+                evaluate_smart_playlist(
+                    playlist,
+                    &self.tracks,
+                    &self.stats,
+                    &self.added_at,
+                    chrono::Utc::now().timestamp(),
+                )
+            })
     }
 
     fn smart_track_ids(&self) -> Vec<String> {
@@ -1015,7 +1047,7 @@ impl App {
         if self.view == View::ArtistDetail {
             self.artist_release_keys
                 .iter()
-                .filter_map(|key| self.albums.iter().position(|album| &album.key == key))
+                .filter_map(|key| self.album_index.get(key).copied())
                 .collect()
         } else {
             (0..self.albums.len()).collect()
@@ -1023,8 +1055,13 @@ impl App {
     }
 
     fn selected_album(&self) -> Option<&Album> {
-        let index = self.visible_album_indices().get(self.selected).copied()?;
-        self.albums.get(index)
+        if self.view == View::ArtistDetail {
+            let key = self.artist_release_keys.get(self.selected)?;
+            let index = self.album_index.get(key).copied()?;
+            self.albums.get(index)
+        } else {
+            self.albums.get(self.selected)
+        }
     }
 
     fn refresh_artist_releases(&mut self) {
