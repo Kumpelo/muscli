@@ -17,6 +17,7 @@ pub struct SearchIndex {
 
 impl SearchIndex {
     pub fn build(tracks: &[Track]) -> Self {
+        let _profile = crate::profiling::span("search_index_build");
         Self {
             fields: tracks
                 .iter()
@@ -33,6 +34,7 @@ impl SearchIndex {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<usize> {
+        let _profile = crate::profiling::span("fuzzy_search");
         let query = fold(query.trim());
         if query.is_empty() {
             return Vec::new();

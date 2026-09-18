@@ -281,6 +281,7 @@ impl Database {
         label: &str,
         tracks: &[ScannedTrack],
     ) -> Result<Vec<(String, String)>> {
+        let _profile = crate::profiling::span("db_upsert_scan");
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO sources(id, root, label, available, last_scan) VALUES(?1, ?2, ?3, 1, unixepoch())
@@ -411,6 +412,7 @@ impl Database {
         source_id: &str,
         seen_paths: &BTreeSet<String>,
     ) -> Result<usize> {
+        let _profile = crate::profiling::span("db_prune_missing_for_source");
         let stale = {
             let mut stmt = self.conn.prepare(
                 "SELECT id,relative_path FROM tracks WHERE source_id=?1 AND available=0",
@@ -637,6 +639,7 @@ impl Database {
     }
 
     pub fn load_playlists(&self) -> Result<Vec<Playlist>> {
+        let _profile = crate::profiling::span("db_load_playlists");
         let mut stmt = self.conn.prepare(
             "SELECT p.id, p.name, pt.track_id
              FROM playlists p

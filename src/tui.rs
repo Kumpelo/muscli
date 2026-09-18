@@ -621,6 +621,7 @@ async fn run_inner(
 
 impl App {
     fn reload_library(&mut self) -> Result<()> {
+        let _profile = crate::profiling::span("reload_library");
         self.tracks = self.db.load_tracks()?;
         self.search_index = SearchIndex::build(&self.tracks);
         self.refresh_search();
