@@ -632,14 +632,23 @@ impl Database {
             let track = row_to_track(row)?;
             let added_at = row.get::<_, i64>(16)?;
             let stats_id = row.get::<_, Option<String>>(17)?;
-            let stats = stats_id.map(|track_id| TrackStats {
-                track_id,
-                play_count: row.get::<_, Option<i64>>(18)?.unwrap_or_default().max(0) as u64,
-                total_listen_ms: row.get::<_, Option<i64>>(19)?.unwrap_or_default().max(0) as u64,
-                last_played_at: row.get::<_, Option<i64>>(20)?,
-                resume_position_ms: row.get::<_, Option<i64>>(21)?.unwrap_or_default().max(0)
-                    as u64,
-            });
+            let stats = if let Some(track_id) = stats_id {
+                Some(TrackStats {
+                    track_id,
+                    play_count: row.get::<_, Option<i64>>(18)?.unwrap_or_default().max(0) as u64,
+                    total_listen_ms: row
+                        .get::<_, Option<i64>>(19)?
+                        .unwrap_or_default()
+                        .max(0) as u64,
+                    last_played_at: row.get::<_, Option<i64>>(20)?,
+                    resume_position_ms: row
+                        .get::<_, Option<i64>>(21)?
+                        .unwrap_or_default()
+                        .max(0) as u64,
+                })
+            } else {
+                None
+            };
             Ok((track, added_at, stats))
         })?;
 
