@@ -35,9 +35,7 @@ use crate::{
     discord::DiscordPresence,
     features::{Genre, SearchIndex, evaluate_smart_playlist, group_genres},
     instance::InstanceGuard,
-    library::{
-        prune_cover_cache, prune_unreferenced_covers, scan_source_with_database,
-    },
+    library::{prune_cover_cache, prune_unreferenced_covers, scan_source_with_database},
     model::{
         Album, Artist, HistoryEntry, PlaybackState, PlaybackStatus, PlayerAction, PlayerEvent,
         Playlist, RepeatMode, SavedPlayback, SavedQueue, SmartPlaylist, SmartRule, Track,
