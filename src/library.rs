@@ -1,8 +1,12 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    thread,
     time::UNIX_EPOCH,
 };
 
@@ -45,16 +49,114 @@ pub struct SourceScan {
     pub errors: Vec<String>,
 }
 
+/// How a scan should be carried out.
+#[derive(Debug, Clone, Copy)]
+pub struct ScanOptions {
+    /// Worker threads for tag and artwork reading. `0` derives a value from the
+    /// machine. More is not always better: on a spinning disk or a USB stick,
+    /// too many readers spend their time seeking rather than reading.
+    pub threads: usize,
+    pub cover_cache_bytes: u64,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            threads: 0,
+            cover_cache_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+/// Below this many files, scanning stays on the calling thread: spawning costs
+/// more than it saves.
+const PARALLEL_THRESHOLD: usize = 64;
+
+/// Past this, extra readers contend for the same device more than they help.
+const MAX_SCAN_THREADS: usize = 8;
+
+/// Files claimed per trip to the shared cursor.
+///
+/// A compromise between two opposite pressures, both measured. Claiming one at
+/// a time makes the atomic cost more than the work on a rescan, where nearly
+/// every file is dismissed after a single stat. Claiming many unbalances a cold
+/// scan instead: neighbouring files share album art, so a large batch hands one
+/// thread every expensive decode while the others idle.
+const CLAIM_BATCH: usize = 4;
+
+fn worker_count(configured: usize, work: usize) -> usize {
+    if work < PARALLEL_THRESHOLD {
+        return 1;
+    }
+    let requested = if configured == 0 {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZero::get)
+            .min(MAX_SCAN_THREADS)
+    } else {
+        configured
+    };
+    requested.clamp(1, work)
+}
+
+/// What the scanner decided about one file.
+enum ScanOutcome {
+    /// Fingerprint matched and the row is already correct; nothing to write.
+    Unchanged,
+    /// Fingerprint matched but the row was marked unavailable, so the file has
+    /// come back (a drive was reconnected) and only needs reactivating.
+    Reactivated(Box<ScannedTrack>),
+    /// New or modified; tags and artwork were read.
+    Updated(Box<ScannedTrack>),
+    Failed {
+        relative: String,
+        error: String,
+    },
+}
+
+/// Work shared between scan threads.
+///
+/// Each cache turns a repeated expensive operation into a lookup: decoding the
+/// same embedded artwork once per album rather than once per track, listing a
+/// directory for an external cover once, and validating a cached cover once.
+/// The lock is only held around the lookup and the insert, never around the
+/// decode, so threads duplicating work on a race is possible and harmless -
+/// the same key always yields the same file.
+#[derive(Default)]
+struct ScanCaches {
+    artwork: Mutex<HashMap<String, Option<PathBuf>>>,
+    external_cover: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
+    cover_validity: Mutex<HashMap<PathBuf, bool>>,
+}
+
+impl ScanCaches {
+    fn cover_is_valid(&self, cover: &Path) -> bool {
+        if let Some(known) = self
+            .cover_validity
+            .lock()
+            .expect("scan cache poisoned")
+            .get(cover)
+        {
+            return *known;
+        }
+        let valid = cached_cover_is_valid(cover);
+        self.cover_validity
+            .lock()
+            .expect("scan cache poisoned")
+            .insert(cover.to_path_buf(), valid);
+        valid
+    }
+}
+
 pub fn scan_to_database(
     db: &mut Database,
     paths: &AppPaths,
     roots: &[PathBuf],
-    cover_cache_bytes: u64,
+    options: ScanOptions,
 ) -> Result<ScanReport> {
     let mut report = ScanReport::default();
     let mut ids = BTreeSet::new();
     for root in roots {
-        match scan_source_with_database(paths, root, db) {
+        match scan_source_with_database(paths, root, db, options.threads) {
             Ok(scan) => {
                 ids.insert(scan.id.clone());
                 report.sources += 1;
@@ -75,28 +177,30 @@ pub fn scan_to_database(
     }
     let _ = db.mark_missing_sources(&ids)?;
     prune_unreferenced_covers(&paths.cover_cache_dir(), &db.referenced_cover_paths()?)?;
-    let removed = prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes)?;
+    let removed = prune_cover_cache(&paths.cover_cache_dir(), options.cover_cache_bytes)?;
     db.clear_cover_paths(&removed)?;
     Ok(report)
 }
 
-pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
+pub fn scan_source(paths: &AppPaths, root: &Path, threads: usize) -> Result<SourceScan> {
     let database = Database::open(&paths.database_file()).ok();
-    scan_source_inner(paths, root, database.as_ref())
+    scan_source_inner(paths, root, database.as_ref(), threads)
 }
 
 pub fn scan_source_with_database(
     paths: &AppPaths,
     root: &Path,
     database: &Database,
+    threads: usize,
 ) -> Result<SourceScan> {
-    scan_source_inner(paths, root, Some(database))
+    scan_source_inner(paths, root, Some(database), threads)
 }
 
 fn scan_source_inner(
     paths: &AppPaths,
     root: &Path,
     database: Option<&Database>,
+    threads: usize,
 ) -> Result<SourceScan> {
     let _profile = crate::profiling::span("scan_source");
     let root = root
@@ -108,12 +212,22 @@ fn scan_source_inner(
         .unwrap_or("Music")
         .to_owned();
     let id = source_id(&root);
-    let mut cached = database
+    let cached = database
         .and_then(|db| db.scan_cache(&id).ok())
         .unwrap_or_default();
-    let mut cover_validity = HashMap::<PathBuf, bool>::new();
-    let mut artwork_cache = HashMap::<String, Option<PathBuf>>::new();
-    let mut external_cover_cache = HashMap::<PathBuf, Option<PathBuf>>::new();
+
+    // Creating the cover directory once, rather than on every cached cover.
+    fs::create_dir_all(paths.cover_cache_dir()).ok();
+
+    // Phase 1: walk the tree. Cheap, and it fixes the order everything else
+    // reports in, so results stay identical run to run.
+    let candidates = collect_candidates(&root);
+
+    // Phase 2: read tags and artwork, in parallel when it is worth it.
+    let caches = ScanCaches::default();
+    let outcomes = read_candidates(paths, &id, &root, &candidates, &cached, &caches, threads);
+
+    // Phase 3: fold the outcomes back together in walk order.
     let mut scan = SourceScan {
         id: id.clone(),
         root: root.clone(),
@@ -125,72 +239,169 @@ fn scan_source_inner(
         skipped: 0,
         errors: Vec::new(),
     };
-
-    for entry in WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        if !entry.file_type().is_file()
-            || !entry
-                .path()
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("flac"))
-        {
-            continue;
-        }
-        let relative = entry
-            .path()
-            .strip_prefix(&root)
-            .unwrap_or(entry.path())
-            .to_string_lossy()
-            .into_owned();
-        let fingerprint = file_fingerprint(entry.path());
-        let cached_item = cached.remove(&relative);
-        let unchanged = fingerprint.and_then(|(size, modified)| {
-            cached_item.filter(|item| {
-                item.file_size == size
-                    && item.modified_ns == modified
-                    && item.track.cover_path.as_deref().is_none_or(|cover| {
-                        *cover_validity
-                            .entry(cover.to_path_buf())
-                            .or_insert_with(|| cached_cover_is_valid(cover))
-                    })
-            })
-        });
-        if let Some(mut item) = unchanged {
-            scan.track_count += 1;
-            if !item.track.available {
-                item.track.path = entry.path().to_path_buf();
-                item.track.available = true;
-                scan.tracks.push(item);
-            }
-            continue;
-        }
-
-        match read_track(
-            paths,
-            &id,
-            &root,
-            entry.path(),
-            fingerprint,
-            &mut artwork_cache,
-            &mut external_cover_cache,
-        ) {
-            Ok(track) => {
+    for outcome in outcomes {
+        match outcome {
+            ScanOutcome::Unchanged => scan.track_count += 1,
+            ScanOutcome::Reactivated(item) | ScanOutcome::Updated(item) => {
                 scan.track_count += 1;
-                scan.tracks.push(track);
+                scan.tracks.push(*item);
             }
-            Err(error) => {
+            ScanOutcome::Failed { relative, error } => {
                 scan.failed_paths.insert(relative);
                 scan.skipped += 1;
-                scan.errors
-                    .push(format!("{}: {error:#}", entry.path().display()));
+                scan.errors.push(error);
             }
         }
     }
-    scan.missing_track_ids = cached.into_values().map(|item| item.track.id).collect();
+
+    // Anything the database knew about that the walk did not find is gone.
+    // Computed as a set difference rather than by draining `cached`, so the
+    // readers above can share it immutably.
+    let seen: HashSet<&str> = candidates
+        .iter()
+        .map(|(_, relative)| relative.as_str())
+        .collect();
+    scan.missing_track_ids = cached
+        .iter()
+        .filter(|(relative, _)| !seen.contains(relative.as_str()))
+        .map(|(_, item)| item.track.id.clone())
+        .collect();
+
     Ok(scan)
+}
+
+fn collect_candidates(root: &Path) -> Vec<(PathBuf, String)> {
+    WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("flac"))
+        })
+        .map(|entry| {
+            let relative = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .into_owned();
+            (entry.path().to_path_buf(), relative)
+        })
+        .collect()
+}
+
+fn read_candidates(
+    paths: &AppPaths,
+    source_id: &str,
+    root: &Path,
+    candidates: &[(PathBuf, String)],
+    cached: &HashMap<String, ScannedTrack>,
+    caches: &ScanCaches,
+    threads: usize,
+) -> Vec<ScanOutcome> {
+    let workers = worker_count(threads, candidates.len());
+    if workers <= 1 {
+        return candidates
+            .iter()
+            .map(|(path, relative)| {
+                read_candidate(paths, source_id, root, path, relative, cached, caches)
+            })
+            .collect();
+    }
+
+    // A shared cursor rather than fixed slices: per-file cost varies enormously
+    // (a track with 2 MB of embedded art against one with none), so static
+    // partitioning would leave threads idle.
+    //
+    // Claims are batched because the cheap case dominates the common one. On a
+    // rescan almost every file is dismissed by its fingerprint after one stat,
+    // and taking the cursor once per file made the atomic traffic cost more
+    // than the work itself - four threads came out slower than one. A small
+    // batch amortises that away while still balancing the expensive files.
+    let cursor = AtomicUsize::new(0);
+    let mut collected: Vec<Vec<(usize, ScanOutcome)>> = thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut local = Vec::new();
+                    loop {
+                        let start = cursor.fetch_add(CLAIM_BATCH, Ordering::Relaxed);
+                        if start >= candidates.len() {
+                            break;
+                        }
+                        let end = (start + CLAIM_BATCH).min(candidates.len());
+                        for (offset, (path, relative)) in candidates[start..end].iter().enumerate()
+                        {
+                            local.push((
+                                start + offset,
+                                read_candidate(
+                                    paths, source_id, root, path, relative, cached, caches,
+                                ),
+                            ));
+                        }
+                    }
+                    local
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
+
+    // Reassemble in walk order so the result does not depend on thread timing.
+    let mut ordered: Vec<Option<ScanOutcome>> = (0..candidates.len()).map(|_| None).collect();
+    for (index, outcome) in collected.drain(..).flatten() {
+        ordered[index] = Some(outcome);
+    }
+    ordered.into_iter().flatten().collect()
+}
+
+fn read_candidate(
+    paths: &AppPaths,
+    source_id: &str,
+    root: &Path,
+    path: &Path,
+    relative: &str,
+    cached: &HashMap<String, ScannedTrack>,
+    caches: &ScanCaches,
+) -> ScanOutcome {
+    let fingerprint = file_fingerprint(path);
+    let unchanged = fingerprint.and_then(|(size, modified)| {
+        cached.get(relative).filter(|item| {
+            item.file_size == size
+                && item.modified_ns == modified
+                && item
+                    .track
+                    .cover_path
+                    .as_deref()
+                    .is_none_or(|cover| caches.cover_is_valid(cover))
+        })
+    });
+    if let Some(item) = unchanged {
+        if item.track.available {
+            return ScanOutcome::Unchanged;
+        }
+        // The file is back after the row was marked unavailable; refresh the
+        // absolute path, which changes when a drive is remounted elsewhere.
+        let mut item = item.clone();
+        item.track.path = path.to_path_buf();
+        item.track.available = true;
+        return ScanOutcome::Reactivated(Box::new(item));
+    }
+
+    match read_track(paths, source_id, root, path, fingerprint, caches) {
+        Ok(track) => ScanOutcome::Updated(Box::new(track)),
+        Err(error) => ScanOutcome::Failed {
+            relative: relative.to_owned(),
+            error: format!("{}: {error:#}", path.display()),
+        },
+    }
 }
 
 fn read_track(
@@ -199,8 +410,7 @@ fn read_track(
     root: &Path,
     path: &Path,
     fingerprint: Option<(u64, i64)>,
-    artwork_cache: &mut HashMap<String, Option<PathBuf>>,
-    external_cover_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+    caches: &ScanCaches,
 ) -> Result<ScannedTrack> {
     let (file_size, modified_ns) = match fingerprint {
         Some(value) => value,
@@ -260,7 +470,7 @@ fn read_track(
     let id = blake3::hash(format!("{source_id}\0{relative}").as_bytes())
         .to_hex()
         .to_string();
-    let cover_path = find_or_cache_cover(paths, tag, path, artwork_cache, external_cover_cache)?;
+    let cover_path = find_or_cache_cover(paths, tag, path, caches)?;
     let duration_ms = tagged
         .properties()
         .duration()
@@ -295,11 +505,10 @@ fn find_or_cache_cover(
     paths: &AppPaths,
     tag: Option<&lofty::tag::Tag>,
     track_path: &Path,
-    artwork_cache: &mut HashMap<String, Option<PathBuf>>,
-    external_cover_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
+    caches: &ScanCaches,
 ) -> Result<Option<PathBuf>> {
     if let Some(picture) = tag.and_then(|tag| tag.pictures().first())
-        && let Some(cached) = cache_cover_data(paths, picture.data(), artwork_cache)?
+        && let Some(cached) = cache_cover_data(paths, picture.data(), caches)?
     {
         return Ok(Some(cached));
     }
@@ -307,7 +516,12 @@ fn find_or_cache_cover(
     let Some(dir) = track_path.parent() else {
         return Ok(None);
     };
-    if let Some(cached) = external_cover_cache.get(dir) {
+    if let Some(cached) = caches
+        .external_cover
+        .lock()
+        .expect("scan cache poisoned")
+        .get(dir)
+    {
         return Ok(cached.clone());
     }
 
@@ -328,12 +542,16 @@ fn find_or_cache_cover(
         let Ok(data) = fs::read(&candidate) else {
             continue;
         };
-        if let Some(cached) = cache_cover_data(paths, &data, artwork_cache)? {
+        if let Some(cached) = cache_cover_data(paths, &data, caches)? {
             found = Some(cached);
             break;
         }
     }
-    external_cover_cache.insert(dir.to_path_buf(), found.clone());
+    caches
+        .external_cover
+        .lock()
+        .expect("scan cache poisoned")
+        .insert(dir.to_path_buf(), found.clone());
     Ok(found)
 }
 
@@ -341,16 +559,21 @@ fn cover_cache_key(data: &[u8]) -> String {
     blake3::hash(data).to_hex().to_string()
 }
 
-fn cache_cover_data(
-    paths: &AppPaths,
-    data: &[u8],
-    artwork_cache: &mut HashMap<String, Option<PathBuf>>,
-) -> Result<Option<PathBuf>> {
+fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Result<Option<PathBuf>> {
     let key = cover_cache_key(data);
-    if let Some(cached) = artwork_cache.get(&key) {
+    if let Some(cached) = caches
+        .artwork
+        .lock()
+        .expect("scan cache poisoned")
+        .get(&key)
+    {
         return Ok(cached.clone());
     }
 
+    // The lock is deliberately not held across decoding and re-encoding, which
+    // is the expensive part. Two threads racing on the same key both do the
+    // work and both write the same bytes to the same place, which is cheaper
+    // than serialising every cover behind one mutex.
     let target = paths.cover_cache_dir().join(format!("{key}.png"));
     let cached = if cached_cover_is_valid(&target) {
         Some(target)
@@ -359,7 +582,11 @@ fn cache_cover_data(
     } else {
         None
     };
-    artwork_cache.insert(key, cached.clone());
+    caches
+        .artwork
+        .lock()
+        .expect("scan cache poisoned")
+        .insert(key, cached.clone());
     Ok(cached)
 }
 

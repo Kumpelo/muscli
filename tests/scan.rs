@@ -11,12 +11,15 @@ use std::{fs, path::PathBuf};
 
 use muscli::{
     db::Database,
-    library::{prune_cover_cache, scan_source_with_database, scan_to_database},
+    library::{ScanOptions, prune_cover_cache, scan_source_with_database, scan_to_database},
 };
 
 use common::{Fixture, TrackSpec, png_bytes, write_track};
 
-const CACHE_LIMIT: u64 = 64 * 1024 * 1024;
+const OPTIONS: ScanOptions = ScanOptions {
+    threads: 0,
+    cover_cache_bytes: 64 * 1024 * 1024,
+};
 
 fn open_db(fixture: &Fixture) -> Database {
     Database::open(&fixture.paths().database_file()).expect("opening the test database")
@@ -24,7 +27,7 @@ fn open_db(fixture: &Fixture) -> Database {
 
 fn scan(fixture: &Fixture, db: &mut Database) -> muscli::library::ScanReport {
     let roots = vec![fixture.source()];
-    scan_to_database(db, fixture.paths(), &roots, CACHE_LIMIT).expect("scanning the test source")
+    scan_to_database(db, fixture.paths(), &roots, OPTIONS).expect("scanning the test source")
 }
 
 fn titles(db: &Database) -> Vec<String> {
@@ -102,7 +105,7 @@ fn rescanning_an_unchanged_library_rewrites_nothing() {
 
     // A second pass must recognise both files through the fingerprint cache and
     // hand the database nothing to write.
-    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db)
+    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db, 0)
         .expect("rescanning the source");
     assert_eq!(second.track_count, 2, "both files should still be counted");
     assert!(
@@ -129,7 +132,7 @@ fn touching_one_file_reindexes_only_that_file() {
     // Rewrite one file with different tags; its size and mtime both move.
     write_track(&changed, &TrackSpec::new("After").millis(700));
 
-    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db)
+    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db, 0)
         .expect("rescanning the source");
     assert_eq!(
         second.tracks.len(),
@@ -394,8 +397,8 @@ fn a_second_source_is_indexed_independently() {
 
     let mut db = open_db(&fixture);
     let roots: Vec<PathBuf> = vec![fixture.source(), other];
-    let report = scan_to_database(&mut db, fixture.paths(), &roots, CACHE_LIMIT)
-        .expect("scanning both sources");
+    let report =
+        scan_to_database(&mut db, fixture.paths(), &roots, OPTIONS).expect("scanning both sources");
 
     assert_eq!(report.sources, 2);
     assert_eq!(report.tracks, 2);
@@ -426,5 +429,84 @@ fn pruning_leaves_in_flight_cover_writes_alone() {
     assert!(
         scratch.exists(),
         "the budget pass must skip scratch files too"
+    );
+}
+
+#[test]
+fn one_thread_and_four_threads_produce_identical_results() {
+    // The contract the parallel scanner has to keep. Results are reassembled in
+    // walk order, so thread count must not change what is indexed, in what
+    // order, or what the report says.
+    let run = |threads: usize| {
+        let fixture = Fixture::new();
+        // Comfortably over the threshold below which scanning stays serial.
+        for index in 0..120 {
+            let mut spec = TrackSpec::new(&format!("Track {index:03}"))
+                .artist(&format!("Artist {:02}", index % 7))
+                .album(&format!("Album {:02}", index % 11))
+                .track_number((index % 12) as u32 + 1)
+                .millis(48);
+            if index % 4 == 0 {
+                // Shared artwork across several tracks, to exercise the
+                // content-keyed cover cache under contention.
+                let shade = (index % 3) as u8;
+                spec = spec.cover(png_bytes(64, 64, [shade * 40, 100, 200]));
+            }
+            write_track(
+                &fixture
+                    .source()
+                    .join(format!("Artist {:02}/{index:03}.flac", index % 7)),
+                &spec,
+            );
+        }
+        // One unreadable file, so the failure path is exercised in parallel too.
+        fs::write(fixture.source().join("broken.flac"), b"not a FLAC stream")
+            .expect("writing the broken fixture");
+
+        let mut db =
+            Database::open(&fixture.paths().database_file()).expect("opening the database");
+        let roots = vec![fixture.source()];
+        let report = scan_to_database(
+            &mut db,
+            fixture.paths(),
+            &roots,
+            ScanOptions {
+                threads,
+                cover_cache_bytes: 64 * 1024 * 1024,
+            },
+        )
+        .expect("scanning the test source");
+
+        let rows: Vec<(String, String, String, bool)> = db
+            .load_tracks()
+            .expect("loading tracks")
+            .into_iter()
+            .map(|track| {
+                (
+                    track.album_artist,
+                    track.album,
+                    track.title,
+                    track.cover_path.is_some(),
+                )
+            })
+            .collect();
+        let covers = fixture.cover_cache_files().len();
+        (
+            report.tracks,
+            report.skipped,
+            report.errors.len(),
+            rows,
+            covers,
+        )
+    };
+
+    let serial = run(1);
+    let parallel = run(4);
+
+    assert_eq!(serial.0, 120, "every readable fixture should be indexed");
+    assert_eq!(serial.1, 1, "and the broken one skipped");
+    assert_eq!(
+        serial, parallel,
+        "scanning with four threads must produce exactly what one thread does"
     );
 }
