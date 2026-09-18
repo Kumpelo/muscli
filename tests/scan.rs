@@ -510,3 +510,104 @@ fn one_thread_and_four_threads_produce_identical_results() {
         "scanning with four threads must produce exactly what one thread does"
     );
 }
+
+#[test]
+fn cached_covers_are_stored_compactly() {
+    // The cover cache lives inside a fixed byte budget, so the encoding decides
+    // how many albums fit before eviction starts. Album art is photographic, so
+    // lossless storage buys nothing visible at 512 px.
+    let fixture = Fixture::new();
+    // A smooth gradient stands in for a photograph. High-frequency noise would
+    // be adversarial for JPEG and equally bad for PNG, proving nothing.
+    let mut art = image::RgbImage::new(700, 700);
+    for (x, y, pixel) in art.enumerate_pixels_mut() {
+        *pixel = image::Rgb([
+            (x * 255 / 700) as u8,
+            (y * 255 / 700) as u8,
+            ((x + y) * 255 / 1400) as u8,
+        ]);
+    }
+    let source = image::DynamicImage::ImageRgb8(art);
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    source
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .expect("encoding the source artwork");
+
+    write_track(
+        &fixture.source().join("art.flac"),
+        &TrackSpec::new("Art").cover(encoded.into_inner()),
+    );
+
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+
+    let covers = fixture.cover_cache_files();
+    assert_eq!(covers.len(), 1);
+    assert_eq!(
+        covers[0].extension().and_then(|e| e.to_str()),
+        Some("jpg"),
+        "new covers should be cached as JPEG"
+    );
+
+    // Compare against the same thumbnail stored losslessly, rather than against
+    // an absolute size that would depend on the choice of test image.
+    let mut lossless = std::io::Cursor::new(Vec::new());
+    source
+        .thumbnail(512, 512)
+        .write_to(&mut lossless, image::ImageFormat::Png)
+        .expect("encoding a lossless thumbnail");
+    let png_bytes_len = lossless.into_inner().len() as u64;
+    let cached_bytes = fixture.cover_cache_bytes();
+
+    assert!(
+        cached_bytes * 3 < png_bytes_len,
+        "the cached cover should be far smaller than the lossless equivalent: \
+         {cached_bytes} vs {png_bytes_len}"
+    );
+
+    // Downscaling still happens, whatever the container.
+    let (width, height) = image::image_dimensions(&covers[0]).expect("reading the cached cover");
+    assert!(width <= 512 && height <= 512, "got {width}x{height}");
+}
+
+#[test]
+fn covers_cached_by_an_older_version_are_reused_not_replaced() {
+    // Switching the cache format must not orphan an existing cache. PNGs
+    // written by earlier builds decode perfectly well, so an upgrade should
+    // keep using them rather than re-encoding every album on the next scan.
+    let fixture = Fixture::new();
+    let artwork = png_bytes(96, 96, [12, 34, 56]);
+    write_track(
+        &fixture.source().join("one.flac"),
+        &TrackSpec::new("One").cover(artwork.clone()),
+    );
+
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    // Rebuild the entry as an older build would have left it: the same
+    // content-derived key, but genuine PNG bytes under a .png name.
+    let cached = fixture.cover_cache_files().remove(0);
+    let legacy = cached.with_extension("png");
+    fs::write(&legacy, png_bytes(96, 96, [12, 34, 56]))
+        .expect("writing a cache entry in the old format");
+    fs::remove_file(&cached).expect("removing the new-format entry");
+
+    // Rescan from an empty index, which is what an upgraded build sees: a cover
+    // cache full of PNGs and no rows pointing anywhere yet.
+    drop(db);
+    fs::remove_file(fixture.paths().database_file()).expect("clearing the index");
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+
+    assert!(legacy.exists(), "an existing PNG cover must be reused");
+    assert_eq!(
+        fixture.cover_cache_files(),
+        std::slice::from_ref(&legacy),
+        "no duplicate should be written alongside it"
+    );
+    assert_eq!(
+        db.load_tracks().expect("loading tracks")[0].cover_path,
+        Some(legacy),
+        "and the row should point at the cover that was kept"
+    );
+}

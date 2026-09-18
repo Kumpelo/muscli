@@ -1189,10 +1189,13 @@ impl Database {
     ) -> Result<Option<ReplayGainAnalysis>> {
         if album_mode {
             let mut stmt = self.conn.prepare(
+                // COLLATE NOCASE rather than lower(): lower() on both sides
+                // makes the comparison opaque to the index, turning every
+                // track load into a full join over the library.
                 "SELECT peer.gain_db,peer.true_peak_db,peer.duration_ms
                  FROM tracks current JOIN tracks peer
-                   ON lower(peer.album)=lower(current.album)
-                  AND lower(peer.album_artist)=lower(current.album_artist)
+                   ON peer.album=current.album COLLATE NOCASE
+                  AND peer.album_artist=current.album_artist COLLATE NOCASE
                  WHERE current.id=?1 AND peer.gain_db IS NOT NULL",
             )?;
             let rows = stmt
