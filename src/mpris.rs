@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::sync::mpsc::Sender;
+use tokio::sync::mpsc::UnboundedSender;
 
 #[cfg(unix)]
 use anyhow::Result;
@@ -18,7 +18,7 @@ pub struct MprisBridge {
 
 #[cfg(unix)]
 impl MprisBridge {
-    pub async fn new(actions: Sender<PlayerAction>) -> Result<Self> {
+    pub async fn new(actions: UnboundedSender<PlayerAction>) -> Result<Self> {
         let player = Player::builder("muscli")
             .identity("muscli")
             .desktop_entry("muscli")
@@ -75,7 +75,7 @@ impl MprisBridge {
 }
 
 #[cfg(unix)]
-fn connect(player: &Player, actions: &Sender<PlayerAction>) {
+fn connect(player: &Player, actions: &UnboundedSender<PlayerAction>) {
     macro_rules! action {
         ($method:ident, $value:expr) => {{
             let tx = actions.clone();
@@ -151,9 +151,8 @@ fn metadata(track: &Track) -> Metadata {
 
 #[cfg(windows)]
 mod windows_smtc {
-    use std::sync::mpsc::Sender;
-
     use anyhow::Result;
+    use tokio::sync::mpsc::UnboundedSender;
     use windows::{
         Foundation::{TimeSpan, TypedEventHandler},
         Media::Playback::MediaPlayer,
@@ -180,7 +179,7 @@ mod windows_smtc {
     }
 
     impl MprisBridge {
-        pub async fn new(actions: Sender<PlayerAction>) -> Result<Self> {
+        pub async fn new(actions: UnboundedSender<PlayerAction>) -> Result<Self> {
             let player = MediaPlayer::new()?;
             let controls = player.SystemMediaTransportControls()?;
             controls.SetIsEnabled(true)?;

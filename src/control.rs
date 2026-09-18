@@ -5,13 +5,13 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver},
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
+use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
 use interprocess::local_socket::{
     GenericFilePath, ListenerNonblockingMode, ListenerOptions, Stream, ToFsName, prelude::*,
 };
@@ -33,7 +33,7 @@ pub struct ControlServer {
 }
 
 impl ControlServer {
-    pub fn start(socket: &Path) -> Result<(Self, Receiver<RemoteCommand>)> {
+    pub fn start(socket: &Path) -> Result<(Self, UnboundedReceiver<RemoteCommand>)> {
         if socket.exists() {
             fs::remove_file(socket).ok();
         }
@@ -48,7 +48,7 @@ impl ControlServer {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = tokio_mpsc::unbounded_channel();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let worker = thread::Builder::new()
