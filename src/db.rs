@@ -754,15 +754,11 @@ impl Database {
         track_id: &str,
         listened_delta_ms: u64,
         position_ms: u64,
+        was_counted: bool,
         count_now: bool,
         completed: bool,
     ) -> Result<()> {
         let tx = self.conn.transaction()?;
-        let was_counted: bool = tx.query_row(
-            "SELECT counted FROM history WHERE id=?1",
-            [history_id],
-            |row| row.get(0),
-        )?;
         tx.execute(
             "UPDATE history SET listened_ms=listened_ms+?2,position_ms=?3,counted=counted OR ?4,completed=completed OR ?5 WHERE id=?1",
             params![history_id, listened_delta_ms.min(i64::MAX as u64) as i64, position_ms.min(i64::MAX as u64) as i64, count_now, completed],
