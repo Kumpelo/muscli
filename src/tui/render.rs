@@ -696,6 +696,16 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn track_viewport(total: usize, selected: usize, area_height: u16) -> std::ops::Range<usize> {
+    let visible_rows = area_height.saturating_sub(1) as usize;
+    if total == 0 || visible_rows == 0 {
+        return 0..0;
+    }
+    let selected = selected.min(total - 1);
+    let first = selected.saturating_sub(visible_rows - 1);
+    first..(first + visible_rows).min(total)
+}
+
 fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let indices: Vec<usize> = match app.view {
         View::Tracks => (0..app.tracks.len()).collect(),
@@ -744,38 +754,45 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
         );
         return;
     }
-    let rows = indices.iter().enumerate().map(|(position, &index)| {
-        let track = &app.tracks[index];
-        let marker = if app
-            .current_track()
-            .is_some_and(|current| current.id == track.id)
-        {
-            "▶"
-        } else if track.favorite {
-            "♥"
-        } else {
-            " "
-        };
-        Row::new(vec![
-            Cell::from(format!(
-                "{marker} {:02}",
-                if app.view == View::Queue {
-                    position + 1
-                } else {
-                    track.track_number as usize
-                }
-            )),
-            Cell::from(track.title.clone()),
-            Cell::from(track.artist.clone()),
-            Cell::from(track.album.clone()),
-            Cell::from(format_duration(track.duration_ms)),
-        ])
-        .style(if track.available {
-            Style::default()
-        } else {
-            Style::default().fg(app.theme.border)
-        })
-    });
+
+    let viewport = track_viewport(indices.len(), app.selected, area.height);
+    let first = viewport.start;
+    let rows = indices[viewport]
+        .iter()
+        .enumerate()
+        .map(|(visible_position, &index)| {
+            let position = first + visible_position;
+            let track = &app.tracks[index];
+            let marker = if app
+                .current_track()
+                .is_some_and(|current| current.id == track.id)
+            {
+                "▶"
+            } else if track.favorite {
+                "♥"
+            } else {
+                " "
+            };
+            Row::new(vec![
+                Cell::from(format!(
+                    "{marker} {:02}",
+                    if app.view == View::Queue {
+                        position + 1
+                    } else {
+                        track.track_number as usize
+                    }
+                )),
+                Cell::from(track.title.as_str()),
+                Cell::from(track.artist.as_str()),
+                Cell::from(track.album.as_str()),
+                Cell::from(format_duration(track.duration_ms)),
+            ])
+            .style(if track.available {
+                Style::default()
+            } else {
+                Style::default().fg(app.theme.border)
+            })
+        });
     let widths = [
         Constraint::Length(5),
         Constraint::Percentage(32),
@@ -783,7 +800,8 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Constraint::Percentage(30),
         Constraint::Length(6),
     ];
-    let mut state = TableState::default().with_selected(Some(app.selected));
+    let selected = app.selected.saturating_sub(first);
+    let mut state = TableState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
         Table::new(rows, widths)
             .header(

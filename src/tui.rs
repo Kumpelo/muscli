@@ -2629,6 +2629,16 @@ mod tests {
     }
 
     #[test]
+    fn track_viewport_matches_table_scroll_behavior() {
+        assert_eq!(track_viewport(100, 0, 10), 0..9);
+        assert_eq!(track_viewport(100, 8, 10), 0..9);
+        assert_eq!(track_viewport(100, 9, 10), 1..10);
+        assert_eq!(track_viewport(100, 99, 10), 91..100);
+        assert_eq!(track_viewport(3, 2, 10), 0..3);
+        assert_eq!(track_viewport(3, 2, 1), 0..0);
+    }
+
+    #[test]
     fn grid_navigation_moves_by_columns_and_clamps() {
         assert_eq!(shifted_index(2, 4, 10), 6);
         assert_eq!(shifted_index(2, -4, 10), 0);
