@@ -103,24 +103,42 @@ fn fuzzy_score(value: &str, query: &str) -> Option<usize> {
 pub fn evaluate_smart_playlist(
     playlist: &SmartPlaylist,
     tracks: &[Track],
+    search_index: &SearchIndex,
     stats: &HashMap<String, TrackStats>,
     added_at: &HashMap<String, i64>,
     now: i64,
 ) -> Vec<String> {
+    let folded_rule_values = playlist
+        .rules
+        .iter()
+        .map(|rule| rule.value.as_str().map(fold))
+        .collect::<Vec<_>>();
     let mut matching = tracks
         .iter()
-        .filter(|track| {
-            let mut values = playlist
-                .rules
-                .iter()
-                .map(|rule| rule_matches(rule, track, stats.get(&track.id), added_at, now));
+        .enumerate()
+        .filter(|(track_index, track)| {
+            let mut values = playlist.rules.iter().enumerate().map(|(rule_index, rule)| {
+                rule_matches(
+                    rule,
+                    folded_rule_values[rule_index].as_deref(),
+                    *track_index,
+                    track,
+                    search_index,
+                    stats.get(&track.id),
+                    added_at,
+                    now,
+                )
+            });
             match playlist.match_mode {
                 SmartMatch::All => values.all(std::convert::identity),
                 SmartMatch::Any => values.any(std::convert::identity),
             }
         })
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    matching.sort_by(|left, right| {
+    matching.sort_by(|&left_index, &right_index| {
+        let left = &tracks[left_index];
+        let right = &tracks[right_index];
         let order = match playlist.sort_field.as_str() {
             "added_at" => added_at.get(&left.id).cmp(&added_at.get(&right.id)),
             "last_played" => stats
@@ -132,7 +150,7 @@ pub fn evaluate_smart_playlist(
                 .map_or(0, |value| value.play_count)
                 .cmp(&stats.get(&right.id).map_or(0, |value| value.play_count)),
             "duration" => left.duration_ms.cmp(&right.duration_ms),
-            _ => fold(&left.title).cmp(&fold(&right.title)),
+            _ => search_index.fields[left_index][0].cmp(&search_index.fields[right_index][0]),
         };
         if playlist.descending {
             order.reverse()
@@ -143,23 +161,29 @@ pub fn evaluate_smart_playlist(
     if let Some(limit) = playlist.limit {
         matching.truncate(limit);
     }
-    matching.into_iter().map(|track| track.id.clone()).collect()
+    matching
+        .into_iter()
+        .map(|index| tracks[index].id.clone())
+        .collect()
 }
 
 fn rule_matches(
     rule: &SmartRule,
+    folded_string: Option<&str>,
+    track_index: usize,
     track: &Track,
+    search_index: &SearchIndex,
     stats: Option<&TrackStats>,
     added_at: &HashMap<String, i64>,
     now: i64,
 ) -> bool {
-    let string = rule.value.as_str().unwrap_or_default();
     let number = rule.value.as_i64().unwrap_or_default();
+    let string = folded_string.unwrap_or_default();
     match (rule.field.as_str(), rule.operator.as_str()) {
-        ("title", "contains") => fold(&track.title).contains(&fold(string)),
-        ("artist", "contains") => fold(&track.artist).contains(&fold(string)),
-        ("album", "contains") => fold(&track.album).contains(&fold(string)),
-        ("genre", "contains") => fold(&track.genre).contains(&fold(string)),
+        ("title", "contains") => search_index.fields[track_index][0].contains(string),
+        ("artist", "contains") => search_index.fields[track_index][1].contains(string),
+        ("album", "contains") => search_index.fields[track_index][2].contains(string),
+        ("genre", "contains") => search_index.fields[track_index][3].contains(string),
         ("favorite", "is") => track.favorite == rule.value.as_bool().unwrap_or(false),
         ("available", "is") => track.available == rule.value.as_bool().unwrap_or(false),
         ("played", "is") => {
@@ -280,7 +304,14 @@ mod tests {
             limit: None,
         };
         assert_eq!(
-            evaluate_smart_playlist(&playlist, &tracks, &HashMap::new(), &HashMap::new(), 0),
+            evaluate_smart_playlist(
+                &playlist,
+                &tracks,
+                &SearchIndex::build(&tracks),
+                &HashMap::new(),
+                &HashMap::new(),
+                0,
+            ),
             ["one"]
         );
         let any = SmartPlaylist {
@@ -289,7 +320,14 @@ mod tests {
             ..playlist
         };
         assert_eq!(
-            evaluate_smart_playlist(&any, &tracks, &HashMap::new(), &HashMap::new(), 0),
+            evaluate_smart_playlist(
+                &any,
+                &tracks,
+                &SearchIndex::build(&tracks),
+                &HashMap::new(),
+                &HashMap::new(),
+                0,
+            ),
             ["one", "three"]
         );
     }
