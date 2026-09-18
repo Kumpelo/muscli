@@ -1,0 +1,16 @@
+pub mod cli;
+pub mod config;
+pub mod control;
+pub mod db;
+pub mod discord;
+pub mod doctor;
+pub mod features;
+pub mod instance;
+pub mod library;
+pub mod model;
+pub mod mpris;
+pub mod omarchy;
+pub mod paths;
+pub mod player;
+pub mod replaygain;
+pub mod tui;
