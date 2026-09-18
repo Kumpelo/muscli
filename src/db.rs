@@ -636,15 +636,11 @@ impl Database {
                 Some(TrackStats {
                     track_id,
                     play_count: row.get::<_, Option<i64>>(18)?.unwrap_or_default().max(0) as u64,
-                    total_listen_ms: row
-                        .get::<_, Option<i64>>(19)?
-                        .unwrap_or_default()
-                        .max(0) as u64,
+                    total_listen_ms: row.get::<_, Option<i64>>(19)?.unwrap_or_default().max(0)
+                        as u64,
                     last_played_at: row.get::<_, Option<i64>>(20)?,
-                    resume_position_ms: row
-                        .get::<_, Option<i64>>(21)?
-                        .unwrap_or_default()
-                        .max(0) as u64,
+                    resume_position_ms: row.get::<_, Option<i64>>(21)?.unwrap_or_default().max(0)
+                        as u64,
                 })
             } else {
                 None
