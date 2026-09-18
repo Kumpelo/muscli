@@ -1,7 +1,6 @@
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    os::unix::net::UnixStream,
     path::Path,
     process::{Child, Command, Stdio},
     sync::{
@@ -13,13 +12,15 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use interprocess::TryClone;
+use interprocess::local_socket::{GenericFilePath, Stream, ToFsName, prelude::*};
 use serde_json::{Value, json};
 
 use crate::model::PlayerEvent;
 
 pub struct MpvPlayer {
     child: Option<Child>,
-    writer: Arc<Mutex<UnixStream>>,
+    writer: Arc<Mutex<Stream>>,
     events: Receiver<PlayerEvent>,
     socket: std::path::PathBuf,
 }
@@ -29,7 +30,7 @@ impl MpvPlayer {
         if socket.exists() {
             fs::remove_file(socket).ok();
         }
-        let mut child = Command::new("mpv")
+        let mut child = Command::new(mpv_binary())
             .arg("--no-config")
             .arg("--terminal=no")
             .arg("--idle=yes")
@@ -42,11 +43,12 @@ impl MpvPlayer {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .context("could not start mpv; install it with `omarchy pkg add mpv`")?;
+            .context(mpv_install_help())?;
 
         let deadline = Instant::now() + Duration::from_secs(3);
         let stream = loop {
-            match UnixStream::connect(socket) {
+            let name = socket.to_fs_name::<GenericFilePath>()?;
+            match Stream::connect(name) {
                 Ok(stream) => break stream,
                 Err(_error) if Instant::now() < deadline => {
                     if child.try_wait()?.is_some() {
@@ -164,6 +166,29 @@ impl MpvPlayer {
     pub fn try_event(&self) -> Option<PlayerEvent> {
         self.events.try_recv().ok()
     }
+}
+
+fn mpv_binary() -> std::path::PathBuf {
+    #[cfg(windows)]
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        let bundled = directory.join("mpv.exe");
+        if bundled.is_file() {
+            return bundled;
+        }
+    }
+    std::path::PathBuf::from("mpv")
+}
+
+#[cfg(unix)]
+fn mpv_install_help() -> &'static str {
+    "could not start mpv; install it with `omarchy pkg add mpv`"
+}
+
+#[cfg(windows)]
+fn mpv_install_help() -> &'static str {
+    "could not start mpv; reinstall muscli or add mpv.exe to PATH"
 }
 
 fn parse_event(value: &Value) -> Option<PlayerEvent> {

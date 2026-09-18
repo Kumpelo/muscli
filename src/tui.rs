@@ -219,9 +219,10 @@ struct CoverState {
     protocol: StatefulProtocol,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiTheme {
     accent: Color,
+    selection: Color,
     foreground: Color,
     background: Color,
     muted: Color,
@@ -232,6 +233,7 @@ impl Default for UiTheme {
     fn default() -> Self {
         Self {
             accent: Color::Magenta,
+            selection: Color::Magenta,
             foreground: Color::White,
             background: Color::Black,
             muted: Color::Gray,
@@ -262,11 +264,14 @@ impl UiTheme {
     }
 
     fn from_file(path: &Path) -> Option<Self> {
-        let value = fs::read_to_string(path).ok()?.parse::<toml::Value>().ok()?;
+        let raw = fs::read_to_string(path).ok()?;
+        let value = toml::from_str::<toml::Value>(&raw).ok()?;
         let color = |key: &str| value.get(key)?.as_str().and_then(parse_hex_color);
         let fallback = Self::default();
+        let accent = color("accent").unwrap_or(fallback.accent);
         Some(Self {
-            accent: color("accent").unwrap_or(fallback.accent),
+            accent,
+            selection: color("selection").unwrap_or(accent),
             foreground: color("foreground").unwrap_or(fallback.foreground),
             background: color("background").unwrap_or(fallback.background),
             muted: color("dark_foreground")
@@ -366,6 +371,7 @@ struct App {
     last_history_tick: Instant,
     last_history_flush: Instant,
     last_playback_save: Instant,
+    last_theme_check: Instant,
 }
 
 pub async fn run(paths: AppPaths, config: Config, compact: bool) -> Result<()> {
@@ -500,6 +506,7 @@ async fn run_inner(
         last_history_tick: Instant::now(),
         last_history_flush: Instant::now(),
         last_playback_save: Instant::now() - Duration::from_secs(5),
+        last_theme_check: Instant::now(),
     };
     app.reload_library()?;
     app.queue.retain(|id| app.track_index.contains_key(id));
@@ -515,6 +522,7 @@ async fn run_inner(
             app.stats
                 .get(&track.id)
                 .map(|stats| stats.resume_position_ms)
+                .filter(|position| *position > 0)
                 .unwrap_or(saved.position_ms)
         } else {
             0
@@ -527,20 +535,7 @@ async fn run_inner(
     app.start_scan();
     app.start_gain_analysis()?;
 
-    let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    for kind in [
-        tokio::signal::unix::SignalKind::interrupt(),
-        tokio::signal::unix::SignalKind::terminate(),
-        tokio::signal::unix::SignalKind::hangup(),
-    ] {
-        let mut signal = tokio::signal::unix::signal(kind)?;
-        let tx = shutdown_tx.clone();
-        tokio::task::spawn_local(async move {
-            let _ = signal.recv().await;
-            let _ = tx.send(());
-        });
-    }
-    drop(shutdown_tx);
+    let shutdown_rx = start_shutdown_listener()?;
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let loop_result: Result<()> = async {
         while !app.should_quit {
@@ -570,6 +565,7 @@ async fn run_inner(
             }
             app.handle_gain_messages()?;
             app.tick_history()?;
+            app.refresh_theme();
             if app.watch_rx.try_recv().is_ok()
                 && !app.scan_running
                 && app.last_scan.elapsed() > Duration::from_secs(2)
@@ -650,6 +646,19 @@ impl App {
         self.selected = self.selected.min(self.item_count().saturating_sub(1));
         self.dirty = true;
         Ok(())
+    }
+
+    fn refresh_theme(&mut self) {
+        if self.last_theme_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.last_theme_check = Instant::now();
+        let theme = UiTheme::load();
+        if theme != self.theme {
+            self.theme = theme;
+            self.status = "Tema de Omarchy actualizado".into();
+            self.dirty = true;
+        }
     }
 
     fn start_scan(&mut self) {
@@ -2265,11 +2274,7 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
 
 fn start_watchers(config: &Config, tx: Sender<()>) {
     let configured = config.sources.clone();
-    let user = std::env::var("USER").unwrap_or_default();
-    let removable = [
-        PathBuf::from("/run/media").join(&user),
-        PathBuf::from("/media").join(&user),
-    ];
+    let removable = crate::config::discover_removable_roots();
     thread::Builder::new()
         .name("muscli-watcher".into())
         .spawn(move || {
@@ -2297,6 +2302,34 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
         .ok();
 }
 
+#[cfg(unix)]
+fn start_shutdown_listener() -> Result<Receiver<()>> {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    for kind in [
+        tokio::signal::unix::SignalKind::interrupt(),
+        tokio::signal::unix::SignalKind::terminate(),
+        tokio::signal::unix::SignalKind::hangup(),
+    ] {
+        let mut signal = tokio::signal::unix::signal(kind)?;
+        let tx = shutdown_tx.clone();
+        tokio::task::spawn_local(async move {
+            let _ = signal.recv().await;
+            let _ = tx.send(());
+        });
+    }
+    Ok(shutdown_rx)
+}
+
+#[cfg(windows)]
+fn start_shutdown_listener() -> Result<Receiver<()>> {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel();
+    tokio::task::spawn_local(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = shutdown_tx.send(());
+    });
+    Ok(shutdown_rx)
+}
+
 /// Mezcla en la firma qué imagen se dibuja y en qué rectángulo.
 fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
     let mut h = DefaultHasher::new();
@@ -2307,6 +2340,15 @@ fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
 
 fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.cover_sig_now = 0;
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(
+            Style::default()
+                .fg(app.theme.foreground)
+                .bg(app.theme.background),
+        ),
+        area,
+    );
     if app.compact {
         draw_compact(frame, app);
         if app.input.is_some() {
@@ -2314,7 +2356,6 @@ fn draw(frame: &mut Frame<'_>, app: &mut App) {
         }
         return;
     }
-    let area = frame.area();
     let rows = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(8),
@@ -2484,8 +2525,8 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).block(block).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent)
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection)
                 .add_modifier(Modifier::BOLD),
         ),
         area,
@@ -2589,8 +2630,8 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent)
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection)
                 .add_modifier(Modifier::BOLD),
         ),
         area,
@@ -2614,8 +2655,8 @@ fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent)
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection)
                 .add_modifier(Modifier::BOLD),
         ),
         area,
@@ -2635,8 +2676,8 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
                         format!("  {title}  "),
                         if index == app.genre_tab {
                             Style::default()
-                                .fg(app.theme.background)
-                                .bg(app.theme.accent)
+                                .fg(app.theme.foreground)
+                                .bg(app.theme.selection)
                         } else {
                             Style::default().fg(app.theme.muted)
                         },
@@ -2671,8 +2712,8 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent),
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection),
         ),
         rows[1],
         &mut state,
@@ -2696,8 +2737,8 @@ fn draw_smart_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent),
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection),
         ),
         area,
         &mut state,
@@ -2763,8 +2804,8 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent),
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection),
         ),
         area,
         &mut state,
@@ -2859,8 +2900,8 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let selected = position == app.selected;
         let style = if selected {
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent)
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection)
         } else {
             Style::default().fg(app.theme.foreground)
         };
@@ -2944,8 +2985,8 @@ fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent)
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection)
                 .add_modifier(Modifier::BOLD),
         ),
         area,
@@ -2978,8 +3019,8 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
-                .fg(app.theme.background)
-                .bg(app.theme.accent)
+                .fg(app.theme.foreground)
+                .bg(app.theme.selection)
                 .add_modifier(Modifier::BOLD),
         ),
         area,
@@ -3086,8 +3127,8 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
             )
             .row_highlight_style(
                 Style::default()
-                    .fg(app.theme.background)
-                    .bg(app.theme.accent)
+                    .fg(app.theme.foreground)
+                    .bg(app.theme.selection)
                     .add_modifier(Modifier::BOLD),
             )
             .highlight_symbol(""),
@@ -3289,8 +3330,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     )
                     .highlight_style(
                         Style::default()
-                            .fg(app.theme.background)
-                            .bg(app.theme.accent),
+                            .fg(app.theme.foreground)
+                            .bg(app.theme.selection),
                     ),
                 area,
                 &mut state,
@@ -3318,8 +3359,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     )
                     .highlight_style(
                         Style::default()
-                            .fg(app.theme.background)
-                            .bg(app.theme.accent),
+                            .fg(app.theme.foreground)
+                            .bg(app.theme.selection),
                     ),
                 area,
                 &mut state,
@@ -3342,8 +3383,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     .block(Block::default().title(" Acciones ").borders(Borders::ALL))
                     .highlight_style(
                         Style::default()
-                            .fg(app.theme.background)
-                            .bg(app.theme.accent),
+                            .fg(app.theme.foreground)
+                            .bg(app.theme.selection),
                     ),
                 area,
                 &mut state,
@@ -3390,8 +3431,8 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                     )
                     .highlight_style(
                         Style::default()
-                            .fg(app.theme.background)
-                            .bg(app.theme.accent),
+                            .fg(app.theme.foreground)
+                            .bg(app.theme.selection),
                     ),
                 area,
                 &mut state,
@@ -3527,6 +3568,21 @@ mod tests {
         assert_eq!(parse_hex_color("#ff2ec1"), Some(Color::Rgb(255, 46, 193)));
         assert_eq!(parse_hex_color("ff2ec1"), None);
         assert_eq!(parse_hex_color("#bad"), None);
+    }
+
+    #[test]
+    fn loads_an_omarchy_colors_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("colors.toml");
+        fs::write(
+            &path,
+            "mode = \"dark\"\naccent = \"#509475\"\nselection = \"#32473B\"\nforeground = \"#C1C497\"\nbackground = \"#111c18\"\nmuted = \"#53685B\"\n",
+        )
+        .unwrap();
+        let theme = UiTheme::from_file(&path).unwrap();
+        assert_eq!(theme.accent, Color::Rgb(80, 148, 117));
+        assert_eq!(theme.selection, Color::Rgb(50, 71, 59));
+        assert_eq!(theme.background, Color::Rgb(17, 28, 24));
     }
 
     #[test]

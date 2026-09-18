@@ -1,15 +1,22 @@
+#[cfg(unix)]
 use std::sync::mpsc::Sender;
 
+#[cfg(unix)]
 use anyhow::Result;
+#[cfg(unix)]
 use mpris_server::{LoopStatus, Metadata, PlaybackStatus as MprisStatus, Player, Time, TrackId};
+#[cfg(unix)]
 use url::Url;
 
+#[cfg(unix)]
 use crate::model::{PlaybackState, PlaybackStatus, PlayerAction, RepeatMode, Track};
 
+#[cfg(unix)]
 pub struct MprisBridge {
     player: Player,
 }
 
+#[cfg(unix)]
 impl MprisBridge {
     pub async fn new(actions: Sender<PlayerAction>) -> Result<Self> {
         let player = Player::builder("muscli")
@@ -67,6 +74,7 @@ impl MprisBridge {
     }
 }
 
+#[cfg(unix)]
 fn connect(player: &Player, actions: &Sender<PlayerAction>) {
     macro_rules! action {
         ($method:ident, $value:expr) => {{
@@ -113,6 +121,7 @@ fn connect(player: &Player, actions: &Sender<PlayerAction>) {
     });
 }
 
+#[cfg(unix)]
 fn metadata(track: &Track) -> Metadata {
     let track_id = TrackId::try_from(format!("/org/muscli/track/{}", track.id)).unwrap_or_default();
     let mut builder = Metadata::builder()
@@ -139,3 +148,153 @@ fn metadata(track: &Track) -> Metadata {
     }
     builder.build()
 }
+
+#[cfg(windows)]
+mod windows_smtc {
+    use std::sync::mpsc::Sender;
+
+    use anyhow::Result;
+    use windows::{
+        Foundation::{TimeSpan, TypedEventHandler},
+        Media::Playback::MediaPlayer,
+        Media::{
+            MediaPlaybackAutoRepeatMode, MediaPlaybackStatus, MediaPlaybackType,
+            PlaybackPositionChangeRequestedEventArgs, SystemMediaTransportControls,
+            SystemMediaTransportControlsButton, SystemMediaTransportControlsButtonPressedEventArgs,
+            SystemMediaTransportControlsTimelineProperties,
+        },
+        core::HSTRING,
+    };
+
+    use crate::model::{PlaybackState, PlaybackStatus, PlayerAction, RepeatMode, Track};
+
+    /// Windows media controls bridge. The first Windows release keeps the
+    /// public surface identical to MPRIS so the TUI and playback core remain
+    /// platform-neutral. SMTC initialization is best-effort: terminals which
+    /// do not expose a window handle still play normally.
+    pub struct MprisBridge {
+        controls: SystemMediaTransportControls,
+        _player: MediaPlayer,
+        button_token: i64,
+        position_token: i64,
+    }
+
+    impl MprisBridge {
+        pub async fn new(actions: Sender<PlayerAction>) -> Result<Self> {
+            let player = MediaPlayer::new()?;
+            let controls = player.SystemMediaTransportControls()?;
+            controls.SetIsEnabled(true)?;
+            controls.SetIsPlayEnabled(true)?;
+            controls.SetIsPauseEnabled(true)?;
+            controls.SetIsStopEnabled(true)?;
+            controls.SetIsNextEnabled(true)?;
+            controls.SetIsPreviousEnabled(true)?;
+
+            let button_actions = actions.clone();
+            let button_token = controls.ButtonPressed(&TypedEventHandler::<
+                SystemMediaTransportControls,
+                SystemMediaTransportControlsButtonPressedEventArgs,
+            >::new(move |_, args| {
+                let Some(args) = args.as_ref() else {
+                    return Ok(());
+                };
+                let action = match args.Button()? {
+                    SystemMediaTransportControlsButton::Play => PlayerAction::Play,
+                    SystemMediaTransportControlsButton::Pause => PlayerAction::Pause,
+                    SystemMediaTransportControlsButton::Stop => PlayerAction::Stop,
+                    SystemMediaTransportControlsButton::Next => PlayerAction::Next,
+                    SystemMediaTransportControlsButton::Previous => PlayerAction::Previous,
+                    _ => return Ok(()),
+                };
+                let _ = button_actions.send(action);
+                Ok(())
+            }))?;
+
+            let position_token = controls.PlaybackPositionChangeRequested(&TypedEventHandler::<
+                SystemMediaTransportControls,
+                PlaybackPositionChangeRequestedEventArgs,
+            >::new(
+                move |_, args| {
+                    if let Some(args) = args.as_ref() {
+                        let ticks = args.RequestedPlaybackPosition()?.Duration.max(0);
+                        let _ = actions.send(PlayerAction::SeekAbsolute((ticks / 10_000) as u64));
+                    }
+                    Ok(())
+                },
+            ))?;
+
+            Ok(Self {
+                controls,
+                _player: player,
+                button_token,
+                position_token,
+            })
+        }
+
+        pub async fn sync(
+            &self,
+            track: Option<&Track>,
+            state: &PlaybackState,
+            shuffle: bool,
+            repeat: RepeatMode,
+            can_previous: bool,
+            can_next: bool,
+        ) -> Result<()> {
+            self.controls.SetPlaybackStatus(match state.status {
+                PlaybackStatus::Playing => MediaPlaybackStatus::Playing,
+                PlaybackStatus::Paused => MediaPlaybackStatus::Paused,
+                PlaybackStatus::Stopped => MediaPlaybackStatus::Stopped,
+            })?;
+            self.controls.SetIsPreviousEnabled(can_previous)?;
+            self.controls.SetIsNextEnabled(can_next)?;
+            self.controls.SetShuffleEnabled(shuffle)?;
+            self.controls.SetAutoRepeatMode(match repeat {
+                RepeatMode::Off => MediaPlaybackAutoRepeatMode::None,
+                RepeatMode::Track => MediaPlaybackAutoRepeatMode::Track,
+                RepeatMode::Queue => MediaPlaybackAutoRepeatMode::List,
+            })?;
+
+            let updater = self.controls.DisplayUpdater()?;
+            updater.SetType(MediaPlaybackType::Music)?;
+            if let Some(track) = track {
+                let music = updater.MusicProperties()?;
+                music.SetTitle(&HSTRING::from(&track.title))?;
+                music.SetArtist(&HSTRING::from(&track.artist))?;
+                music.SetAlbumTitle(&HSTRING::from(&track.album))?;
+            } else {
+                updater.ClearAll()?;
+            }
+            updater.Update()?;
+
+            let timeline = SystemMediaTransportControlsTimelineProperties::new()?;
+            let duration = millis_to_timespan(state.duration_ms);
+            timeline.SetStartTime(TimeSpan { Duration: 0 })?;
+            timeline.SetMinSeekTime(TimeSpan { Duration: 0 })?;
+            timeline.SetEndTime(duration)?;
+            timeline.SetMaxSeekTime(duration)?;
+            timeline.SetPosition(millis_to_timespan(state.position_ms))?;
+            self.controls.UpdateTimelineProperties(&timeline)?;
+            Ok(())
+        }
+    }
+
+    impl Drop for MprisBridge {
+        fn drop(&mut self) {
+            let _ = self.controls.RemoveButtonPressed(self.button_token);
+            let _ = self
+                .controls
+                .RemovePlaybackPositionChangeRequested(self.position_token);
+            let _ = self.controls.SetPlaybackStatus(MediaPlaybackStatus::Closed);
+            let _ = self.controls.SetIsEnabled(false);
+        }
+    }
+
+    fn millis_to_timespan(value: u64) -> TimeSpan {
+        TimeSpan {
+            Duration: value.min(i64::MAX as u64 / 10_000) as i64 * 10_000,
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use windows_smtc::MprisBridge;

@@ -1,3 +1,9 @@
 /target/
 *.swp
-
+/.idea/
+/.vscode/
+/dist/
+*.pdb
+*.exe
+*.7z
+*.zip

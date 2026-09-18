@@ -1,10 +1,6 @@
 use std::{
     fs,
     io::{Read, Write},
-    os::unix::{
-        fs::PermissionsExt,
-        net::{UnixListener, UnixStream},
-    },
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -16,6 +12,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use interprocess::local_socket::{
+    GenericFilePath, ListenerNonblockingMode, ListenerOptions, Stream, ToFsName, prelude::*,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCommand {
@@ -38,10 +37,17 @@ impl ControlServer {
         if socket.exists() {
             fs::remove_file(socket).ok();
         }
-        let listener = UnixListener::bind(socket)
+        let name = socket.to_fs_name::<GenericFilePath>()?;
+        let listener = ListenerOptions::new()
+            .name(name)
+            .nonblocking(ListenerNonblockingMode::Accept)
+            .create_sync()
             .with_context(|| format!("could not bind control socket {}", socket.display()))?;
-        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-        listener.set_nonblocking(true)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+        }
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
@@ -50,7 +56,7 @@ impl ControlServer {
             .spawn(move || {
                 while !thread_stop.load(Ordering::Relaxed) {
                     match listener.accept() {
-                        Ok((mut stream, _)) => {
+                        Ok(mut stream) => {
                             let mut raw = String::new();
                             if stream.read_to_string(&mut raw).is_ok()
                                 && let Some(command) = parse(raw.trim())
@@ -87,7 +93,8 @@ impl Drop for ControlServer {
 }
 
 pub fn send(socket: &Path, command: RemoteCommand) -> Result<bool> {
-    let mut stream = match UnixStream::connect(socket) {
+    let name = socket.to_fs_name::<GenericFilePath>()?;
+    let mut stream = match Stream::connect(name) {
         Ok(stream) => stream,
         Err(error)
             if matches!(
@@ -130,11 +137,32 @@ fn parse(value: &str) -> Option<RemoteCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn parses_remote_volume_commands() {
         assert_eq!(parse("volume up"), Some(RemoteCommand::VolumeUp));
         assert_eq!(parse("volume set 55"), Some(RemoteCommand::VolumeSet(55)));
         assert_eq!(parse("volume set 101"), None);
+    }
+
+    #[test]
+    fn remote_command_round_trip() {
+        #[cfg(unix)]
+        let temporary = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let socket = temporary.path().join("control.sock");
+        #[cfg(windows)]
+        let socket = PathBuf::from(format!(
+            r"\\.\pipe\muscli-test-control-{}",
+            std::process::id()
+        ));
+        let (server, receiver) = ControlServer::start(&socket).unwrap();
+        assert!(send(&socket, RemoteCommand::VolumeSet(45)).unwrap());
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RemoteCommand::VolumeSet(45)
+        );
+        drop(server);
     }
 }

@@ -71,6 +71,9 @@ o.window({ class = "^muscli-compact$" }, {
 "#;
 
 pub fn setup(paths: &AppPaths) -> Result<String> {
+    #[cfg(windows)]
+    anyhow::bail!("Omarchy integration is only available on Linux");
+
     paths.ensure()?;
     let state_path = state_file(paths);
     if state_path.exists() {
@@ -138,6 +141,9 @@ pub fn setup(paths: &AppPaths) -> Result<String> {
 }
 
 pub fn undo(paths: &AppPaths) -> Result<String> {
+    #[cfg(windows)]
+    anyhow::bail!("Omarchy integration is only available on Linux");
+
     let state_path = state_file(paths);
     if !state_path.exists() {
         return Ok("No muscli Omarchy setup record was found; nothing changed.".into());
