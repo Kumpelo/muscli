@@ -683,10 +683,10 @@ impl Database {
                     track_ids: Vec::new(),
                 });
             }
-            if let Some(track_id) = track_id {
-                if let Some(playlist) = out.last_mut() {
-                    playlist.track_ids.push(track_id);
-                }
+            if let Some(track_id) = track_id
+                && let Some(playlist) = out.last_mut()
+            {
+                playlist.track_ids.push(track_id);
             }
         }
         Ok(out)
