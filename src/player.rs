@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver},
+        atomic::{AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -15,13 +15,15 @@ use anyhow::{Context, Result};
 use interprocess::TryClone;
 use interprocess::local_socket::{GenericFilePath, Stream, ToFsName, prelude::*};
 use serde_json::{Value, json};
+use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
 
 use crate::model::PlayerEvent;
 
 pub struct MpvPlayer {
     child: Option<Child>,
     writer: Arc<Mutex<Stream>>,
-    events: Receiver<PlayerEvent>,
+    events: UnboundedReceiver<PlayerEvent>,
+    position_ms: Arc<AtomicU64>,
     socket: std::path::PathBuf,
 }
 
@@ -62,7 +64,9 @@ impl MpvPlayer {
 
         let reader = stream.try_clone()?;
         let writer = Arc::new(Mutex::new(stream));
-        let (tx, events) = mpsc::channel();
+        let (tx, events) = tokio_mpsc::unbounded_channel();
+        let position_ms = Arc::new(AtomicU64::new(0));
+        let event_position_ms = position_ms.clone();
         thread::Builder::new()
             .name("muscli-mpv-events".into())
             .spawn(move || {
@@ -72,7 +76,14 @@ impl MpvPlayer {
                         continue;
                     };
                     if let Some(event) = parse_event(&value) {
-                        let _ = tx.send(event);
+                        match event {
+                            PlayerEvent::Position(value) => {
+                                event_position_ms.store(value, Ordering::Relaxed);
+                            }
+                            event => {
+                                let _ = tx.send(event);
+                            }
+                        }
                     }
                 }
             })?;
@@ -81,6 +92,7 @@ impl MpvPlayer {
             child: Some(child),
             writer,
             events,
+            position_ms,
             socket: socket.to_path_buf(),
         };
         for (id, property) in [
@@ -106,6 +118,7 @@ impl MpvPlayer {
     }
 
     pub fn load(&self, path: &Path, position_ms: u64) -> Result<()> {
+        self.position_ms.store(position_ms, Ordering::Relaxed);
         self.command(json!(["loadfile", path.to_string_lossy(), "replace"]))?;
         if position_ms > 0 {
             self.command(json!([
@@ -127,10 +140,15 @@ impl MpvPlayer {
     }
 
     pub fn seek_relative(&self, seconds: f64) -> Result<()> {
+        let current = self.position_ms.load(Ordering::Relaxed) as i128;
+        let delta = (seconds * 1000.0) as i128;
+        self.position_ms
+            .store((current + delta).max(0).min(u64::MAX as i128) as u64, Ordering::Relaxed);
         self.command(json!(["seek", seconds, "relative", "exact"]))
     }
 
     pub fn seek_absolute_ms(&self, position_ms: u64) -> Result<()> {
+        self.position_ms.store(position_ms, Ordering::Relaxed);
         self.command(json!([
             "seek",
             position_ms as f64 / 1000.0,
@@ -160,11 +178,20 @@ impl MpvPlayer {
     }
 
     pub fn stop(&self) -> Result<()> {
+        self.position_ms.store(0, Ordering::Relaxed);
         self.command(json!(["stop"]))
     }
 
-    pub fn try_event(&self) -> Option<PlayerEvent> {
+    pub fn position_ms(&self) -> u64 {
+        self.position_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn try_event(&mut self) -> Option<PlayerEvent> {
         self.events.try_recv().ok()
+    }
+
+    pub async fn recv_event(&mut self) -> Option<PlayerEvent> {
+        self.events.recv().await
     }
 }
 
