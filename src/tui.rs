@@ -680,6 +680,7 @@ impl App {
                     evaluate_smart_playlist(
                         playlist,
                         &self.tracks,
+                        &self.search_index,
                         &self.stats,
                         &self.added_at,
                         now,
