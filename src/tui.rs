@@ -35,7 +35,7 @@ use crate::{
     discord::DiscordPresence,
     features::{Genre, SearchIndex, evaluate_smart_playlist, group_genres},
     instance::InstanceGuard,
-    library::{SourceScan, prune_cover_cache, prune_unreferenced_covers, scan_source},
+    library::{prune_cover_cache, prune_unreferenced_covers, scan_source},
     model::{
         Album, Artist, HistoryEntry, PlaybackState, PlaybackStatus, PlayerAction, PlayerEvent,
         Playlist, RepeatMode, SavedPlayback, SavedQueue, SmartPlaylist, SmartRule, Track,
@@ -211,8 +211,13 @@ enum InputMode {
 }
 
 enum ScanMessage {
-    Source(SourceScan),
-    Done(BTreeSet<String>),
+    Source {
+        label: String,
+        tracks: usize,
+        moved_tracks: Vec<(String, String)>,
+    },
+    Error(String),
+    Done,
 }
 
 struct CoverState {
@@ -824,60 +829,129 @@ impl App {
         let roots = all_sources(&self.config);
         let tx = self.scan_tx.clone();
         let paths = self.paths.clone();
+        let cover_cache_bytes = self.config.cover_cache_mb * 1024 * 1024;
         self.scan_running = true;
         self.last_scan = Instant::now();
         self.status = format!("Escaneando {} fuente(s)…", roots.len());
         thread::Builder::new()
             .name("muscli-scanner".into())
             .spawn(move || {
+                let mut db = match Database::open(&paths.database_file()) {
+                    Ok(db) => db,
+                    Err(error) => {
+                        let _ = tx.send(ScanMessage::Error(format!("Base de datos: {error:#}")));
+                        let _ = tx.send(ScanMessage::Done);
+                        return;
+                    }
+                };
                 let mut ids = BTreeSet::new();
                 for root in roots {
-                    if let Ok(scan) = scan_source(&paths, &root) {
-                        ids.insert(scan.id.clone());
-                        if tx.send(ScanMessage::Source(scan)).is_err() {
-                            return;
+                    let scan = match scan_source(&paths, &root) {
+                        Ok(scan) => scan,
+                        Err(error) => {
+                            let _ = tx.send(ScanMessage::Error(format!(
+                                "{}: {error:#}",
+                                root.display()
+                            )));
+                            continue;
                         }
+                    };
+                    ids.insert(scan.id.clone());
+                    let moved_tracks = match db.upsert_scan(
+                        &scan.id,
+                        &scan.root,
+                        &scan.label,
+                        &scan.tracks,
+                        &scan.missing_track_ids,
+                    ) {
+                        Ok(moved) => moved,
+                        Err(error) => {
+                            let _ = tx.send(ScanMessage::Error(format!(
+                                "{}: {error:#}",
+                                scan.label
+                            )));
+                            continue;
+                        }
+                    };
+                    if let Err(error) =
+                        db.prune_missing_for_source(&scan.id, &scan.failed_paths)
+                    {
+                        let _ = tx.send(ScanMessage::Error(format!(
+                            "{}: {error:#}",
+                            scan.label
+                        )));
+                    }
+                    if tx
+                        .send(ScanMessage::Source {
+                            label: scan.label,
+                            tracks: scan.tracks.len(),
+                            moved_tracks,
+                        })
+                        .is_err()
+                    {
+                        return;
                     }
                 }
-                let _ = tx.send(ScanMessage::Done(ids));
+
+                if let Err(error) = db.mark_missing_sources(&ids) {
+                    let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
+                }
+                match db.referenced_cover_paths() {
+                    Ok(referenced) => {
+                        if let Err(error) =
+                            prune_unreferenced_covers(&paths.cover_cache_dir(), &referenced)
+                        {
+                            let _ = tx.send(ScanMessage::Error(format!(
+                                "Caché de portadas: {error:#}"
+                            )));
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx.send(ScanMessage::Error(format!(
+                            "Caché de portadas: {error:#}"
+                        )));
+                    }
+                }
+                match prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes) {
+                    Ok(removed) => {
+                        if let Err(error) = db.clear_cover_paths(&removed) {
+                            let _ = tx.send(ScanMessage::Error(format!(
+                                "Caché de portadas: {error:#}"
+                            )));
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx.send(ScanMessage::Error(format!(
+                            "Caché de portadas: {error:#}"
+                        )));
+                    }
+                }
+                let _ = tx.send(ScanMessage::Done);
             })
             .ok();
     }
 
     fn handle_scan(&mut self, message: ScanMessage) -> Result<()> {
         match message {
-            ScanMessage::Source(scan) => {
-                let moved_tracks =
-                    self.db
-                        .upsert_scan(
-                        &scan.id,
-                        &scan.root,
-                        &scan.label,
-                        &scan.tracks,
-                        &scan.missing_track_ids,
-                    )?;
+            ScanMessage::Source {
+                label,
+                tracks,
+                moved_tracks,
+            } => {
                 for id in &mut self.queue {
                     if let Some((_, new_id)) = moved_tracks.iter().find(|(old_id, _)| id == old_id)
                     {
                         *id = new_id.clone();
                     }
                 }
-                self.db
-                    .prune_missing_for_source(&scan.id, &scan.failed_paths)?;
-                self.status = format!("Indexadas {} pistas de {}", scan.tracks.len(), scan.label);
+                self.status = format!("Indexadas {tracks} pistas de {label}");
                 self.dirty = true;
             }
-            ScanMessage::Done(ids) => {
-                self.db.mark_missing_sources(&ids)?;
-                prune_unreferenced_covers(
-                    &self.paths.cover_cache_dir(),
-                    &self.db.referenced_cover_paths()?,
-                )?;
-                let removed = prune_cover_cache(
-                    &self.paths.cover_cache_dir(),
-                    self.config.cover_cache_mb * 1024 * 1024,
-                )?;
-                self.db.clear_cover_paths(&removed)?;
+            ScanMessage::Error(error) => {
+                self.status = format!("Scan: {error}");
+                self.dirty = true;
+            }
+            ScanMessage::Done => {
                 self.scan_running = false;
                 self.reload_library()?;
                 self.status = format!(
