@@ -61,7 +61,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -203,6 +203,19 @@ impl Database {
                     PRIMARY KEY(queue_id, position)
                  );
                  PRAGMA user_version = 2;",
+            )?;
+            tx.commit()?;
+        }
+
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 2 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS tracks_source_scan
+                 ON tracks(source_id, available, file_size, duration_ms);
+                 PRAGMA user_version = 3;",
             )?;
             tx.commit()?;
         }
@@ -412,14 +425,19 @@ impl Database {
             .collect::<Vec<_>>()
         };
         let tx = self.conn.transaction()?;
-        for relative in seen_paths {
-            tx.execute(
+        {
+            let mut mark_seen = tx.prepare_cached(
                 "UPDATE tracks SET available=1 WHERE source_id=?1 AND relative_path=?2",
-                params![source_id, relative],
             )?;
+            for relative in seen_paths {
+                mark_seen.execute(params![source_id, relative])?;
+            }
         }
-        for id in &stale {
-            tx.execute("DELETE FROM tracks WHERE id=?1", [id])?;
+        {
+            let mut delete_stale = tx.prepare_cached("DELETE FROM tracks WHERE id=?1")?;
+            for id in &stale {
+                delete_stale.execute([id])?;
+            }
         }
         tx.commit()?;
         Ok(stale.len())
@@ -644,7 +662,9 @@ impl Database {
                 });
             }
             if let Some(track_id) = track_id {
-                out.last_mut().expect("playlist inserted above").track_ids.push(track_id);
+                if let Some(playlist) = out.last_mut() {
+                    playlist.track_ids.push(track_id);
+                }
             }
         }
         Ok(out)
