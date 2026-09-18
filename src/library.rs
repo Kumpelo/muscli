@@ -52,7 +52,7 @@ pub fn scan_to_database(
     let mut report = ScanReport::default();
     let mut ids = BTreeSet::new();
     for root in roots {
-        match scan_source(paths, root) {
+        match scan_source_with_database(paths, root, db) {
             Ok(scan) => {
                 ids.insert(scan.id.clone());
                 report.sources += 1;
@@ -79,6 +79,23 @@ pub fn scan_to_database(
 }
 
 pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
+    let database = Database::open(&paths.database_file()).ok();
+    scan_source_inner(paths, root, database.as_ref())
+}
+
+pub fn scan_source_with_database(
+    paths: &AppPaths,
+    root: &Path,
+    database: &Database,
+) -> Result<SourceScan> {
+    scan_source_inner(paths, root, Some(database))
+}
+
+fn scan_source_inner(
+    paths: &AppPaths,
+    root: &Path,
+    database: Option<&Database>,
+) -> Result<SourceScan> {
     let _profile = crate::profiling::span("scan_source");
     let root = root
         .canonicalize()
@@ -89,8 +106,8 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         .unwrap_or("Music")
         .to_owned();
     let id = source_id(&root);
-    let mut cached = Database::open(&paths.database_file())
-        .and_then(|db| db.scan_cache(&id))
+    let mut cached = database
+        .and_then(|db| db.scan_cache(&id).ok())
         .unwrap_or_default();
     let mut cover_validity = HashMap::<PathBuf, bool>::new();
     let mut artwork_cache = HashMap::<String, Option<PathBuf>>::new();

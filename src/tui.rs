@@ -35,7 +35,9 @@ use crate::{
     discord::DiscordPresence,
     features::{Genre, SearchIndex, evaluate_smart_playlist, group_genres},
     instance::InstanceGuard,
-    library::{prune_cover_cache, prune_unreferenced_covers, scan_source},
+    library::{
+        prune_cover_cache, prune_unreferenced_covers, scan_source_with_database,
+    },
     model::{
         Album, Artist, HistoryEntry, PlaybackState, PlaybackStatus, PlayerAction, PlayerEvent,
         Playlist, RepeatMode, SavedPlayback, SavedQueue, SmartPlaylist, SmartRule, Track,
@@ -846,7 +848,7 @@ impl App {
                 };
                 let mut ids = BTreeSet::new();
                 for root in roots {
-                    let scan = match scan_source(&paths, &root) {
+                    let scan = match scan_source_with_database(&paths, &root, &db) {
                         Ok(scan) => scan,
                         Err(error) => {
                             let _ = tx.send(ScanMessage::Error(format!(
