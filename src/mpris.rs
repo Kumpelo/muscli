@@ -72,7 +72,7 @@ impl MprisBridge {
 
     pub async fn sync_position(&self, state: &PlaybackState) -> Result<()> {
         self.player.set_position(Time::from_millis(
-            state.position_ms.min(i64::MAX as u64) as i64,
+            state.position_ms.min(i64::MAX as u64) as i64
         ));
         Ok(())
     }
