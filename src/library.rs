@@ -495,8 +495,14 @@ mod tests {
 
     #[test]
     fn cover_cache_key_tracks_artwork_content() {
-        assert_eq!(cover_cache_key(b"same artwork"), cover_cache_key(b"same artwork"));
-        assert_ne!(cover_cache_key(b"first artwork"), cover_cache_key(b"second artwork"));
+        assert_eq!(
+            cover_cache_key(b"same artwork"),
+            cover_cache_key(b"same artwork")
+        );
+        assert_ne!(
+            cover_cache_key(b"first artwork"),
+            cover_cache_key(b"second artwork")
+        );
     }
 
     #[test]
