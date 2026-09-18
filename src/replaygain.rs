@@ -1,11 +1,11 @@
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc::{self, Receiver},
     thread,
 };
 
 use anyhow::{Context, Result};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::model::ReplayGainAnalysis;
 
@@ -26,8 +26,8 @@ pub enum GainMessage {
 pub fn start(
     candidates: Vec<(String, PathBuf, u64, i64)>,
     target_lufs: f64,
-) -> Receiver<GainMessage> {
-    let (tx, rx) = mpsc::channel();
+    tx: UnboundedSender<GainMessage>,
+) {
     thread::Builder::new()
         .name("muscli-replaygain".into())
         .spawn(move || {
@@ -58,7 +58,6 @@ pub fn start(
             let _ = tx.send(GainMessage::Done);
         })
         .ok();
-    rx
 }
 
 pub fn analyze(path: &Path, target_lufs: f64) -> Result<ReplayGainAnalysis> {
