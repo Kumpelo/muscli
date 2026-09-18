@@ -2224,6 +2224,7 @@ impl App {
             &track_id,
             self.pending_listen_ms,
             self.playback.position_ms,
+            self.history_counted,
             count_now,
             completed,
         )?;
