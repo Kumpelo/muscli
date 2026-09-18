@@ -279,6 +279,7 @@ fn platform_checks() -> Vec<Check> {
     ]
 }
 
+#[cfg(unix)]
 fn command_check(name: &'static str, args: &[&str], help: &str) -> Check {
     match Command::new(name).args(args).output() {
         Ok(output) if output.status.success() => Check {
