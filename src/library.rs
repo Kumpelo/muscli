@@ -71,6 +71,7 @@ pub fn scan_to_database(
 }
 
 pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
+    let _profile = crate::profiling::span("scan_source");
     let root = root
         .canonicalize()
         .with_context(|| format!("cannot access {}", root.display()))?;
