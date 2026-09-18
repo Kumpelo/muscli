@@ -79,7 +79,7 @@ impl ControlServer {
 impl Drop for ControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Ok(name) = self.socket.to_fs_name::<GenericFilePath>() {
+        if let Ok(name) = self.socket.clone().to_fs_name::<GenericFilePath>() {
             let _ = Stream::connect(name);
         }
         if let Some(worker) = self.worker.take() {

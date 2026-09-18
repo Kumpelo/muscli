@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn fuzzy_score_tolerates_a_typo() {
-        assert!(fuzzy_score("skrillex", "skrilex").is_some());
+        assert!(fuzzy_score("skrillex", "skrilex", 2).is_some());
     }
 
     #[test]
