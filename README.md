@@ -58,7 +58,7 @@ muscli doctor
 ```
 
 Only `.flac` files are indexed. Tags and embedded/external artwork are read
-without modifying the media. The SQLite index, configuration, and 64 MiB LRU
+without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
 cover cache use the platform-standard application directories. A warm start
 loads the index immediately while scans and ReplayGain analysis continue in
 the background.
