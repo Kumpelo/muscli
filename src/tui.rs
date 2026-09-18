@@ -2292,28 +2292,38 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
                 let _ = watcher.watch(root, RecursiveMode::Recursive);
             }
 
+            let mut known_removable = BTreeSet::new();
             let mut watched_removable = BTreeSet::new();
             loop {
                 let current_removable = crate::config::discover_removable_roots()
                     .into_iter()
                     .filter(|path| path.exists())
                     .collect::<BTreeSet<_>>();
-                let mut changed = false;
 
-                for root in current_removable.difference(&watched_removable) {
-                    if watcher.watch(root, RecursiveMode::Recursive).is_ok() {
-                        changed = true;
+                if current_removable != known_removable {
+                    let _ = tx.send(());
+                    known_removable = current_removable.clone();
+                }
+
+                let added = current_removable
+                    .difference(&watched_removable)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for root in added {
+                    if watcher.watch(&root, RecursiveMode::Recursive).is_ok() {
+                        watched_removable.insert(root);
                     }
                 }
-                for root in watched_removable.difference(&current_removable) {
-                    let _ = watcher.unwatch(root);
-                    changed = true;
+
+                let removed = watched_removable
+                    .difference(&current_removable)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for root in removed {
+                    let _ = watcher.unwatch(&root);
+                    watched_removable.remove(&root);
                 }
 
-                if changed {
-                    let _ = tx.send(());
-                }
-                watched_removable = current_removable;
                 thread::sleep(Duration::from_secs(2));
             }
         })
