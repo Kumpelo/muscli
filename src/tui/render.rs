@@ -507,8 +507,8 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
-    let album_indices = app.visible_album_indices();
-    if album_indices.is_empty() {
+    let album_count = app.visible_album_len();
+    if album_count == 0 {
         let empty = if app.view == View::ArtistDetail {
             Paragraph::new("No encontré álbumes ni singles para este artista.")
                 .alignment(Alignment::Center)
@@ -527,10 +527,10 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let visible_rows = (area.height / card_height).max(1) as usize;
     let first_row = start_row.saturating_sub(visible_rows.saturating_sub(1));
     let first = first_row * columns;
-    let last = (first + visible_rows * columns).min(album_indices.len());
-    let desired_covers = album_indices[first..last]
-        .iter()
-        .filter_map(|&index| app.albums[index].cover_path.clone())
+    let last = (first + visible_rows * columns).min(album_count);
+    let desired_covers = (first..last)
+        .filter_map(|position| app.visible_album_index_at(position))
+        .filter_map(|index| app.albums[index].cover_path.clone())
         .collect::<BTreeSet<_>>();
     for path in &desired_covers {
         app.album_cover_order.retain(|cached| cached != path);
@@ -550,7 +550,10 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         }
         app.album_covers.remove(&oldest);
     }
-    for (position, &index) in album_indices.iter().enumerate().take(last).skip(first) {
+    for position in first..last {
+        let Some(index) = app.visible_album_index_at(position) else {
+            continue;
+        };
         let (title, artist, track_count, available_tracks, cover_path) = {
             let album = &app.albums[index];
             (
