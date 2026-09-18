@@ -240,6 +240,19 @@ struct CoverDecodeResult {
     image: Option<image::DynamicImage>,
 }
 
+#[derive(Debug)]
+struct SearchRequest {
+    generation: u64,
+    query: String,
+    index: SearchIndex,
+}
+
+#[derive(Debug)]
+struct SearchResult {
+    generation: u64,
+    matches: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiTheme {
     accent: Color,
@@ -374,6 +387,9 @@ struct App {
     query: String,
     search_index: SearchIndex,
     search_matches: Vec<usize>,
+    search_tx: Sender<SearchRequest>,
+    search_rx: tokio_mpsc::UnboundedReceiver<SearchResult>,
+    search_generation: u64,
     input: Option<InputMode>,
     input_buffer: String,
     queue: Vec<String>,
@@ -498,6 +514,9 @@ async fn run_inner(
     let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
     let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
     start_cover_decode_worker(cover_decode_requests, cover_results_tx);
+    let (search_tx, search_requests) = mpsc::channel();
+    let (search_results_tx, search_rx) = tokio_mpsc::unbounded_channel();
+    start_search_worker(search_requests, search_results_tx);
 
     let mut app = App {
         paths,
@@ -538,6 +557,9 @@ async fn run_inner(
         query: String::new(),
         search_index: SearchIndex::default(),
         search_matches: Vec::new(),
+        search_tx,
+        search_rx,
+        search_generation: 0,
         input: None,
         input_buffer: String::new(),
         queue: saved.queue,
@@ -678,6 +700,11 @@ async fn run_inner(
                         app.handle_cover_decode_result(result);
                     }
                 }
+                result = app.search_rx.recv() => {
+                    if let Some(result) = result {
+                        app.handle_search_result(result);
+                    }
+                }
                 shutdown = shutdown_rx.recv() => {
                     if shutdown.is_some() {
                         app.should_quit = true;
@@ -709,6 +736,9 @@ async fn run_inner(
             if app.watch_rx.try_recv().is_ok() {
                 while app.watch_rx.try_recv().is_ok() {}
                 app.scan_pending = true;
+            }
+            while let Ok(result) = app.search_rx.try_recv() {
+                app.handle_search_result(result);
             }
             app.tick_history()?;
             app.refresh_theme();
@@ -1169,7 +1199,32 @@ impl App {
     }
 
     fn refresh_search(&mut self) {
-        self.search_matches = self.search_index.search(&self.query, 100);
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search_matches.clear();
+        if self.query.trim().is_empty() {
+            self.dirty = true;
+            return;
+        }
+        let request = SearchRequest {
+            generation: self.search_generation,
+            query: self.query.clone(),
+            index: self.search_index.clone(),
+        };
+        if self.search_tx.send(request).is_err() {
+            self.search_matches = self.search_index.search(&self.query, 100);
+        }
+        self.dirty = true;
+    }
+
+    fn handle_search_result(&mut self, result: SearchResult) {
+        if result.generation != self.search_generation {
+            return;
+        }
+        self.search_matches = result.matches;
+        if self.view == View::Search {
+            self.selected = self.selected.min(self.search_matches.len().saturating_sub(1));
+        }
+        self.dirty = true;
     }
 
     fn view_track_ids(&self) -> Vec<String> {
@@ -2898,6 +2953,32 @@ fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<()>) {
                 }
 
                 thread::sleep(Duration::from_secs(2));
+            }
+        })
+        .ok();
+}
+
+fn start_search_worker(
+    requests: Receiver<SearchRequest>,
+    results: tokio_mpsc::UnboundedSender<SearchResult>,
+) {
+    thread::Builder::new()
+        .name("muscli-search".into())
+        .spawn(move || {
+            while let Ok(mut request) = requests.recv() {
+                for newer in requests.try_iter() {
+                    request = newer;
+                }
+                let matches = request.index.search(&request.query, 100);
+                if results
+                    .send(SearchResult {
+                        generation: request.generation,
+                        matches,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .ok();

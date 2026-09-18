@@ -1,6 +1,7 @@
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, BinaryHeap, HashMap},
+    sync::Arc,
 };
 
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
@@ -15,7 +16,7 @@ pub struct Genre {
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchIndex {
-    fields: Vec<[String; 4]>,
+    fields: Arc<Vec<[String; 4]>>,
 }
 
 struct RuleContext<'a> {
@@ -31,17 +32,19 @@ impl SearchIndex {
     pub fn build(tracks: &[Track]) -> Self {
         let _profile = crate::profiling::span("search_index_build");
         Self {
-            fields: tracks
-                .iter()
-                .map(|track| {
-                    [
-                        fold(&track.title),
-                        fold(&track.artist),
-                        fold(&track.album),
-                        fold(&track.genre),
-                    ]
-                })
-                .collect(),
+            fields: Arc::new(
+                tracks
+                    .iter()
+                    .map(|track| {
+                        [
+                            fold(&track.title),
+                            fold(&track.artist),
+                            fold(&track.album),
+                            fold(&track.genre),
+                        ]
+                    })
+                    .collect(),
+            ),
         }
     }
 
