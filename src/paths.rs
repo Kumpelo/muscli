@@ -15,14 +15,15 @@ impl AppPaths {
     pub fn discover() -> Result<Self> {
         let dirs = ProjectDirs::from("org", "muscli", "muscli")
             .context("could not determine XDG directories")?;
-        let runtime_base = std::env::var_os("XDG_RUNTIME_DIR")
+        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
+            .map(|base| base.join("muscli"))
+            .unwrap_or_else(|| dirs.cache_dir().join("runtime"));
         Ok(Self {
             config_dir: dirs.config_dir().to_path_buf(),
             data_dir: dirs.data_dir().to_path_buf(),
             cache_dir: dirs.cache_dir().to_path_buf(),
-            runtime_dir: runtime_base.join("muscli"),
+            runtime_dir,
         })
     }
 
@@ -36,6 +37,17 @@ impl AppPaths {
         ] {
             fs::create_dir_all(dir)
                 .with_context(|| format!("could not create {}", dir.display()))?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.runtime_dir, fs::Permissions::from_mode(0o700))
+                .with_context(|| {
+                    format!(
+                        "could not restrict runtime directory {}",
+                        self.runtime_dir.display()
+                    )
+                })?;
         }
         Ok(())
     }
