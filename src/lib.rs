@@ -9,7 +9,22 @@ pub mod instance;
 pub mod library;
 pub mod model;
 pub mod mpris;
+#[cfg(unix)]
 pub mod omarchy;
+#[cfg(windows)]
+pub mod omarchy {
+    use anyhow::Result;
+
+    use crate::paths::AppPaths;
+
+    pub fn setup(_paths: &AppPaths) -> Result<String> {
+        anyhow::bail!("Omarchy integration is only available on Linux");
+    }
+
+    pub fn undo(_paths: &AppPaths) -> Result<String> {
+        anyhow::bail!("Omarchy integration is only available on Linux");
+    }
+}
 pub mod paths;
 pub mod player;
 pub mod replaygain;
