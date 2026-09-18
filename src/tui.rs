@@ -2267,6 +2267,7 @@ impl App {
     }
 
     fn handle_player_event(&mut self, event: PlayerEvent) -> Result<()> {
+        let force_redraw = !matches!(&event, PlayerEvent::Position(_));
         match event {
             PlayerEvent::Position(value) => self.playback.position_ms = value,
             PlayerEvent::Duration(value) => self.playback.duration_ms = value,
@@ -2293,7 +2294,7 @@ impl App {
                 self.next()?;
             }
         }
-        self.dirty = true;
+        self.dirty |= force_redraw;
         Ok(())
     }
 
