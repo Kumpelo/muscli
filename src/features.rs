@@ -188,18 +188,22 @@ pub fn evaluate_smart_playlist(
         .collect()
 }
 
-fn rule_matches(
-    rule: &SmartRule,
-    folded_string: Option<&str>,
-    context: &RuleContext<'_>,
-) -> bool {
+fn rule_matches(rule: &SmartRule, folded_string: Option<&str>, context: &RuleContext<'_>) -> bool {
     let number = rule.value.as_i64().unwrap_or_default();
     let string = folded_string.unwrap_or_default();
     match (rule.field.as_str(), rule.operator.as_str()) {
-        ("title", "contains") => context.search_index.fields[context.track_index][0].contains(string),
-        ("artist", "contains") => context.search_index.fields[context.track_index][1].contains(string),
-        ("album", "contains") => context.search_index.fields[context.track_index][2].contains(string),
-        ("genre", "contains") => context.search_index.fields[context.track_index][3].contains(string),
+        ("title", "contains") => {
+            context.search_index.fields[context.track_index][0].contains(string)
+        }
+        ("artist", "contains") => {
+            context.search_index.fields[context.track_index][1].contains(string)
+        }
+        ("album", "contains") => {
+            context.search_index.fields[context.track_index][2].contains(string)
+        }
+        ("genre", "contains") => {
+            context.search_index.fields[context.track_index][3].contains(string)
+        }
         ("favorite", "is") => context.track.favorite == rule.value.as_bool().unwrap_or(false),
         ("available", "is") => context.track.available == rule.value.as_bool().unwrap_or(false),
         ("played", "is") => {
