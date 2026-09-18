@@ -244,8 +244,7 @@ fn read_track(
     let id = blake3::hash(format!("{source_id}\0{relative}").as_bytes())
         .to_hex()
         .to_string();
-    let cover_path =
-        find_or_cache_cover(paths, tag, path, artwork_cache, external_cover_cache)?;
+    let cover_path = find_or_cache_cover(paths, tag, path, artwork_cache, external_cover_cache)?;
     let duration_ms = tagged
         .properties()
         .duration()
