@@ -36,7 +36,7 @@ pub struct SourceScan {
     pub root: PathBuf,
     pub label: String,
     pub tracks: Vec<ScannedTrack>,
-    pub seen_paths: BTreeSet<String>,
+    pub failed_paths: BTreeSet<String>,
     pub skipped: usize,
     pub errors: Vec<String>,
 }
@@ -58,7 +58,7 @@ pub fn scan_to_database(
                 report.skipped += scan.skipped;
                 report.errors.extend(scan.errors.clone());
                 let _ = db.upsert_scan(&scan.id, &scan.root, &scan.label, &scan.tracks)?;
-                db.prune_missing_for_source(&scan.id, &scan.seen_paths)?;
+                db.prune_missing_for_source(&scan.id, &scan.failed_paths)?;
             }
             Err(error) => report.errors.push(format!("{}: {error:#}", root.display())),
         }
@@ -92,7 +92,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         root: root.clone(),
         label,
         tracks: Vec::new(),
-        seen_paths: BTreeSet::new(),
+        failed_paths: BTreeSet::new(),
         skipped: 0,
         errors: Vec::new(),
     };
@@ -116,7 +116,6 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
             .unwrap_or(entry.path())
             .to_string_lossy()
             .into_owned();
-        scan.seen_paths.insert(relative.clone());
         let fingerprint = file_fingerprint(entry.path());
         let unchanged = fingerprint
             .and_then(|(size, modified)| {
@@ -152,6 +151,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         match result {
             Ok(track) => scan.tracks.push(track),
             Err(error) => {
+                scan.failed_paths.insert(relative);
                 scan.skipped += 1;
                 scan.errors
                     .push(format!("{}: {error:#}", entry.path().display()));
