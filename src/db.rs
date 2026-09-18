@@ -637,7 +637,8 @@ impl Database {
                 play_count: row.get::<_, Option<i64>>(18)?.unwrap_or_default().max(0) as u64,
                 total_listen_ms: row.get::<_, Option<i64>>(19)?.unwrap_or_default().max(0) as u64,
                 last_played_at: row.get::<_, Option<i64>>(20)?,
-                resume_position_ms: row.get::<_, Option<i64>>(21)?.unwrap_or_default().max(0) as u64,
+                resume_position_ms: row.get::<_, Option<i64>>(21)?.unwrap_or_default().max(0)
+                    as u64,
             });
             Ok((track, added_at, stats))
         })?;
@@ -1288,13 +1289,7 @@ mod tests {
             modified_ns: 1,
         };
         db.upsert_scan("s", Path::new("/music"), "Music", &[scanned], &[])?;
-        db.upsert_scan(
-            "s",
-            Path::new("/music"),
-            "Music",
-            &[],
-            &["one".into()],
-        )?;
+        db.upsert_scan("s", Path::new("/music"), "Music", &[], &["one".into()])?;
         assert_eq!(
             db.prune_missing_for_source("s", &BTreeSet::from(["one.flac".into()]))?,
             0
@@ -1302,13 +1297,7 @@ mod tests {
         let tracks = db.load_tracks()?;
         assert_eq!(tracks.len(), 1);
         assert!(tracks[0].available);
-        db.upsert_scan(
-            "s",
-            Path::new("/music"),
-            "Music",
-            &[],
-            &["one".into()],
-        )?;
+        db.upsert_scan("s", Path::new("/music"), "Music", &[], &["one".into()])?;
         assert_eq!(db.prune_missing_for_source("s", &BTreeSet::new())?, 1);
         assert!(db.load_tracks()?.is_empty());
         Ok(())

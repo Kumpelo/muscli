@@ -187,10 +187,7 @@ fn scan_source_inner(
             }
         }
     }
-    scan.missing_track_ids = cached
-        .into_values()
-        .map(|item| item.track.id)
-        .collect();
+    scan.missing_track_ids = cached.into_values().map(|item| item.track.id).collect();
     Ok(scan)
 }
 
