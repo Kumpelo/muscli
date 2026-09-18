@@ -535,17 +535,8 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     for path in &desired_covers {
         app.album_cover_order.retain(|cached| cached != path);
         app.album_cover_order.push_back(path.clone());
-        if app.album_covers.contains_key(path) {
-            continue;
-        }
-        if let Some(image) = image::ImageReader::open(path)
-            .ok()
-            .and_then(|reader| reader.decode().ok())
-        {
-            app.album_covers.insert(
-                path.clone(),
-                app.picker.new_resize_protocol(image.thumbnail(256, 256)),
-            );
+        if !app.album_covers.contains_key(path) {
+            app.request_cover_decode(path.clone(), 256);
         }
     }
     let cover_capacity = 64usize.max(desired_covers.len());
