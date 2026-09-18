@@ -857,7 +857,7 @@ impl App {
                     }
                 }
                 self.db
-                    .prune_missing_for_source(&scan.id, &scan.seen_paths)?;
+                    .prune_missing_for_source(&scan.id, &scan.failed_paths)?;
                 self.status = format!("Indexadas {} pistas de {}", scan.tracks.len(), scan.label);
                 self.dirty = true;
             }

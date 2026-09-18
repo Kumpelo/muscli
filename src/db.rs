@@ -451,7 +451,7 @@ impl Database {
     pub fn prune_missing_for_source(
         &mut self,
         source_id: &str,
-        seen_paths: &BTreeSet<String>,
+        preserve_paths: &BTreeSet<String>,
     ) -> Result<usize> {
         let _profile = crate::profiling::span("db_prune_missing_for_source");
         let stale = {
@@ -463,17 +463,17 @@ impl Database {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
             .into_iter()
-            .filter(|(_, relative)| !seen_paths.contains(relative))
+            .filter(|(_, relative)| !preserve_paths.contains(relative))
             .map(|(id, _)| id)
             .collect::<Vec<_>>()
         };
         let tx = self.conn.transaction()?;
-        {
-            let mut mark_seen = tx.prepare_cached(
+        if !preserve_paths.is_empty() {
+            let mut preserve = tx.prepare_cached(
                 "UPDATE tracks SET available=1 WHERE source_id=?1 AND relative_path=?2",
             )?;
-            for relative in seen_paths {
-                mark_seen.execute(params![source_id, relative])?;
+            for relative in preserve_paths {
+                preserve.execute(params![source_id, relative])?;
             }
         }
         {
