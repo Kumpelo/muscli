@@ -310,6 +310,7 @@ struct App {
     stats: HashMap<String, TrackStats>,
     added_at: HashMap<String, i64>,
     history: Vec<HistoryEntry>,
+    home_tracks: Vec<String>,
     genres: Vec<Genre>,
     genre_album_cache: HashMap<String, Vec<usize>>,
     genre_artist_cache: HashMap<String, Vec<usize>>,
@@ -452,6 +453,7 @@ async fn run_inner(
         stats: HashMap::new(),
         added_at: HashMap::new(),
         history: Vec::new(),
+        home_tracks: Vec::new(),
         genres: Vec::new(),
         genre_album_cache: HashMap::new(),
         genre_artist_cache: HashMap::new(),
@@ -651,6 +653,7 @@ impl App {
         self.stats = self.db.load_track_stats()?;
         self.added_at = self.db.load_added_at()?;
         self.history = self.db.load_history(500)?;
+        self.rebuild_home_tracks();
         let now = chrono::Utc::now().timestamp();
         self.smart_matches = self
             .smart_playlists
@@ -918,7 +921,7 @@ impl App {
             .map(|&i| &self.tracks[i])
     }
 
-    fn home_track_ids(&self) -> Vec<String> {
+    fn rebuild_home_tracks(&mut self) {
         let mut continuing = self
             .tracks
             .iter()
@@ -930,20 +933,26 @@ impl App {
             })
             .collect::<Vec<_>>();
         continuing.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+
         let mut ids = continuing
             .into_iter()
             .take(8)
             .map(|(_, id)| id)
             .collect::<Vec<_>>();
+        let mut seen = ids.iter().cloned().collect::<HashSet<_>>();
         for entry in &self.history {
-            if !ids.contains(&entry.track_id) {
+            if seen.insert(entry.track_id.clone()) {
                 ids.push(entry.track_id.clone());
             }
             if ids.len() >= 20 {
                 break;
             }
         }
-        ids
+        self.home_tracks = ids;
+    }
+
+    fn home_track_ids(&self) -> Vec<String> {
+        self.home_tracks.clone()
     }
 
     fn opened_genre(&self) -> Option<&Genre> {
