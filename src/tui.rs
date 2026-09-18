@@ -345,6 +345,7 @@ struct App {
     scan_tx: Sender<ScanMessage>,
     watch_rx: Receiver<()>,
     scan_running: bool,
+    scan_pending: bool,
     last_scan: Instant,
     status: String,
     should_quit: bool,
@@ -485,6 +486,7 @@ async fn run_inner(
         scan_tx,
         watch_rx,
         scan_running: false,
+        scan_pending: false,
         last_scan: Instant::now() - Duration::from_secs(5),
         status: mpris_warning.unwrap_or_else(|| "Cargando biblioteca…".into()),
         should_quit: false,
@@ -566,11 +568,15 @@ async fn run_inner(
             app.handle_gain_messages()?;
             app.tick_history()?;
             app.refresh_theme();
-            if app.watch_rx.try_recv().is_ok()
+            if app.watch_rx.try_recv().is_ok() {
+                while app.watch_rx.try_recv().is_ok() {}
+                app.scan_pending = true;
+            }
+            if app.scan_pending
                 && !app.scan_running
                 && app.last_scan.elapsed() > Duration::from_secs(2)
             {
-                while app.watch_rx.try_recv().is_ok() {}
+                app.scan_pending = false;
                 app.start_scan();
             }
 
@@ -1946,7 +1952,9 @@ impl App {
             }
             RemoteCommand::MuteToggle => self.handle_action(PlayerAction::MuteToggle)?,
             RemoteCommand::Rescan => {
-                if !self.scan_running {
+                if self.scan_running {
+                    self.scan_pending = true;
+                } else {
                     self.start_scan();
                 }
             }
