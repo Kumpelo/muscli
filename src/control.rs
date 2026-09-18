@@ -10,9 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use interprocess::local_socket::{
-    GenericFilePath, ListenerOptions, Stream, ToFsName, prelude::*,
-};
+use interprocess::local_socket::{GenericFilePath, ListenerOptions, Stream, ToFsName, prelude::*};
 use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

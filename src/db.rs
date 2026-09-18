@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Album, Artist, HistoryEntry, Playlist, ReplayGainAnalysis, RepeatMode, SavedPlayback,
+    Album, Artist, HistoryEntry, Playlist, RepeatMode, ReplayGainAnalysis, SavedPlayback,
     SavedQueue, SmartMatch, SmartPlaylist, Track, TrackStats,
 };
 
@@ -864,11 +864,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn save_playback(
-        &mut self,
-        state: &SavedPlayback,
-        queue: Option<&[String]>,
-    ) -> Result<()> {
+    pub fn save_playback(&mut self, state: &SavedPlayback, queue: Option<&[String]>) -> Result<()> {
         let tx = self.conn.transaction()?;
         Self::save_playback_tx(&tx, state, queue)?;
         tx.commit()?;
