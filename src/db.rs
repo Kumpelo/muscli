@@ -436,20 +436,25 @@ impl Database {
         Ok(moved_tracks)
     }
 
-    pub fn mark_missing_sources(&self, available_ids: &BTreeSet<String>) -> Result<()> {
+    pub fn mark_missing_sources(&self, available_ids: &BTreeSet<String>) -> Result<usize> {
         let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
         let ids = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut changed = 0;
         for id in ids {
             if !available_ids.contains(&id) {
-                self.conn
-                    .execute("UPDATE sources SET available=0 WHERE id=?1", [&id])?;
-                self.conn
-                    .execute("UPDATE tracks SET available=0 WHERE source_id=?1", [&id])?;
+                changed += self.conn.execute(
+                    "UPDATE sources SET available=0 WHERE id=?1 AND available!=0",
+                    [&id],
+                )?;
+                changed += self.conn.execute(
+                    "UPDATE tracks SET available=0 WHERE source_id=?1 AND available!=0",
+                    [&id],
+                )?;
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     pub fn prune_missing_for_source(
@@ -472,22 +477,24 @@ impl Database {
             .collect::<Vec<_>>()
         };
         let tx = self.conn.transaction()?;
+        let mut changed = 0;
         if !preserve_paths.is_empty() {
             let mut preserve = tx.prepare_cached(
-                "UPDATE tracks SET available=1 WHERE source_id=?1 AND relative_path=?2",
+                "UPDATE tracks SET available=1
+                 WHERE source_id=?1 AND relative_path=?2 AND available=0",
             )?;
             for relative in preserve_paths {
-                preserve.execute(params![source_id, relative])?;
+                changed += preserve.execute(params![source_id, relative])?;
             }
         }
         {
             let mut delete_stale = tx.prepare_cached("DELETE FROM tracks WHERE id=?1")?;
             for id in &stale {
-                delete_stale.execute([id])?;
+                changed += delete_stale.execute([id])?;
             }
         }
         tx.commit()?;
-        Ok(stale.len())
+        Ok(changed)
     }
 
     pub fn clear_cover_paths(&mut self, paths: &[PathBuf]) -> Result<usize> {

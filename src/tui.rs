@@ -220,7 +220,7 @@ enum ScanMessage {
         moved_tracks: Vec<(String, String)>,
     },
     Error(String),
-    Done,
+    Done { changed: bool },
 }
 
 struct CoverState {
@@ -941,11 +941,12 @@ impl App {
                     Ok(db) => db,
                     Err(error) => {
                         let _ = tx.send(ScanMessage::Error(format!("Base de datos: {error:#}")));
-                        let _ = tx.send(ScanMessage::Done);
+                        let _ = tx.send(ScanMessage::Done { changed: false });
                         return;
                     }
                 };
                 let mut ids = BTreeSet::new();
+                let mut changed = false;
                 for root in roots {
                     let scan = match scan_source_with_database(&paths, &root, &db) {
                         Ok(scan) => scan,
@@ -956,6 +957,7 @@ impl App {
                         }
                     };
                     ids.insert(scan.id.clone());
+                    changed |= !scan.tracks.is_empty() || !scan.missing_track_ids.is_empty();
                     let moved_tracks = match db.upsert_scan(
                         &scan.id,
                         &scan.root,
@@ -970,8 +972,12 @@ impl App {
                             continue;
                         }
                     };
-                    if let Err(error) = db.prune_missing_for_source(&scan.id, &scan.failed_paths) {
-                        let _ = tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
+                    match db.prune_missing_for_source(&scan.id, &scan.failed_paths) {
+                        Ok(count) => changed |= count > 0,
+                        Err(error) => {
+                            let _ =
+                                tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
+                        }
                     }
                     if tx
                         .send(ScanMessage::Source {
@@ -985,8 +991,11 @@ impl App {
                     }
                 }
 
-                if let Err(error) = db.mark_missing_sources(&ids) {
-                    let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
+                match db.mark_missing_sources(&ids) {
+                    Ok(count) => changed |= count > 0,
+                    Err(error) => {
+                        let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
+                    }
                 }
                 match db.referenced_cover_paths() {
                     Ok(referenced) => {
@@ -1004,9 +1013,13 @@ impl App {
                 }
                 match prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes) {
                     Ok(removed) => {
-                        if let Err(error) = db.clear_cover_paths(&removed) {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
+                        match db.clear_cover_paths(&removed) {
+                            Ok(count) => changed |= count > 0,
+                            Err(error) => {
+                                let _ = tx.send(ScanMessage::Error(format!(
+                                    "Caché de portadas: {error:#}"
+                                )));
+                            }
                         }
                     }
                     Err(error) => {
@@ -1014,7 +1027,7 @@ impl App {
                             tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
                     }
                 }
-                let _ = tx.send(ScanMessage::Done);
+                let _ = tx.send(ScanMessage::Done { changed });
             })
             .ok();
     }
@@ -1039,14 +1052,23 @@ impl App {
                 self.status = format!("Scan: {error}");
                 self.dirty = true;
             }
-            ScanMessage::Done => {
+            ScanMessage::Done { changed } => {
                 self.scan_running = false;
-                self.reload_library()?;
-                self.status = format!(
-                    "{} canciones · {} álbumes · listo",
-                    self.tracks.len(),
-                    self.albums.len()
-                );
+                if changed {
+                    self.reload_library()?;
+                    self.status = format!(
+                        "{} canciones · {} álbumes · listo",
+                        self.tracks.len(),
+                        self.albums.len()
+                    );
+                } else {
+                    self.status = format!(
+                        "{} canciones · {} álbumes · sin cambios",
+                        self.tracks.len(),
+                        self.albums.len()
+                    );
+                    self.dirty = true;
+                }
             }
         }
         Ok(())
