@@ -549,12 +549,20 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .filter_map(|position| app.visible_album_index_at(position))
         .filter_map(|index| app.albums[index].cover_path.clone())
         .collect::<BTreeSet<_>>();
-    for path in &desired_covers {
-        app.album_cover_order.retain(|cached| cached != path);
-        app.album_cover_order.push_back(path.clone());
+    let prefetch_first = first.saturating_sub(columns);
+    let prefetch_last = (last + columns).min(album_count);
+    let prefetch_covers = (prefetch_first..prefetch_last)
+        .filter_map(|position| app.visible_album_index_at(position))
+        .filter_map(|index| app.albums[index].cover_path.clone())
+        .collect::<BTreeSet<_>>();
+    for path in &prefetch_covers {
         if !app.album_covers.contains_key(path) {
             app.request_cover_decode(path.clone(), 256);
         }
+    }
+    for path in &desired_covers {
+        app.album_cover_order.retain(|cached| cached != path);
+        app.album_cover_order.push_back(path.clone());
     }
     let cover_capacity = 64usize.max(desired_covers.len());
     while app.album_covers.len() > cover_capacity {
