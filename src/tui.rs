@@ -293,7 +293,6 @@ impl UiTheme {
         (Self::default(), None, None)
     }
 
-    #[cfg(unix)]
     fn from_file(path: &Path) -> Option<Self> {
         let raw = fs::read_to_string(path).ok()?;
         let value = toml::from_str::<toml::Value>(&raw).ok()?;
@@ -313,7 +312,6 @@ impl UiTheme {
     }
 }
 
-#[cfg(unix)]
 fn parse_hex_color(value: &str) -> Option<Color> {
     let hex = value.strip_prefix('#')?;
     if hex.len() != 6 {
