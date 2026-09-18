@@ -32,7 +32,7 @@ use crate::{
     control::{ControlServer, RemoteCommand},
     db::{Database, group_albums, group_artists},
     discord::DiscordPresence,
-    features::{Genre, evaluate_smart_playlist, fuzzy_search, group_genres},
+    features::{Genre, SearchIndex, evaluate_smart_playlist, group_genres},
     instance::InstanceGuard,
     library::{SourceScan, prune_cover_cache, prune_unreferenced_covers, scan_source},
     model::{
@@ -324,6 +324,8 @@ struct App {
     genre_tab: usize,
     opened_smart_playlist: Option<i64>,
     query: String,
+    search_index: SearchIndex,
+    search_matches: Vec<usize>,
     input: Option<InputMode>,
     input_buffer: String,
     queue: Vec<String>,
@@ -460,6 +462,8 @@ async fn run_inner(
         genre_tab: 0,
         opened_smart_playlist: None,
         query: String::new(),
+        search_index: SearchIndex::default(),
+        search_matches: Vec::new(),
         input: None,
         input_buffer: String::new(),
         queue: saved.queue,
@@ -614,6 +618,8 @@ async fn run_inner(
 impl App {
     fn reload_library(&mut self) -> Result<()> {
         self.tracks = self.db.load_tracks()?;
+        self.search_index = SearchIndex::build(&self.tracks);
+        self.refresh_search();
         self.track_index = self
             .tracks
             .iter()
@@ -754,7 +760,11 @@ impl App {
     }
 
     fn search_results(&self) -> Vec<usize> {
-        fuzzy_search(&self.tracks, &self.query, 100)
+        self.search_matches.clone()
+    }
+
+    fn refresh_search(&mut self) {
+        self.search_matches = self.search_index.search(&self.query, 100);
     }
 
     fn view_track_ids(&self) -> Vec<String> {
@@ -1208,6 +1218,7 @@ impl App {
                 self.view = View::Search;
                 self.selected = 0;
                 self.query.clear();
+                self.refresh_search();
                 self.input = Some(InputMode::Search);
                 self.input_buffer.clear();
             }
@@ -1528,6 +1539,7 @@ impl App {
                         }
                         if mode == InputMode::Search {
                             self.query = self.input_buffer.clone();
+                            self.refresh_search();
                         }
                         if mode == InputMode::SaveQueue && !self.input_buffer.trim().is_empty() {
                             let name = self.input_buffer.trim().to_owned();
@@ -1542,6 +1554,7 @@ impl App {
                         self.input_buffer.pop();
                         if mode == InputMode::Search {
                             self.query = self.input_buffer.clone();
+                            self.refresh_search();
                             self.selected = 0;
                         }
                     }
@@ -1549,6 +1562,7 @@ impl App {
                         self.input_buffer.push(c);
                         if mode == InputMode::Search {
                             self.query = self.input_buffer.clone();
+                            self.refresh_search();
                             self.selected = 0;
                         }
                     }
