@@ -1,8 +1,7 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
+
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use anyhow::Result;
 
