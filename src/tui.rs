@@ -2274,7 +2274,6 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
 
 fn start_watchers(config: &Config, tx: Sender<()>) {
     let configured = config.sources.clone();
-    let removable = crate::config::discover_removable_roots();
     thread::Builder::new()
         .name("muscli-watcher".into())
         .spawn(move || {
@@ -2289,14 +2288,33 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
             ) else {
                 return;
             };
-            for root in removable.iter().filter(|p| p.exists()) {
-                let _ = watcher.watch(root, RecursiveMode::NonRecursive);
-            }
             for root in configured.iter().filter(|p| p.exists()) {
                 let _ = watcher.watch(root, RecursiveMode::Recursive);
             }
+
+            let mut watched_removable = BTreeSet::new();
             loop {
-                thread::park();
+                let current_removable = crate::config::discover_removable_roots()
+                    .into_iter()
+                    .filter(|path| path.exists())
+                    .collect::<BTreeSet<_>>();
+                let mut changed = false;
+
+                for root in current_removable.difference(&watched_removable) {
+                    if watcher.watch(root, RecursiveMode::Recursive).is_ok() {
+                        changed = true;
+                    }
+                }
+                for root in watched_removable.difference(&current_removable) {
+                    let _ = watcher.unwatch(root);
+                    changed = true;
+                }
+
+                if changed {
+                    let _ = tx.send(());
+                }
+                watched_removable = current_removable;
+                thread::sleep(Duration::from_secs(2));
             }
         })
         .ok();
