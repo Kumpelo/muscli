@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, hash_map::DefaultHasher},
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
@@ -345,6 +346,13 @@ struct App {
     dirty: bool,
     picker: Picker,
     cover: Option<CoverState>,
+    // Firma de qué portadas se dibujaron y dónde. Las imágenes de kitty van
+    // ancladas a celdas de texto, y ratatui solo reescribe las celdas que
+    // cambian: si una portada se mueve, quedan restos de la anterior mezclados
+    // con la nueva. Comparando la firma entre fotogramas sabemos cuándo hace
+    // falta repintar la pantalla entera.
+    cover_sig: u64,
+    cover_sig_now: u64,
     album_covers: HashMap<PathBuf, StatefulProtocol>,
     album_columns: usize,
     last_mpris_signature: String,
@@ -477,6 +485,8 @@ async fn run_inner(
         dirty: true,
         picker,
         cover: None,
+        cover_sig: 0,
+        cover_sig_now: 0,
         album_covers: HashMap::new(),
         album_columns: 1,
         last_mpris_signature: String::new(),
@@ -576,6 +586,13 @@ async fn run_inner(
             if app.dirty || last_draw.elapsed() >= draw_interval {
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;
+                if app.cover_sig_now != app.cover_sig {
+                    // Las portadas cambiaron de sitio: un repintado parcial deja
+                    // mezcladas la vieja y la nueva, así que limpio y redibujo.
+                    app.cover_sig = app.cover_sig_now;
+                    terminal.clear()?;
+                    terminal.draw(|frame| draw(frame, &mut app))?;
+                }
                 app.sync_mpris().await;
                 app.sync_discord();
                 app.dirty = false;
@@ -2238,7 +2255,10 @@ impl App {
 }
 
 fn resize_terminal_for_mode(compact: bool) -> Result<()> {
-    let (columns, rows) = if compact { (95, 32) } else { (160, 48) };
+    // El tamaño real de la ventana lo decide esto, no la regla de Hyprland: al
+    // pedir N celdas, el terminal se redimensiona. En una pantalla de 1920x1080
+    // con celdas de ~10x18 px, 180x52 ocupa unos 1790x960 px.
+    let (columns, rows) = if compact { (95, 32) } else { (180, 52) };
     crossterm::execute!(std::io::stdout(), SetSize(columns, rows))?;
     Ok(())
 }
@@ -2277,7 +2297,16 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
         .ok();
 }
 
+/// Mezcla en la firma qué imagen se dibuja y en qué rectángulo.
+fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
+    let mut h = DefaultHasher::new();
+    clave.hash(&mut h);
+    (area.x, area.y, area.width, area.height).hash(&mut h);
+    *sig = sig.rotate_left(13) ^ h.finish();
+}
+
 fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    app.cover_sig_now = 0;
     if app.compact {
         draw_compact(frame, app);
         if app.input.is_some() {
@@ -2854,14 +2883,13 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         if let Some(path) = cover_path
             && let Some(protocol) = app.album_covers.get_mut(&path)
         {
-            frame.render_stateful_widget(
-                StatefulImage::new(),
-                rows[0].inner(Margin {
-                    horizontal: 1,
-                    vertical: 0,
-                }),
-                protocol,
-            );
+            let zona = rows[0].inner(Margin {
+                horizontal: 1,
+                vertical: 0,
+            });
+            anotar_portada(&mut app.cover_sig_now, &path.to_string_lossy(), zona);
+            frame.render_widget(Clear, zona); // mismo motivo que en el panel
+            frame.render_stateful_widget(StatefulImage::new(), zona, protocol);
         } else {
             frame.render_widget(
                 Paragraph::new("󰀥").alignment(Alignment::Center).style(
@@ -3081,14 +3109,16 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     ])
     .split(inner);
     if let Some(cover) = app.cover.as_mut() {
-        frame.render_stateful_widget(
-            StatefulImage::new(),
-            parts[0].inner(Margin {
-                horizontal: 1,
-                vertical: 1,
-            }),
-            &mut cover.protocol,
-        );
+        let zona = parts[0].inner(Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        // Limpiar la zona antes de dibujar: con el protocolo de imágenes de kitty,
+        // la portada anterior deja restos (una franja de la otra imagen) si no se
+        // borra primero.
+        anotar_portada(&mut app.cover_sig_now, "panel", zona);
+        frame.render_widget(Clear, zona);
+        frame.render_stateful_widget(StatefulImage::new(), zona, &mut cover.protocol);
     } else {
         frame.render_widget(
             Paragraph::new("\n\n󰀥\nSin portada")
@@ -3127,10 +3157,14 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .border_style(Style::default().fg(app.theme.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // Los dos lados miden lo mismo para que los controles y la barra de progreso
+    // queden centrados de verdad en la ventana. Con anchos distintos (34/44/22)
+    // el bloque central se iba a la derecha la mitad de la diferencia.
+    let lado = (inner.width / 4).clamp(16, 34);
     let columns = Layout::horizontal([
-        Constraint::Percentage(34),
-        Constraint::Percentage(44),
-        Constraint::Percentage(22),
+        Constraint::Length(lado),
+        Constraint::Min(0),
+        Constraint::Length(lado),
     ])
     .split(inner);
     let (title, subtitle) = app
