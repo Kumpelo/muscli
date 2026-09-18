@@ -849,7 +849,13 @@ impl App {
             ScanMessage::Source(scan) => {
                 let moved_tracks =
                     self.db
-                        .upsert_scan(&scan.id, &scan.root, &scan.label, &scan.tracks)?;
+                        .upsert_scan(
+                        &scan.id,
+                        &scan.root,
+                        &scan.label,
+                        &scan.tracks,
+                        &scan.missing_track_ids,
+                    )?;
                 for id in &mut self.queue {
                     if let Some((_, new_id)) = moved_tracks.iter().find(|(old_id, _)| id == old_id)
                     {

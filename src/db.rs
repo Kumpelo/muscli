@@ -321,6 +321,7 @@ impl Database {
         root: &Path,
         label: &str,
         tracks: &[ScannedTrack],
+        missing_track_ids: &[String],
     ) -> Result<Vec<(String, String)>> {
         let _profile = crate::profiling::span("db_upsert_scan");
         let tx = self.conn.transaction()?;
@@ -329,10 +330,13 @@ impl Database {
              ON CONFLICT(id) DO UPDATE SET root=excluded.root, label=excluded.label, available=1, last_scan=excluded.last_scan",
             params![source_id, root.to_string_lossy(), label],
         )?;
-        tx.execute(
-            "UPDATE tracks SET available=0 WHERE source_id=?1",
-            [source_id],
-        )?;
+        if !missing_track_ids.is_empty() {
+            let mut mark_missing =
+                tx.prepare_cached("UPDATE tracks SET available=0 WHERE source_id=?1 AND id=?2")?;
+            for track_id in missing_track_ids {
+                mark_missing.execute(params![source_id, track_id])?;
+            }
+        }
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO tracks(
@@ -1193,7 +1197,7 @@ mod tests {
             file_size: 1,
             modified_ns: 1,
         }];
-        db.upsert_scan("s", Path::new("/music"), "Music", &scanned)?;
+        db.upsert_scan("s", Path::new("/music"), "Music", &scanned, &[])?;
         assert_eq!(db.load_tracks()?.len(), 1);
         let playlist = db.create_playlist("Mix")?;
         db.add_to_playlist(playlist, "one")?;
@@ -1209,7 +1213,7 @@ mod tests {
             file_size: 42,
             modified_ns: 1,
         };
-        db.upsert_scan("s", Path::new("/music"), "Music", &[old])?;
+        db.upsert_scan("s", Path::new("/music"), "Music", &[old], &[])?;
         db.toggle_favorite("old-id")?;
         let playlist = db.create_playlist("Mix")?;
         db.add_to_playlist(playlist, "old-id")?;
@@ -1226,7 +1230,13 @@ mod tests {
             file_size: 42,
             modified_ns: 2,
         };
-        let mappings = db.upsert_scan("s", Path::new("/music"), "Music", &[moved])?;
+        let mappings = db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[moved],
+            &["old-id".into()],
+        )?;
 
         assert_eq!(mappings, [("old-id".into(), "new-id".into())]);
         let tracks = db.load_tracks()?;
@@ -1261,6 +1271,7 @@ mod tests {
                 file_size: 1,
                 modified_ns: 1,
             }],
+            &[],
         )?;
         assert_eq!(db.prune_missing_tracks()?, 1);
         assert!(db.load_tracks()?.is_empty());
@@ -1276,8 +1287,14 @@ mod tests {
             file_size: 1,
             modified_ns: 1,
         };
-        db.upsert_scan("s", Path::new("/music"), "Music", &[scanned])?;
-        db.upsert_scan("s", Path::new("/music"), "Music", &[])?;
+        db.upsert_scan("s", Path::new("/music"), "Music", &[scanned], &[])?;
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[],
+            &["one".into()],
+        )?;
         assert_eq!(
             db.prune_missing_for_source("s", &BTreeSet::from(["one.flac".into()]))?,
             0
@@ -1285,7 +1302,13 @@ mod tests {
         let tracks = db.load_tracks()?;
         assert_eq!(tracks.len(), 1);
         assert!(tracks[0].available);
-        db.upsert_scan("s", Path::new("/music"), "Music", &[])?;
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[],
+            &["one".into()],
+        )?;
         assert_eq!(db.prune_missing_for_source("s", &BTreeSet::new())?, 1);
         assert!(db.load_tracks()?.is_empty());
         Ok(())

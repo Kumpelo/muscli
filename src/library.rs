@@ -37,6 +37,7 @@ pub struct SourceScan {
     pub label: String,
     pub tracks: Vec<ScannedTrack>,
     pub failed_paths: BTreeSet<String>,
+    pub missing_track_ids: Vec<String>,
     pub skipped: usize,
     pub errors: Vec<String>,
 }
@@ -57,7 +58,13 @@ pub fn scan_to_database(
                 report.tracks += scan.tracks.len();
                 report.skipped += scan.skipped;
                 report.errors.extend(scan.errors.clone());
-                let _ = db.upsert_scan(&scan.id, &scan.root, &scan.label, &scan.tracks)?;
+                let _ = db.upsert_scan(
+                    &scan.id,
+                    &scan.root,
+                    &scan.label,
+                    &scan.tracks,
+                    &scan.missing_track_ids,
+                )?;
                 db.prune_missing_for_source(&scan.id, &scan.failed_paths)?;
             }
             Err(error) => report.errors.push(format!("{}: {error:#}", root.display())),
@@ -81,7 +88,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         .unwrap_or("Music")
         .to_owned();
     let id = source_id(&root);
-    let cached = Database::open(&paths.database_file())
+    let mut cached = Database::open(&paths.database_file())
         .and_then(|db| db.scan_cache(&id))
         .unwrap_or_default();
     let mut cover_validity = HashMap::<PathBuf, bool>::new();
@@ -93,6 +100,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         label,
         tracks: Vec::new(),
         failed_paths: BTreeSet::new(),
+        missing_track_ids: Vec::new(),
         skipped: 0,
         errors: Vec::new(),
     };
@@ -117,20 +125,18 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
             .to_string_lossy()
             .into_owned();
         let fingerprint = file_fingerprint(entry.path());
+        let cached_item = cached.remove(&relative);
         let unchanged = fingerprint
             .and_then(|(size, modified)| {
-                cached
-                    .get(&relative)
-                    .filter(|item| {
-                        item.file_size == size
-                            && item.modified_ns == modified
-                            && item.track.cover_path.as_deref().is_none_or(|cover| {
-                                *cover_validity
-                                    .entry(cover.to_path_buf())
-                                    .or_insert_with(|| cached_cover_is_valid(cover))
-                            })
-                    })
-                    .cloned()
+                cached_item.filter(|item| {
+                    item.file_size == size
+                        && item.modified_ns == modified
+                        && item.track.cover_path.as_deref().is_none_or(|cover| {
+                            *cover_validity
+                                .entry(cover.to_path_buf())
+                                .or_insert_with(|| cached_cover_is_valid(cover))
+                        })
+                })
             })
             .map(|mut item| {
                 item.track.path = entry.path().to_path_buf();
@@ -158,6 +164,10 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
             }
         }
     }
+    scan.missing_track_ids = cached
+        .into_values()
+        .map(|item| item.track.id)
+        .collect();
     Ok(scan)
 }
 
