@@ -884,7 +884,7 @@ impl App {
                     if tx
                         .send(ScanMessage::Source {
                             label: scan.label,
-                            tracks: scan.tracks.len(),
+                            tracks: scan.track_count,
                             moved_tracks,
                         })
                         .is_err()

@@ -36,6 +36,7 @@ pub struct SourceScan {
     pub root: PathBuf,
     pub label: String,
     pub tracks: Vec<ScannedTrack>,
+    pub track_count: usize,
     pub failed_paths: BTreeSet<String>,
     pub missing_track_ids: Vec<String>,
     pub skipped: usize,
@@ -55,7 +56,7 @@ pub fn scan_to_database(
             Ok(scan) => {
                 ids.insert(scan.id.clone());
                 report.sources += 1;
-                report.tracks += scan.tracks.len();
+                report.tracks += scan.track_count;
                 report.skipped += scan.skipped;
                 report.errors.extend(scan.errors.clone());
                 let _ = db.upsert_scan(
@@ -99,6 +100,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         root: root.clone(),
         label,
         tracks: Vec::new(),
+        track_count: 0,
         failed_paths: BTreeSet::new(),
         missing_track_ids: Vec::new(),
         skipped: 0,
@@ -126,36 +128,40 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
             .into_owned();
         let fingerprint = file_fingerprint(entry.path());
         let cached_item = cached.remove(&relative);
-        let unchanged = fingerprint
-            .and_then(|(size, modified)| {
-                cached_item.filter(|item| {
-                    item.file_size == size
-                        && item.modified_ns == modified
-                        && item.track.cover_path.as_deref().is_none_or(|cover| {
-                            *cover_validity
-                                .entry(cover.to_path_buf())
-                                .or_insert_with(|| cached_cover_is_valid(cover))
-                        })
-                })
+        let unchanged = fingerprint.and_then(|(size, modified)| {
+            cached_item.filter(|item| {
+                item.file_size == size
+                    && item.modified_ns == modified
+                    && item.track.cover_path.as_deref().is_none_or(|cover| {
+                        *cover_validity
+                            .entry(cover.to_path_buf())
+                            .or_insert_with(|| cached_cover_is_valid(cover))
+                    })
             })
-            .map(|mut item| {
+        });
+        if let Some(mut item) = unchanged {
+            scan.track_count += 1;
+            if !item.track.available {
                 item.track.path = entry.path().to_path_buf();
                 item.track.available = true;
-                item
-            });
-        let result = unchanged.map(Ok).unwrap_or_else(|| {
-            read_track(
-                paths,
-                &id,
-                &root,
-                entry.path(),
-                fingerprint,
-                &mut artwork_cache,
-                &mut external_cover_cache,
-            )
-        });
-        match result {
-            Ok(track) => scan.tracks.push(track),
+                scan.tracks.push(item);
+            }
+            continue;
+        }
+
+        match read_track(
+            paths,
+            &id,
+            &root,
+            entry.path(),
+            fingerprint,
+            &mut artwork_cache,
+            &mut external_cover_cache,
+        ) {
+            Ok(track) => {
+                scan.track_count += 1;
+                scan.tracks.push(track);
+            }
             Err(error) => {
                 scan.failed_paths.insert(relative);
                 scan.skipped += 1;
