@@ -67,8 +67,12 @@ impl MprisBridge {
         self.player
             .set_metadata(track.map(metadata).unwrap_or_default())
             .await?;
+        Ok(())
+    }
+
+    pub async fn sync_position(&self, state: &PlaybackState) -> Result<()> {
         self.player.set_position(Time::from_millis(
-            state.position_ms.min(i64::MAX as u64) as i64
+            state.position_ms.min(i64::MAX as u64) as i64,
         ));
         Ok(())
     }
@@ -265,6 +269,10 @@ mod windows_smtc {
             }
             updater.Update()?;
 
+            Ok(())
+        }
+
+        pub async fn sync_position(&self, state: &PlaybackState) -> Result<()> {
             let timeline = SystemMediaTransportControlsTimelineProperties::new()?;
             let duration = millis_to_timespan(state.duration_ms);
             timeline.SetStartTime(TimeSpan { Duration: 0 })?;
