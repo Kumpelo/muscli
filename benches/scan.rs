@@ -15,13 +15,23 @@ mod common;
 
 use std::path::Path;
 
-use criterion::{Criterion, criterion_group, criterion_main};
-use muscli::{db::Database, library::scan_to_database};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use muscli::{
+    db::Database,
+    library::{ScanOptions, scan_to_database},
+};
 
 use common::{Fixture, TrackSpec, png_bytes, write_track};
 
 const CACHE_LIMIT: u64 = 64 * 1024 * 1024;
 const TRACKS: usize = 300;
+
+fn options(threads: usize) -> ScanOptions {
+    ScanOptions {
+        threads,
+        cover_cache_bytes: CACHE_LIMIT,
+    }
+}
 
 /// Build a library tree once; every iteration reuses these files.
 fn populate(fixture: &Fixture, tracks: usize, with_art: bool) {
@@ -59,45 +69,45 @@ fn fresh_database(path: &Path) -> Database {
     Database::open(path).expect("opening the benchmark database")
 }
 
-fn cold_scan(criterion: &mut Criterion) {
+fn bench_cold(criterion: &mut Criterion, name: &str, with_art: bool) {
     let fixture = Fixture::new();
-    populate(&fixture, TRACKS, false);
+    populate(&fixture, TRACKS, with_art);
     let roots = vec![fixture.source()];
     let database_file = fixture.paths().database_file();
 
     let mut group = criterion.benchmark_group("scan");
     group.sample_size(10);
-    group.bench_function("cold_no_artwork", |bencher| {
-        bencher.iter(|| {
-            let mut db = fresh_database(&database_file);
-            scan_to_database(&mut db, fixture.paths(), &roots, CACHE_LIMIT)
-                .expect("scanning the benchmark library")
-        })
-    });
+    // Thread counts rather than a single figure: the speedup is the point, and
+    // it is very different for tag parsing than for artwork decoding.
+    for threads in [1usize, 2, 4] {
+        group.bench_with_input(
+            BenchmarkId::new(name, threads),
+            &threads,
+            |bencher, &threads| {
+                bencher.iter(|| {
+                    if with_art {
+                        // Artwork decoding and thumbnailing is the CPU-bound
+                        // half of a cold scan, so clear the cover cache too.
+                        for cover in fixture.cover_cache_files() {
+                            let _ = std::fs::remove_file(cover);
+                        }
+                    }
+                    let mut db = fresh_database(&database_file);
+                    scan_to_database(&mut db, fixture.paths(), &roots, options(threads))
+                        .expect("scanning the benchmark library")
+                })
+            },
+        );
+    }
     group.finish();
 }
 
-fn cold_scan_with_artwork(criterion: &mut Criterion) {
-    let fixture = Fixture::new();
-    populate(&fixture, TRACKS, true);
-    let roots = vec![fixture.source()];
-    let database_file = fixture.paths().database_file();
+fn cold_scan(criterion: &mut Criterion) {
+    bench_cold(criterion, "cold_no_artwork", false);
+}
 
-    let mut group = criterion.benchmark_group("scan");
-    group.sample_size(10);
-    group.bench_function("cold_with_artwork", |bencher| {
-        bencher.iter(|| {
-            // Artwork decoding and thumbnailing is the CPU-bound half of a cold
-            // scan, so clear the cover cache as well as the index.
-            for cover in fixture.cover_cache_files() {
-                let _ = std::fs::remove_file(cover);
-            }
-            let mut db = fresh_database(&database_file);
-            scan_to_database(&mut db, fixture.paths(), &roots, CACHE_LIMIT)
-                .expect("scanning the benchmark library")
-        })
-    });
-    group.finish();
+fn cold_scan_with_artwork(criterion: &mut Criterion) {
+    bench_cold(criterion, "cold_with_artwork", true);
 }
 
 fn warm_rescan(criterion: &mut Criterion) {
@@ -106,16 +116,22 @@ fn warm_rescan(criterion: &mut Criterion) {
     let roots = vec![fixture.source()];
     let mut db =
         Database::open(&fixture.paths().database_file()).expect("opening the benchmark database");
-    scan_to_database(&mut db, fixture.paths(), &roots, CACHE_LIMIT).expect("priming the index");
+    scan_to_database(&mut db, fixture.paths(), &roots, options(1)).expect("priming the index");
 
     let mut group = criterion.benchmark_group("scan");
     group.sample_size(20);
-    group.bench_function("warm_rescan", |bencher| {
-        bencher.iter(|| {
-            scan_to_database(&mut db, fixture.paths(), &roots, CACHE_LIMIT)
-                .expect("rescanning the benchmark library")
-        })
-    });
+    for threads in [1usize, 4] {
+        group.bench_with_input(
+            BenchmarkId::new("warm_rescan", threads),
+            &threads,
+            |bencher, &threads| {
+                bencher.iter(|| {
+                    scan_to_database(&mut db, fixture.paths(), &roots, options(threads))
+                        .expect("rescanning the benchmark library")
+                })
+            },
+        );
+    }
     group.finish();
 }
 

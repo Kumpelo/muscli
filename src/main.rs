@@ -63,7 +63,10 @@ fn main() -> Result<()> {
                     &mut db,
                     &paths,
                     &sources,
-                    config.cover_cache_mb * 1024 * 1024,
+                    library::ScanOptions {
+                        threads: config.scan_threads,
+                        cover_cache_bytes: config.cover_cache_mb * 1024 * 1024,
+                    },
                 )?;
                 println!(
                     "Indexed {} tracks from {} sources ({} skipped)",

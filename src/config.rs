@@ -32,6 +32,9 @@ pub struct Config {
     pub compact_default: bool,
     pub show_covers: bool,
     pub volume_step: u8,
+    /// Worker threads for library scanning. `0` derives a value from the
+    /// machine, capped so a spinning disk is not thrashed by seeks.
+    pub scan_threads: usize,
 }
 
 impl Default for Config {
@@ -51,6 +54,7 @@ impl Default for Config {
             compact_default: false,
             show_covers: true,
             volume_step: 5,
+            scan_threads: 0,
         }
     }
 }

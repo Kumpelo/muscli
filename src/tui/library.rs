@@ -223,6 +223,7 @@ impl App {
         let tx = self.scan_tx.clone();
         let paths = self.paths.clone();
         let cover_cache_bytes = self.config.cover_cache_mb * 1024 * 1024;
+        let scan_threads = self.config.scan_threads;
         self.scan_running = true;
         self.last_scan = Instant::now();
         self.status = format!("Escaneando {} fuente(s)…", roots.len());
@@ -240,7 +241,7 @@ impl App {
                 let mut ids = BTreeSet::new();
                 let mut changed = false;
                 for root in roots {
-                    let scan = match scan_source_with_database(&paths, &root, &db) {
+                    let scan = match scan_source_with_database(&paths, &root, &db, scan_threads) {
                         Ok(scan) => scan,
                         Err(error) => {
                             let _ = tx
