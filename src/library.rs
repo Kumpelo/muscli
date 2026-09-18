@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -83,6 +83,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
     let cached = Database::open(&paths.database_file())
         .and_then(|db| db.scan_cache(&id))
         .unwrap_or_default();
+    let mut cover_validity = HashMap::<PathBuf, bool>::new();
     let mut scan = SourceScan {
         id: id.clone(),
         root: root.clone(),
@@ -120,11 +121,11 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
                     .filter(|item| {
                         item.file_size == size
                             && item.modified_ns == modified
-                            && item
-                                .track
-                                .cover_path
-                                .as_deref()
-                                .is_none_or(cached_cover_is_valid)
+                            && item.track.cover_path.as_deref().is_none_or(|cover| {
+                                *cover_validity
+                                    .entry(cover.to_path_buf())
+                                    .or_insert_with(|| cached_cover_is_valid(cover))
+                            })
                     })
                     .cloned()
             })
