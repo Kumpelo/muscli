@@ -34,6 +34,12 @@ use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use tokio::sync::mpsc as tokio_mpsc;
 
 use render::draw;
+use theme::UiTheme;
+use workers::{
+    CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult,
+    start_cover_decode_worker, start_search_worker, start_shutdown_listener,
+    start_terminal_event_reader, start_watchers,
+};
 
 use crate::{
     config::{Config, ReplayGainMode, all_sources},
@@ -217,132 +223,9 @@ enum InputMode {
     },
 }
 
-enum ScanMessage {
-    Source {
-        label: String,
-        tracks: usize,
-        moved_tracks: Vec<(String, String)>,
-    },
-    Error(String),
-    Done {
-        changed: bool,
-    },
-}
-
 struct CoverState {
     path: PathBuf,
     protocol: StatefulProtocol,
-}
-
-#[derive(Debug)]
-struct CoverDecodeRequest {
-    path: PathBuf,
-    size: u32,
-}
-
-struct CoverDecodeResult {
-    path: PathBuf,
-    size: u32,
-    image: Option<image::DynamicImage>,
-}
-
-#[derive(Debug)]
-struct SearchRequest {
-    generation: u64,
-    query: String,
-    index: SearchIndex,
-}
-
-#[derive(Debug)]
-struct SearchResult {
-    generation: u64,
-    matches: Vec<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UiTheme {
-    accent: Color,
-    selection: Color,
-    foreground: Color,
-    background: Color,
-    muted: Color,
-    border: Color,
-}
-
-impl Default for UiTheme {
-    fn default() -> Self {
-        Self {
-            accent: Color::Magenta,
-            selection: Color::Magenta,
-            foreground: Color::White,
-            background: Color::Black,
-            muted: Color::Gray,
-            border: Color::DarkGray,
-        }
-    }
-}
-
-impl UiTheme {
-    #[cfg(unix)]
-    fn source_paths() -> [Option<PathBuf>; 2] {
-        let state_home = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            });
-        let config_home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(".config"));
-        [
-            state_home.map(|root| root.join("omarchy/current/theme/colors.toml")),
-            config_home.map(|root| root.join("omarchy/current/theme/colors.toml")),
-        ]
-    }
-
-    #[cfg(unix)]
-    fn load_with_source() -> (Self, Option<PathBuf>, Option<SystemTime>) {
-        for path in Self::source_paths().into_iter().flatten() {
-            if let Some(theme) = Self::from_file(&path) {
-                let modified = fs::metadata(&path)
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok());
-                return (theme, Some(path), modified);
-            }
-        }
-        (Self::default(), None, None)
-    }
-
-    #[cfg(any(unix, test))]
-    fn from_file(path: &Path) -> Option<Self> {
-        let raw = fs::read_to_string(path).ok()?;
-        let value = toml::from_str::<toml::Value>(&raw).ok()?;
-        let color = |key: &str| value.get(key)?.as_str().and_then(parse_hex_color);
-        let fallback = Self::default();
-        let accent = color("accent").unwrap_or(fallback.accent);
-        Some(Self {
-            accent,
-            selection: color("selection").unwrap_or(accent),
-            foreground: color("foreground").unwrap_or(fallback.foreground),
-            background: color("background").unwrap_or(fallback.background),
-            muted: color("dark_foreground")
-                .or_else(|| color("muted"))
-                .unwrap_or(fallback.muted),
-            border: color("muted").unwrap_or(fallback.border),
-        })
-    }
-}
-
-#[cfg(any(unix, test))]
-fn parse_hex_color(value: &str) -> Option<Color> {
-    let hex = value.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    Some(Color::Rgb(
-        u8::from_str_radix(&hex[0..2], 16).ok()?,
-        u8::from_str_radix(&hex[2..4], 16).ok()?,
-        u8::from_str_radix(&hex[4..6], 16).ok()?,
-    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2927,135 +2810,6 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
     Ok(())
 }
 
-fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<()>) {
-    let configured = config.sources.clone();
-    thread::Builder::new()
-        .name("muscli-watcher".into())
-        .spawn(move || {
-            let event_tx = tx.clone();
-            let Ok(mut watcher) = RecommendedWatcher::new(
-                move |result: notify::Result<notify::Event>| {
-                    if result.is_ok() {
-                        let _ = event_tx.send(());
-                    }
-                },
-                notify::Config::default(),
-            ) else {
-                return;
-            };
-            for root in configured.iter().filter(|p| p.exists()) {
-                let _ = watcher.watch(root, RecursiveMode::Recursive);
-            }
-
-            let mut known_removable = crate::config::discover_removable_roots()
-                .into_iter()
-                .filter(|path| path.exists())
-                .collect::<BTreeSet<_>>();
-            let mut watched_removable = BTreeSet::new();
-            loop {
-                let current_removable = crate::config::discover_removable_roots()
-                    .into_iter()
-                    .filter(|path| path.exists())
-                    .collect::<BTreeSet<_>>();
-
-                if current_removable != known_removable {
-                    let _ = tx.send(());
-                    known_removable = current_removable.clone();
-                }
-
-                let added = current_removable
-                    .difference(&watched_removable)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for root in added {
-                    if watcher.watch(&root, RecursiveMode::Recursive).is_ok() {
-                        watched_removable.insert(root);
-                    }
-                }
-
-                let removed = watched_removable
-                    .difference(&current_removable)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for root in removed {
-                    let _ = watcher.unwatch(&root);
-                    watched_removable.remove(&root);
-                }
-
-                thread::sleep(Duration::from_secs(2));
-            }
-        })
-        .ok();
-}
-
-fn start_search_worker(
-    requests: Receiver<SearchRequest>,
-    results: tokio_mpsc::UnboundedSender<SearchResult>,
-) {
-    thread::Builder::new()
-        .name("muscli-search".into())
-        .spawn(move || {
-            while let Ok(mut request) = requests.recv() {
-                for newer in requests.try_iter() {
-                    request = newer;
-                }
-                let matches = request.index.search(&request.query, 100);
-                if results
-                    .send(SearchResult {
-                        generation: request.generation,
-                        matches,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .ok();
-}
-
-fn start_cover_decode_worker(
-    requests: Receiver<CoverDecodeRequest>,
-    results: tokio_mpsc::UnboundedSender<CoverDecodeResult>,
-) {
-    thread::Builder::new()
-        .name("muscli-cover-decode".into())
-        .spawn(move || {
-            while let Ok(request) = requests.recv() {
-                let image = image::ImageReader::open(&request.path)
-                    .ok()
-                    .and_then(|reader| reader.decode().ok())
-                    .map(|image| image.thumbnail(request.size, request.size));
-                if results
-                    .send(CoverDecodeResult {
-                        path: request.path,
-                        size: request.size,
-                        image,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .ok();
-}
-
-fn start_terminal_event_reader() -> tokio_mpsc::UnboundedReceiver<Event> {
-    let (tx, rx) = tokio_mpsc::unbounded_channel();
-    thread::Builder::new()
-        .name("muscli-terminal-events".into())
-        .spawn(move || {
-            while let Ok(event) = event::read() {
-                if tx.send(event).is_err() {
-                    break;
-                }
-            }
-        })
-        .ok();
-    rx
-}
-
 fn handle_terminal_event(app: &mut App, event: Event) -> Result<()> {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
@@ -3068,35 +2822,9 @@ fn handle_terminal_event(app: &mut App, event: Event) -> Result<()> {
     }
 }
 
-#[cfg(unix)]
-fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
-    let (shutdown_tx, shutdown_rx) = tokio_mpsc::unbounded_channel();
-    for kind in [
-        tokio::signal::unix::SignalKind::interrupt(),
-        tokio::signal::unix::SignalKind::terminate(),
-        tokio::signal::unix::SignalKind::hangup(),
-    ] {
-        let mut signal = tokio::signal::unix::signal(kind)?;
-        let tx = shutdown_tx.clone();
-        tokio::task::spawn_local(async move {
-            let _ = signal.recv().await;
-            let _ = tx.send(());
-        });
-    }
-    Ok(shutdown_rx)
-}
-
-#[cfg(windows)]
-fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
-    let (shutdown_tx, shutdown_rx) = tokio_mpsc::unbounded_channel();
-    tokio::task::spawn_local(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        let _ = shutdown_tx.send(());
-    });
-    Ok(shutdown_rx)
-}
-
 mod render;
+mod theme;
+mod workers;
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(
@@ -3210,28 +2938,6 @@ mod tests {
     fn centered_rect_is_inside_parent() {
         let parent = Rect::new(0, 0, 80, 24);
         assert_eq!(centered(parent, 40, 10), Rect::new(20, 7, 40, 10));
-    }
-
-    #[test]
-    fn parses_omarchy_hex_colors() {
-        assert_eq!(parse_hex_color("#ff2ec1"), Some(Color::Rgb(255, 46, 193)));
-        assert_eq!(parse_hex_color("ff2ec1"), None);
-        assert_eq!(parse_hex_color("#bad"), None);
-    }
-
-    #[test]
-    fn loads_an_omarchy_colors_document() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("colors.toml");
-        fs::write(
-            &path,
-            "mode = \"dark\"\naccent = \"#509475\"\nselection = \"#32473B\"\nforeground = \"#C1C497\"\nbackground = \"#111c18\"\nmuted = \"#53685B\"\n",
-        )
-        .unwrap();
-        let theme = UiTheme::from_file(&path).unwrap();
-        assert_eq!(theme.accent, Color::Rgb(80, 148, 117));
-        assert_eq!(theme.selection, Color::Rgb(50, 71, 59));
-        assert_eq!(theme.background, Color::Rgb(17, 28, 24));
     }
 
     #[test]
