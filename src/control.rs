@@ -7,12 +7,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use anyhow::{Context, Result};
 use interprocess::local_socket::{
-    GenericFilePath, ListenerNonblockingMode, ListenerOptions, Stream, ToFsName, prelude::*,
+    GenericFilePath, ListenerOptions, Stream, ToFsName, prelude::*,
 };
 use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
 
@@ -40,7 +39,6 @@ impl ControlServer {
         let name = socket.to_fs_name::<GenericFilePath>()?;
         let listener = ListenerOptions::new()
             .name(name)
-            .nonblocking(ListenerNonblockingMode::Accept)
             .create_sync()
             .with_context(|| format!("could not bind control socket {}", socket.display()))?;
         #[cfg(unix)]
@@ -54,20 +52,18 @@ impl ControlServer {
         let worker = thread::Builder::new()
             .name("muscli-control".into())
             .spawn(move || {
-                while !thread_stop.load(Ordering::Relaxed) {
-                    match listener.accept() {
-                        Ok(mut stream) => {
-                            let mut raw = String::new();
-                            if stream.read_to_string(&mut raw).is_ok()
-                                && let Some(command) = parse(raw.trim())
-                            {
-                                let _ = tx.send(command);
-                            }
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(25));
-                        }
-                        Err(_) => break,
+                loop {
+                    let Ok(mut stream) = listener.accept() else {
+                        break;
+                    };
+                    if thread_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let mut raw = String::new();
+                    if stream.read_to_string(&mut raw).is_ok()
+                        && let Some(command) = parse(raw.trim())
+                    {
+                        let _ = tx.send(command);
                     }
                 }
             })?;
@@ -85,6 +81,9 @@ impl ControlServer {
 impl Drop for ControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Ok(name) = self.socket.to_fs_name::<GenericFilePath>() {
+            let _ = Stream::connect(name);
+        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
