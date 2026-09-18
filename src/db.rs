@@ -937,40 +937,54 @@ impl Database {
             |row| row.get(0),
         )?;
         tx.execute("DELETE FROM saved_queue_tracks WHERE queue_id=?1", [id])?;
-        for (position, track_id) in track_ids.iter().enumerate() {
-            tx.execute(
+        {
+            let mut insert_track = tx.prepare_cached(
                 "INSERT INTO saved_queue_tracks(queue_id,position,track_id) VALUES(?1,?2,?3)",
-                params![id, position.min(i64::MAX as usize) as i64, track_id],
             )?;
+            for (position, track_id) in track_ids.iter().enumerate() {
+                insert_track.execute(params![
+                    id,
+                    position.min(i64::MAX as usize) as i64,
+                    track_id
+                ])?;
+            }
         }
         tx.commit()?;
         Ok(())
     }
 
     pub fn load_saved_queues(&self) -> Result<Vec<SavedQueue>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id,name FROM saved_queues ORDER BY updated_at DESC")?;
-        let base = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        base.into_iter()
-            .map(|(id, name)| {
-                let mut tracks = self.conn.prepare(
-                    "SELECT track_id FROM saved_queue_tracks WHERE queue_id=?1 ORDER BY position",
-                )?;
-                let track_ids = tracks
-                    .query_map([id], |row| row.get(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(SavedQueue {
+        let mut stmt = self.conn.prepare(
+            "SELECT q.id,q.name,qt.track_id
+             FROM saved_queues q
+             LEFT JOIN saved_queue_tracks qt ON qt.queue_id=q.id
+             ORDER BY q.updated_at DESC,qt.position",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut queues = Vec::<SavedQueue>::new();
+        for row in rows {
+            let (id, name, track_id) = row?;
+            if queues.last().is_none_or(|queue| queue.id != id) {
+                queues.push(SavedQueue {
                     id,
                     name,
-                    track_ids,
-                })
-            })
-            .collect()
+                    track_ids: Vec::new(),
+                });
+            }
+            if let Some(track_id) = track_id
+                && let Some(queue) = queues.last_mut()
+            {
+                queue.track_ids.push(track_id);
+            }
+        }
+        Ok(queues)
     }
 
     pub fn gain_analysis_candidates(
