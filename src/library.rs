@@ -85,6 +85,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
         .and_then(|db| db.scan_cache(&id))
         .unwrap_or_default();
     let mut cover_validity = HashMap::<PathBuf, bool>::new();
+    let mut artwork_cache = HashMap::<String, Option<PathBuf>>::new();
     let mut external_cover_cache = HashMap::<PathBuf, Option<PathBuf>>::new();
     let mut scan = SourceScan {
         id: id.clone(),
@@ -144,6 +145,7 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
                 &root,
                 entry.path(),
                 fingerprint,
+                &mut artwork_cache,
                 &mut external_cover_cache,
             )
         });
@@ -181,6 +183,7 @@ fn read_track(
     root: &Path,
     path: &Path,
     fingerprint: Option<(u64, i64)>,
+    artwork_cache: &mut HashMap<String, Option<PathBuf>>,
     external_cover_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> Result<ScannedTrack> {
     let (file_size, modified_ns) = match fingerprint {
@@ -241,7 +244,8 @@ fn read_track(
     let id = blake3::hash(format!("{source_id}\0{relative}").as_bytes())
         .to_hex()
         .to_string();
-    let cover_path = find_or_cache_cover(paths, tag, path, external_cover_cache)?;
+    let cover_path =
+        find_or_cache_cover(paths, tag, path, artwork_cache, external_cover_cache)?;
     let duration_ms = tagged
         .properties()
         .duration()
@@ -276,10 +280,11 @@ fn find_or_cache_cover(
     paths: &AppPaths,
     tag: Option<&lofty::tag::Tag>,
     track_path: &Path,
+    artwork_cache: &mut HashMap<String, Option<PathBuf>>,
     external_cover_cache: &mut HashMap<PathBuf, Option<PathBuf>>,
 ) -> Result<Option<PathBuf>> {
     if let Some(picture) = tag.and_then(|tag| tag.pictures().first())
-        && let Some(cached) = cache_cover_data(paths, picture.data())?
+        && let Some(cached) = cache_cover_data(paths, picture.data(), artwork_cache)?
     {
         return Ok(Some(cached));
     }
@@ -308,7 +313,7 @@ fn find_or_cache_cover(
         let Ok(data) = fs::read(&candidate) else {
             continue;
         };
-        if let Some(cached) = cache_cover_data(paths, &data)? {
+        if let Some(cached) = cache_cover_data(paths, &data, artwork_cache)? {
             found = Some(cached);
             break;
         }
@@ -321,16 +326,26 @@ fn cover_cache_key(data: &[u8]) -> String {
     blake3::hash(data).to_hex().to_string()
 }
 
-fn cache_cover_data(paths: &AppPaths, data: &[u8]) -> Result<Option<PathBuf>> {
+fn cache_cover_data(
+    paths: &AppPaths,
+    data: &[u8],
+    artwork_cache: &mut HashMap<String, Option<PathBuf>>,
+) -> Result<Option<PathBuf>> {
     let key = cover_cache_key(data);
-    let target = paths.cover_cache_dir().join(format!("{key}.png"));
-    if cached_cover_is_valid(&target) {
-        return Ok(Some(target));
+    if let Some(cached) = artwork_cache.get(&key) {
+        return Ok(cached.clone());
     }
-    let Ok(image) = image::load_from_memory(data) else {
-        return Ok(None);
+
+    let target = paths.cover_cache_dir().join(format!("{key}.png"));
+    let cached = if cached_cover_is_valid(&target) {
+        Some(target)
+    } else if let Ok(image) = image::load_from_memory(data) {
+        Some(cache_cover(paths, &key, image)?)
+    } else {
+        None
     };
-    cache_cover(paths, &key, image).map(Some)
+    artwork_cache.insert(key, cached.clone());
+    Ok(cached)
 }
 
 fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Result<PathBuf> {
