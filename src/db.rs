@@ -6,14 +6,63 @@ use std::{
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Album, Artist, HistoryEntry, Playlist, ReplayGainAnalysis, SavedPlayback, SavedQueue,
-    SmartMatch, SmartPlaylist, Track, TrackStats,
+    Album, Artist, HistoryEntry, Playlist, ReplayGainAnalysis, RepeatMode, SavedPlayback,
+    SavedQueue, SmartMatch, SmartPlaylist, Track, TrackStats,
 };
 
 pub struct Database {
     conn: Connection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct PlaybackCheckpoint {
+    current_index: Option<usize>,
+    position_ms: u64,
+    volume: f64,
+    last_nonzero_volume: Option<f64>,
+    shuffle: bool,
+    repeat: RepeatMode,
+}
+
+impl Default for PlaybackCheckpoint {
+    fn default() -> Self {
+        Self {
+            current_index: None,
+            position_ms: 0,
+            volume: 1.0,
+            last_nonzero_volume: None,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+        }
+    }
+}
+
+impl From<&SavedPlayback> for PlaybackCheckpoint {
+    fn from(value: &SavedPlayback) -> Self {
+        Self {
+            current_index: value.current_index,
+            position_ms: value.position_ms,
+            volume: value.volume,
+            last_nonzero_volume: value.last_nonzero_volume,
+            shuffle: value.shuffle,
+            repeat: value.repeat,
+        }
+    }
+}
+
+impl PlaybackCheckpoint {
+    fn apply_to(self, playback: &mut SavedPlayback) {
+        playback.current_index = self.current_index;
+        playback.position_ms = self.position_ms;
+        playback.volume = self.volume;
+        playback.last_nonzero_volume = self.last_nonzero_volume;
+        playback.shuffle = self.shuffle;
+        playback.repeat = self.repeat;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -769,17 +818,41 @@ impl Database {
         Ok(out)
     }
 
-    pub fn save_playback(&self, state: &SavedPlayback) -> Result<()> {
-        let value = serde_json::to_string(state)?;
-        self.conn.execute(
-            "INSERT INTO app_state(key,value) VALUES('playback',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [value],
+    fn save_playback_tx(
+        tx: &rusqlite::Transaction<'_>,
+        state: &SavedPlayback,
+        queue: Option<&[String]>,
+    ) -> Result<()> {
+        let checkpoint = serde_json::to_string(&PlaybackCheckpoint::from(state))?;
+        tx.execute(
+            "INSERT INTO app_state(key,value) VALUES('playback_state',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [checkpoint],
         )?;
+        if let Some(queue) = queue {
+            let queue = serde_json::to_string(queue)?;
+            tx.execute(
+                "INSERT INTO app_state(key,value) VALUES('playback_queue',?1)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [queue],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn save_playback(
+        &mut self,
+        state: &SavedPlayback,
+        queue: Option<&[String]>,
+    ) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        Self::save_playback_tx(&tx, state, queue)?;
+        tx.commit()?;
         Ok(())
     }
 
     pub fn load_playback(&self) -> Result<SavedPlayback> {
-        let value: Option<String> = self
+        let legacy: Option<String> = self
             .conn
             .query_row(
                 "SELECT value FROM app_state WHERE key='playback'",
@@ -787,10 +860,41 @@ impl Database {
                 |r| r.get(0),
             )
             .optional()?;
-        match value {
-            Some(raw) => Ok(serde_json::from_str(&raw).unwrap_or_default()),
-            None => Ok(SavedPlayback::default()),
+        let mut playback = legacy
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_default();
+
+        let checkpoint: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM app_state WHERE key='playback_state'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(checkpoint) = checkpoint
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<PlaybackCheckpoint>(raw).ok())
+        {
+            checkpoint.apply_to(&mut playback);
         }
+
+        let queue: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM app_state WHERE key='playback_queue'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(queue) = queue
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        {
+            playback.queue = queue;
+        }
+        Ok(playback)
     }
 
     pub fn load_added_at(&self) -> Result<HashMap<String, i64>> {
@@ -866,15 +970,11 @@ impl Database {
         &mut self,
         update: HistoryUpdate<'_>,
         state: &SavedPlayback,
+        queue: Option<&[String]>,
     ) -> Result<()> {
-        let playback = serde_json::to_string(state)?;
         let tx = self.conn.transaction()?;
         Self::update_history_tx(&tx, update)?;
-        tx.execute(
-            "INSERT INTO app_state(key,value) VALUES('playback',?1)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [playback],
-        )?;
+        Self::save_playback_tx(&tx, state, queue)?;
         tx.commit()?;
         Ok(())
     }
