@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BinaryHeap, HashMap},
+};
 
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
@@ -36,23 +39,33 @@ impl SearchIndex {
     pub fn search(&self, query: &str, limit: usize) -> Vec<usize> {
         let _profile = crate::profiling::span("fuzzy_search");
         let query = fold(query.trim());
-        if query.is_empty() {
+        if query.is_empty() || limit == 0 {
             return Vec::new();
         }
-        let mut scored = self
-            .fields
-            .iter()
-            .enumerate()
-            .filter_map(|(index, fields)| {
-                fields
-                    .iter()
-                    .filter_map(|field| fuzzy_score(field, &query))
-                    .max()
-                    .map(|score| (index, score))
-            })
+
+        let mut best = BinaryHeap::<Reverse<(usize, Reverse<usize>)>>::with_capacity(limit + 1);
+        for (index, fields) in self.fields.iter().enumerate() {
+            let Some(score) = fields
+                .iter()
+                .filter_map(|field| fuzzy_score(field, &query))
+                .max()
+            else {
+                continue;
+            };
+            let rank = (score, Reverse(index));
+            if best.len() < limit {
+                best.push(Reverse(rank));
+            } else if best.peek().is_some_and(|Reverse(worst)| rank > *worst) {
+                best.pop();
+                best.push(Reverse(rank));
+            }
+        }
+
+        let mut scored = best
+            .into_iter()
+            .map(|Reverse((score, Reverse(index)))| (index, score))
             .collect::<Vec<_>>();
-        scored.sort_by_key(|(index, score)| (std::cmp::Reverse(*score), *index));
-        scored.truncate(limit);
+        scored.sort_by_key(|(index, score)| (Reverse(*score), *index));
         scored.into_iter().map(|(index, _)| index).collect()
     }
 }
@@ -215,16 +228,15 @@ pub fn fold(value: &str) -> String {
 fn levenshtein(left: &str, right: &str) -> usize {
     let right = right.chars().collect::<Vec<_>>();
     let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0; right.len() + 1];
     for (row, left_char) in left.chars().enumerate() {
-        let mut current = vec![row + 1];
+        current[0] = row + 1;
         for (column, right_char) in right.iter().enumerate() {
-            current.push(
-                (previous[column + 1] + 1)
-                    .min(current[column] + 1)
-                    .min(previous[column] + usize::from(left_char != *right_char)),
-            );
+            current[column + 1] = (previous[column + 1] + 1)
+                .min(current[column] + 1)
+                .min(previous[column] + usize::from(left_char != *right_char));
         }
-        previous = current;
+        std::mem::swap(&mut previous, &mut current);
     }
     previous[right.len()]
 }
@@ -273,6 +285,17 @@ mod tests {
         let index = SearchIndex::build(&tracks);
         assert_eq!(index.search("musica", 10), [0]);
         assert_eq!(index.search("jazz", 10), [1]);
+    }
+
+    #[test]
+    fn search_limit_keeps_the_best_ranked_results() {
+        let tracks = vec![
+            track("alpha", "", false),
+            track("alphabet", "", false),
+            track("x alpha", "", false),
+        ];
+        let index = SearchIndex::build(&tracks);
+        assert_eq!(index.search("alpha", 2), [0, 1]);
     }
 
     #[test]
