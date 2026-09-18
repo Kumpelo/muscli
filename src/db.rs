@@ -619,25 +619,33 @@ impl Database {
     }
 
     pub fn load_playlists(&self) -> Result<Vec<Playlist>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name FROM playlists ORDER BY name COLLATE NOCASE")?;
-        let base = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut out = Vec::new();
-        for (id, name) in base {
-            let mut tracks = self.conn.prepare(
-                "SELECT track_id FROM playlist_tracks WHERE playlist_id=?1 ORDER BY position",
-            )?;
-            let track_ids = tracks
-                .query_map([id], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            out.push(Playlist {
-                id,
-                name,
-                track_ids,
-            });
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id, p.name, pt.track_id
+             FROM playlists p
+             LEFT JOIN playlist_tracks pt ON pt.playlist_id=p.id
+             ORDER BY p.name COLLATE NOCASE, pt.position",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let mut out = Vec::<Playlist>::new();
+        for row in rows {
+            let (id, name, track_id) = row?;
+            if out.last().is_none_or(|playlist| playlist.id != id) {
+                out.push(Playlist {
+                    id,
+                    name,
+                    track_ids: Vec::new(),
+                });
+            }
+            if let Some(track_id) = track_id {
+                out.last_mut().expect("playlist inserted above").track_ids.push(track_id);
+            }
         }
         Ok(out)
     }
