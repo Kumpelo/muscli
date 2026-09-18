@@ -706,7 +706,7 @@ impl App {
                 self.db
                     .prune_missing_for_source(&scan.id, &scan.seen_paths)?;
                 self.status = format!("Indexadas {} pistas de {}", scan.tracks.len(), scan.label);
-                self.reload_library()?;
+                self.dirty = true;
             }
             ScanMessage::Done(ids) => {
                 self.db.mark_missing_sources(&ids)?;
