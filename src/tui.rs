@@ -220,6 +220,18 @@ struct CoverState {
     protocol: StatefulProtocol,
 }
 
+#[derive(Debug)]
+struct CoverDecodeRequest {
+    path: PathBuf,
+    size: u32,
+}
+
+struct CoverDecodeResult {
+    path: PathBuf,
+    size: u32,
+    image: Option<image::DynamicImage>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UiTheme {
     accent: Color,
@@ -371,6 +383,9 @@ struct App {
     cover_sig_now: u64,
     album_covers: HashMap<PathBuf, StatefulProtocol>,
     album_cover_order: VecDeque<PathBuf>,
+    cover_decode_tx: Sender<CoverDecodeRequest>,
+    cover_decode_rx: tokio_mpsc::UnboundedReceiver<CoverDecodeResult>,
+    cover_decode_pending: HashSet<(PathBuf, u32)>,
     album_columns: usize,
     last_mpris_signature: String,
     last_discord_signature: String,
@@ -440,6 +455,9 @@ async fn run_inner(
         None
     };
     let compact = compact_requested || config.compact_default;
+    let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
+    let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
+    start_cover_decode_worker(cover_decode_requests, cover_results_tx);
 
     let mut app = App {
         paths,
@@ -517,6 +535,9 @@ async fn run_inner(
         cover_sig_now: 0,
         album_covers: HashMap::new(),
         album_cover_order: VecDeque::new(),
+        cover_decode_tx,
+        cover_decode_rx,
+        cover_decode_pending: HashSet::new(),
         album_columns: 1,
         last_mpris_signature: String::new(),
         last_discord_signature: String::new(),
@@ -586,6 +607,11 @@ async fn run_inner(
                 action = app.remote_actions.recv() => {
                     if let Some(action) = action {
                         app.handle_remote_action(action)?;
+                    }
+                }
+                result = app.cover_decode_rx.recv() => {
+                    if let Some(result) = result {
+                        app.handle_cover_decode_result(result);
                     }
                 }
                 shutdown = shutdown_rx.recv() => {
@@ -2398,27 +2424,68 @@ impl App {
             self.cover = None;
             self.album_covers.clear();
             self.album_cover_order.clear();
+            self.cover_decode_pending.clear();
             return;
         }
+
         let path = self
             .detail_track()
             .and_then(|track| track.cover_path.clone());
-        if let Some(path) = path {
-            if !self.cover.as_ref().is_some_and(|cover| cover.path == path) {
-                self.cover = image::ImageReader::open(&path)
-                    .ok()
-                    .and_then(|reader| reader.decode().ok())
-                    .map(|image| CoverState {
-                        path,
-                        protocol: self.picker.new_resize_protocol(image.thumbnail(512, 512)),
-                    });
+        match path {
+            Some(path) if self.cover.as_ref().is_some_and(|cover| cover.path == path) => {}
+            Some(path) => {
+                self.cover = None;
+                self.request_cover_decode(path, 512);
             }
-        } else {
-            self.cover = None;
+            None => self.cover = None,
         }
-        // Keep the last visible album thumbnails while a detail view is open.
-        // Returning to the grid can then reuse the decoded image protocols
-        // instead of synchronously decoding every visible cover again.
+    }
+
+    fn request_cover_decode(&mut self, path: PathBuf, size: u32) {
+        let key = (path.clone(), size);
+        if !self.cover_decode_pending.insert(key.clone()) {
+            return;
+        }
+        if self
+            .cover_decode_tx
+            .send(CoverDecodeRequest { path, size })
+            .is_err()
+        {
+            self.cover_decode_pending.remove(&key);
+        }
+    }
+
+    fn handle_cover_decode_result(&mut self, result: CoverDecodeResult) {
+        self.cover_decode_pending
+            .remove(&(result.path.clone(), result.size));
+        let Some(image) = result.image else {
+            return;
+        };
+
+        match result.size {
+            512 => {
+                let wanted = self
+                    .detail_track()
+                    .and_then(|track| track.cover_path.as_ref());
+                if wanted.is_some_and(|path| path == &result.path) {
+                    self.cover = Some(CoverState {
+                        path: result.path,
+                        protocol: self.picker.new_resize_protocol(image),
+                    });
+                    self.dirty = true;
+                }
+            }
+            256 => {
+                self.album_covers.insert(
+                    result.path.clone(),
+                    self.picker.new_resize_protocol(image),
+                );
+                self.album_cover_order.retain(|path| path != &result.path);
+                self.album_cover_order.push_back(result.path);
+                self.dirty = true;
+            }
+            _ => {}
+        }
     }
 
     async fn sync_mpris(&mut self) {
@@ -2559,6 +2626,33 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
                 }
 
                 thread::sleep(Duration::from_secs(2));
+            }
+        })
+        .ok();
+}
+
+fn start_cover_decode_worker(
+    requests: Receiver<CoverDecodeRequest>,
+    results: tokio_mpsc::UnboundedSender<CoverDecodeResult>,
+) {
+    thread::Builder::new()
+        .name("muscli-cover-decode".into())
+        .spawn(move || {
+            while let Ok(request) = requests.recv() {
+                let image = image::ImageReader::open(&request.path)
+                    .ok()
+                    .and_then(|reader| reader.decode().ok())
+                    .map(|image| image.thumbnail(request.size, request.size));
+                if results
+                    .send(CoverDecodeResult {
+                        path: request.path,
+                        size: request.size,
+                        image,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
         })
         .ok();
