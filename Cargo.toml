@@ -61,7 +61,14 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 tempfile = "3.23"
 
 [profile.release]
-lto = "thin"
+# "fat" over "thin": this is a single binary where cross-crate inlining pays,
+# and release builds are not on the hot path of development.
+#
+# panic = "abort" is deliberately NOT set. Aborting skips Drop, and the Drop
+# impls here are what kill the mpv child process and restore the terminal from
+# raw mode; a panic would otherwise leave an orphaned player and an unusable
+# shell.
+lto = "fat"
 codegen-units = 1
 strip = true
 

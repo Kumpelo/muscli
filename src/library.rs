@@ -574,9 +574,8 @@ fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Resul
     // is the expensive part. Two threads racing on the same key both do the
     // work and both write the same bytes to the same place, which is cheaper
     // than serialising every cover behind one mutex.
-    let target = paths.cover_cache_dir().join(format!("{key}.png"));
-    let cached = if cached_cover_is_valid(&target) {
-        Some(target)
+    let cached = if let Some(existing) = existing_cover(paths, &key) {
+        Some(existing)
     } else if let Ok(image) = image::load_from_memory(data) {
         Some(cache_cover(paths, &key, image)?)
     } else {
@@ -605,15 +604,46 @@ fn scratch_name(key: &str) -> String {
     )
 }
 
+/// Quality for cached thumbnails. Album art is photographic, so lossless
+/// storage buys nothing visible at 512 px while costing roughly ten times the
+/// bytes - and the cover cache has a fixed budget it has to live inside.
+const COVER_QUALITY: u8 = 85;
+
+/// Where a cover with this key is written from now on.
+fn cover_target(paths: &AppPaths, key: &str) -> PathBuf {
+    paths.cover_cache_dir().join(format!("{key}.jpg"))
+}
+
+/// An already-cached cover for this key, in either format.
+///
+/// Caches written by older versions hold PNGs. They decode perfectly well, so
+/// there is nothing to migrate: they stay valid and the byte-budget pass
+/// retires them as new art arrives.
+fn existing_cover(paths: &AppPaths, key: &str) -> Option<PathBuf> {
+    [
+        cover_target(paths, key),
+        paths.cover_cache_dir().join(format!("{key}.png")),
+    ]
+    .into_iter()
+    .find(|candidate| cached_cover_is_valid(candidate))
+}
+
 fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Result<PathBuf> {
     fs::create_dir_all(paths.cover_cache_dir())?;
-    let target = paths.cover_cache_dir().join(format!("{key}.png"));
-    if !cached_cover_is_valid(&target) {
-        let thumbnail = image.thumbnail(512, 512);
-        let temporary = paths.cover_cache_dir().join(scratch_name(key));
-        thumbnail.save_with_format(&temporary, image::ImageFormat::Png)?;
-        atomic_replace(&temporary, &target)?;
+    if let Some(existing) = existing_cover(paths, key) {
+        return Ok(existing);
     }
+    let target = cover_target(paths, key);
+    // JPEG has no alpha channel; flattening to RGB is required, not incidental.
+    let thumbnail = image.thumbnail(512, 512).to_rgb8();
+    let temporary = paths.cover_cache_dir().join(scratch_name(key));
+    {
+        let mut file = std::io::BufWriter::new(fs::File::create(&temporary)?);
+        let mut encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut file, COVER_QUALITY);
+        encoder.encode_image(&thumbnail)?;
+    }
+    atomic_replace(&temporary, &target)?;
     Ok(target)
 }
 
