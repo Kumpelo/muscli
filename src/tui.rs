@@ -2191,23 +2191,39 @@ impl App {
     fn tick_history(&mut self) -> Result<()> {
         let elapsed = self.last_history_tick.elapsed();
         self.last_history_tick = Instant::now();
-        if self.playback.status == PlaybackStatus::Playing && self.history_id.is_some() {
+        let playing = self.playback.status == PlaybackStatus::Playing;
+        if playing && self.history_id.is_some() {
             let millis = elapsed.as_millis().min(u64::MAX as u128) as u64;
             self.listened_this_session_ms = self.listened_this_session_ms.saturating_add(millis);
             self.pending_listen_ms = self.pending_listen_ms.saturating_add(millis);
-            if self.last_history_flush.elapsed() >= Duration::from_secs(5) {
-                self.flush_history(false)?;
-            }
         }
-        if self.current_track().is_some()
-            && self.last_playback_save.elapsed() >= Duration::from_secs(5)
-        {
+
+        let history_due = playing
+            && self.history_id.is_some()
+            && self.last_history_flush.elapsed() >= Duration::from_secs(5);
+        let playback_due = playing
+            && self.current_track().is_some()
+            && self.last_playback_save.elapsed() >= Duration::from_secs(5);
+
+        if history_due && playback_due {
+            self.flush_history_with_playback(false)?;
+        } else if history_due {
+            self.flush_history(false)?;
+        } else if playback_due {
             self.persist_playback()?;
         }
         Ok(())
     }
 
     fn flush_history(&mut self, completed: bool) -> Result<()> {
+        self.flush_history_inner(completed, false)
+    }
+
+    fn flush_history_with_playback(&mut self, completed: bool) -> Result<()> {
+        self.flush_history_inner(completed, true)
+    }
+
+    fn flush_history_inner(&mut self, completed: bool, save_playback: bool) -> Result<()> {
         let (Some(history_id), Some(track_id)) = (self.history_id, self.history_track_id.clone())
         else {
             return Ok(());
@@ -2221,15 +2237,30 @@ impl App {
         let count_now = self.listened_this_session_ms >= threshold && threshold > 0;
         let completed = completed
             || (duration > 0 && self.playback.position_ms >= duration.saturating_mul(95) / 100);
-        self.db.update_history(
-            history_id,
-            &track_id,
-            self.pending_listen_ms,
-            self.playback.position_ms,
-            self.history_counted,
-            count_now,
-            completed,
-        )?;
+        if save_playback {
+            let state = self.playback_snapshot();
+            self.db.update_history_and_playback(
+                history_id,
+                &track_id,
+                self.pending_listen_ms,
+                self.playback.position_ms,
+                self.history_counted,
+                count_now,
+                completed,
+                &state,
+            )?;
+            self.last_playback_save = Instant::now();
+        } else {
+            self.db.update_history(
+                history_id,
+                &track_id,
+                self.pending_listen_ms,
+                self.playback.position_ms,
+                self.history_counted,
+                count_now,
+                completed,
+            )?;
+        }
         self.pending_listen_ms = 0;
         self.history_counted |= count_now;
         self.last_history_flush = Instant::now();
@@ -2416,8 +2447,8 @@ impl App {
         self.persist_playback()
     }
 
-    fn persist_playback(&mut self) -> Result<()> {
-        self.db.save_playback(&SavedPlayback {
+    fn playback_snapshot(&self) -> SavedPlayback {
+        SavedPlayback {
             queue: self.queue.clone(),
             current_index: self.queue_index,
             position_ms: self.playback.position_ms,
@@ -2425,7 +2456,11 @@ impl App {
             last_nonzero_volume: self.muted_volume,
             shuffle: self.shuffle,
             repeat: self.repeat,
-        })?;
+        }
+    }
+
+    fn persist_playback(&mut self) -> Result<()> {
+        self.db.save_playback(&self.playback_snapshot())?;
         self.last_playback_save = Instant::now();
         Ok(())
     }
