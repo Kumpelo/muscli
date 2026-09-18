@@ -300,6 +300,7 @@ struct App {
     db: Database,
     tracks: Vec<Track>,
     track_index: HashMap<String, usize>,
+    favorite_indices: Vec<usize>,
     albums: Vec<Album>,
     album_index: HashMap<String, usize>,
     artists: Vec<Artist>,
@@ -444,6 +445,7 @@ async fn run_inner(
         db,
         tracks: Vec::new(),
         track_index: HashMap::new(),
+        favorite_indices: Vec::new(),
         albums: Vec::new(),
         album_index: HashMap::new(),
         artists: Vec::new(),
@@ -639,6 +641,12 @@ impl App {
             .enumerate()
             .map(|(i, t)| (t.id.clone(), i))
             .collect();
+        self.favorite_indices = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, track)| track.favorite.then_some(index))
+            .collect();
         self.albums = group_albums(&self.tracks);
         self.album_index = self
             .albums
@@ -794,7 +802,7 @@ impl App {
             View::Playlists => self.playlists.len(),
             View::SmartPlaylists => self.smart_playlists.len(),
             View::SmartPlaylistDetail => self.smart_track_ids().len(),
-            View::Favorites => self.tracks.iter().filter(|t| t.favorite).count(),
+            View::Favorites => self.favorite_indices.len(),
             View::History => self.history.len(),
             View::Search => self.search_results().len(),
             View::Queue => self.queue.len(),
@@ -803,8 +811,46 @@ impl App {
         }
     }
 
-    fn search_results(&self) -> Vec<usize> {
-        self.search_matches.clone()
+    fn track_view_len(&self) -> usize {
+        match self.view {
+            View::Tracks => self.tracks.len(),
+            View::Favorites => self.favorite_indices.len(),
+            View::Search => self.search_matches.len(),
+            View::History => self.history.len(),
+            View::SmartPlaylistDetail => self.smart_track_ids().len(),
+            View::Queue => self.queue.len(),
+            View::AlbumDetail => self.opened_album().map_or(0, |album| album.track_ids.len()),
+            _ => 0,
+        }
+    }
+
+    fn track_index_at_view_position(&self, position: usize) -> Option<usize> {
+        match self.view {
+            View::Tracks => (position < self.tracks.len()).then_some(position),
+            View::Favorites => self.favorite_indices.get(position).copied(),
+            View::Search => self.search_matches.get(position).copied(),
+            View::History => self
+                .history
+                .get(position)
+                .and_then(|entry| self.track_index.get(&entry.track_id).copied()),
+            View::SmartPlaylistDetail => self
+                .smart_track_ids()
+                .get(position)
+                .and_then(|id| self.track_index.get(id).copied()),
+            View::Queue => self
+                .queue
+                .get(position)
+                .and_then(|id| self.track_index.get(id).copied()),
+            View::AlbumDetail => self
+                .opened_album()
+                .and_then(|album| album.track_ids.get(position))
+                .and_then(|id| self.track_index.get(id).copied()),
+            _ => None,
+        }
+    }
+
+    fn search_results(&self) -> &[usize] {
+        &self.search_matches
     }
 
     fn refresh_search(&mut self) {
@@ -813,7 +859,7 @@ impl App {
 
     fn view_track_ids(&self) -> Vec<String> {
         match self.view {
-            View::Home => self.home_track_ids(),
+            View::Home => self.home_track_ids().to_vec(),
             View::Tracks => self.tracks.iter().map(|t| t.id.clone()).collect(),
             View::Favorites => self
                 .tracks
@@ -823,8 +869,8 @@ impl App {
                 .collect(),
             View::Search => self
                 .search_results()
-                .into_iter()
-                .map(|i| self.tracks[i].id.clone())
+                .iter()
+                .map(|&i| self.tracks[i].id.clone())
                 .collect(),
             View::Queue => self.queue.clone(),
             View::Albums => self
@@ -846,7 +892,7 @@ impl App {
                 .get(self.selected)
                 .map(|genre| genre.track_ids.clone())
                 .unwrap_or_default(),
-            View::GenreDetail => self.genre_track_ids(),
+            View::GenreDetail => self.genre_track_ids().to_vec(),
             View::ArtistDetail => self
                 .selected_album()
                 .map(|album| album.track_ids.clone())
@@ -859,9 +905,9 @@ impl App {
             View::SmartPlaylists => self
                 .smart_playlists
                 .get(self.selected)
-                .map(|playlist| self.evaluate_smart(playlist))
+                .map(|playlist| self.evaluate_smart(playlist).to_vec())
                 .unwrap_or_default(),
-            View::SmartPlaylistDetail => self.smart_track_ids(),
+            View::SmartPlaylistDetail => self.smart_track_ids().to_vec(),
             View::History => self
                 .history
                 .iter()
@@ -876,11 +922,9 @@ impl App {
             View::Home => self.home_track_ids().get(self.selected).cloned(),
             View::Tracks => self.tracks.get(self.selected).map(|t| t.id.clone()),
             View::Favorites => self
-                .tracks
-                .iter()
-                .filter(|t| t.favorite)
-                .nth(self.selected)
-                .map(|t| t.id.clone()),
+                .favorite_indices
+                .get(self.selected)
+                .map(|&index| self.tracks[index].id.clone()),
             View::Search => self
                 .search_results()
                 .get(self.selected)
@@ -959,8 +1003,8 @@ impl App {
         self.home_tracks = ids;
     }
 
-    fn home_track_ids(&self) -> Vec<String> {
-        self.home_tracks.clone()
+    fn home_track_ids(&self) -> &[String] {
+        &self.home_tracks
     }
 
     fn opened_genre(&self) -> Option<&Genre> {
@@ -968,10 +1012,10 @@ impl App {
         self.genres.iter().find(|genre| genre.name == name)
     }
 
-    fn genre_track_ids(&self) -> Vec<String> {
+    fn genre_track_ids(&self) -> &[String] {
         self.opened_genre()
-            .map(|genre| genre.track_ids.clone())
-            .unwrap_or_default()
+            .map(|genre| genre.track_ids.as_slice())
+            .unwrap_or(&[])
     }
 
     fn rebuild_genre_indices(&mut self) {
@@ -1020,20 +1064,20 @@ impl App {
         self.genre_artist_cache = artist_cache;
     }
 
-    fn genre_album_indices(&self) -> Vec<usize> {
+    fn genre_album_indices(&self) -> &[usize] {
         self.opened_genre_name
             .as_deref()
             .and_then(|name| self.genre_album_cache.get(name))
-            .cloned()
-            .unwrap_or_default()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
-    fn genre_artist_indices(&self) -> Vec<usize> {
+    fn genre_artist_indices(&self) -> &[usize] {
         self.opened_genre_name
             .as_deref()
             .and_then(|name| self.genre_artist_cache.get(name))
-            .cloned()
-            .unwrap_or_default()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     fn genre_items_len(&self) -> usize {
@@ -1058,30 +1102,18 @@ impl App {
         }
     }
 
-    fn evaluate_smart(&self, playlist: &SmartPlaylist) -> Vec<String> {
+    fn evaluate_smart(&self, playlist: &SmartPlaylist) -> &[String] {
         self.smart_matches
             .get(&playlist.id)
-            .cloned()
-            .unwrap_or_else(|| {
-                evaluate_smart_playlist(
-                    playlist,
-                    &self.tracks,
-                    &self.stats,
-                    &self.added_at,
-                    chrono::Utc::now().timestamp(),
-                )
-            })
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
-    fn smart_track_ids(&self) -> Vec<String> {
+    fn smart_track_ids(&self) -> &[String] {
         self.opened_smart_playlist
-            .and_then(|id| {
-                self.smart_playlists
-                    .iter()
-                    .find(|playlist| playlist.id == id)
-            })
-            .map(|playlist| self.evaluate_smart(playlist))
-            .unwrap_or_default()
+            .and_then(|id| self.smart_matches.get(&id))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     fn selected_track(&self) -> Option<&Track> {

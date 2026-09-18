@@ -358,7 +358,8 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let items: Vec<ListItem<'_>> = match app.genre_tab {
         0 => app
             .genre_album_indices()
-            .into_iter()
+            .iter()
+            .copied()
             .map(|index| {
                 let album = &app.albums[index];
                 ListItem::new(format!("󰀥  {} — {}", album.title, album.artist))
@@ -366,13 +367,14 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .collect(),
         1 => app
             .genre_artist_indices()
-            .into_iter()
+            .iter()
+            .copied()
             .map(|index| ListItem::new(format!("󰠃  {}", app.artists[index].name)))
             .collect(),
         _ => app
             .genre_track_ids()
-            .into_iter()
-            .filter_map(|id| app.track_index.get(&id).map(|index| &app.tracks[*index]))
+            .iter()
+            .filter_map(|id| app.track_index.get(id).map(|index| &app.tracks[*index]))
             .map(|track| ListItem::new(format!("󰎆  {} — {}", track.title, track.artist)))
             .collect(),
     };
@@ -707,40 +709,8 @@ fn track_viewport(total: usize, selected: usize, area_height: u16) -> std::ops::
 }
 
 fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let indices: Vec<usize> = match app.view {
-        View::Tracks => (0..app.tracks.len()).collect(),
-        View::Favorites => app
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.favorite)
-            .map(|(i, _)| i)
-            .collect(),
-        View::Search => app.search_results(),
-        View::History => app
-            .history
-            .iter()
-            .filter_map(|entry| app.track_index.get(&entry.track_id).copied())
-            .collect(),
-        View::SmartPlaylistDetail => app
-            .smart_track_ids()
-            .iter()
-            .filter_map(|id| app.track_index.get(id).copied())
-            .collect(),
-        View::Queue => app
-            .queue
-            .iter()
-            .filter_map(|id| app.track_index.get(id).copied())
-            .collect(),
-        View::AlbumDetail => app
-            .opened_album()
-            .into_iter()
-            .flat_map(|album| album.track_ids.iter())
-            .filter_map(|id| app.track_index.get(id).copied())
-            .collect(),
-        _ => Vec::new(),
-    };
-    if indices.is_empty() {
+    let total = app.track_view_len();
+    if total == 0 {
         let message = if app.view == View::Search {
             "Escribe / para buscar por canción, artista o álbum."
         } else {
@@ -755,14 +725,11 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
 
-    let viewport = track_viewport(indices.len(), app.selected, area.height);
+    let viewport = track_viewport(total, app.selected, area.height);
     let first = viewport.start;
-    let rows = indices[viewport]
-        .iter()
-        .enumerate()
-        .map(|(visible_position, &index)| {
-            let position = first + visible_position;
-            let track = &app.tracks[index];
+    let rows = viewport.filter_map(|position| {
+        let index = app.track_index_at_view_position(position)?;
+        let track = &app.tracks[index];
             let marker = if app
                 .current_track()
                 .is_some_and(|current| current.id == track.id)
@@ -773,6 +740,7 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
             } else {
                 " "
             };
+        Some(
             Row::new(vec![
                 Cell::from(format!(
                     "{marker} {:02}",
@@ -791,8 +759,9 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 Style::default()
             } else {
                 Style::default().fg(app.theme.border)
-            })
-        });
+            }),
+        )
+    });
     let widths = [
         Constraint::Length(5),
         Constraint::Percentage(32),
