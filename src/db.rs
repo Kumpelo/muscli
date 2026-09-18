@@ -759,10 +759,7 @@ impl Database {
         Ok(self.conn.last_insert_rowid())
     }
 
-    fn update_history_tx(
-        tx: &rusqlite::Transaction<'_>,
-        update: HistoryUpdate<'_>,
-    ) -> Result<()> {
+    fn update_history_tx(tx: &rusqlite::Transaction<'_>, update: HistoryUpdate<'_>) -> Result<()> {
         tx.execute(
             "UPDATE history SET listened_ms=listened_ms+?2,position_ms=?3,counted=counted OR ?4,completed=completed OR ?5 WHERE id=?1",
             params![
