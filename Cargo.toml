@@ -57,9 +57,22 @@ windows = { version = "0.62.2", features = [
 ] }
 
 [dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 tempfile = "3.23"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[[bench]]
+name = "scan"
+harness = false
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "library"
+harness = false
