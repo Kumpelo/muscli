@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
-    [string]$TargetDir = "target\x86_64-pc-windows-msvc\release",
+    [string]$TargetDir = "target\release",
     [string]$DistDir = "dist"
 )
 
