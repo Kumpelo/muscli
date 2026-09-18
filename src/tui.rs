@@ -394,6 +394,7 @@ struct App {
     input_buffer: String,
     queue: Vec<String>,
     queue_index: Option<usize>,
+    queue_dirty: bool,
     shuffle: bool,
     repeat: RepeatMode,
     playback: PlaybackState,
@@ -564,6 +565,7 @@ async fn run_inner(
         input_buffer: String::new(),
         queue: saved.queue,
         queue_index: saved.current_index,
+        queue_dirty: false,
         shuffle: saved.shuffle,
         repeat: saved.repeat,
         playback: PlaybackState {
@@ -622,7 +624,9 @@ async fn run_inner(
         last_theme_check: Instant::now(),
     };
     app.reload_library()?;
+    let queue_len = app.queue.len();
     app.queue.retain(|id| app.track_index.contains_key(id));
+    app.queue_dirty |= app.queue.len() != queue_len;
     if app.queue_index.is_some_and(|i| i >= app.queue.len()) {
         app.queue_index = None;
     }
@@ -1099,12 +1103,15 @@ impl App {
                 tracks,
                 moved_tracks,
             } => {
+                let mut queue_changed = false;
                 for id in &mut self.queue {
                     if let Some((_, new_id)) = moved_tracks.iter().find(|(old_id, _)| id == old_id)
                     {
                         *id = new_id.clone();
+                        queue_changed = true;
                     }
                 }
+                self.queue_dirty |= queue_changed;
                 self.status = format!("Indexadas {tracks} pistas de {label}");
                 self.dirty = true;
             }
@@ -1864,6 +1871,7 @@ impl App {
             KeyCode::Char('a') => {
                 if let Some(id) = self.selected_track_id() {
                     self.queue.push(id);
+                    self.queue_dirty = true;
                     self.status = "Añadida a la cola".into();
                     self.dirty = true;
                 }
@@ -1926,6 +1934,7 @@ impl App {
                         if let Some(queue) = self.saved_queues.get(selected) {
                             self.queue = queue.track_ids.clone();
                             self.queue_index = (!self.queue.is_empty()).then_some(0);
+                            self.queue_dirty = true;
                             self.status = format!("Cola cargada: {}", queue.name);
                         }
                         self.input = None;
@@ -1940,6 +1949,7 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Char('s') | KeyCode::Enter => {
                     self.queue.clear();
                     self.queue_index = None;
+                    self.queue_dirty = true;
                     self.mpv.stop()?;
                     self.playback.status = PlaybackStatus::Stopped;
                     self.input = None;
@@ -2181,6 +2191,7 @@ impl App {
             .unwrap_or(0);
         self.queue = ids;
         self.queue_index = Some(start);
+        self.queue_dirty = true;
         let position = self
             .current_track()
             .and_then(|track| self.stats.get(&track.id))
@@ -2288,6 +2299,7 @@ impl App {
         }
         let target = shifted_index(self.selected, amount, self.queue.len());
         self.queue.swap(self.selected, target);
+        self.queue_dirty = true;
         if self.queue_index == Some(self.selected) {
             self.queue_index = Some(target);
         } else if self.queue_index == Some(target) {
@@ -2302,6 +2314,7 @@ impl App {
             return;
         }
         self.queue.remove(self.selected);
+        self.queue_dirty = true;
         if let Some(current) = self.queue_index {
             self.queue_index = if self.queue.is_empty() {
                 None
@@ -2324,10 +2337,12 @@ impl App {
             1 => {
                 let position = self.queue_index.map_or(0, |index| index + 1);
                 self.queue.insert(position.min(self.queue.len()), track_id);
+                self.queue_dirty = true;
                 self.status = "Se reproducirá después".into();
             }
             2 => {
                 self.queue.push(track_id);
+                self.queue_dirty = true;
                 self.status = "Añadida al final de la cola".into();
             }
             3 => {
@@ -2611,6 +2626,7 @@ impl App {
             || (duration > 0 && self.playback.position_ms >= duration.saturating_mul(95) / 100);
         if save_playback {
             let state = self.playback_snapshot();
+            let queue = self.queue_dirty.then_some(self.queue.as_slice());
             self.db.update_history_and_playback(
                 HistoryUpdate {
                     history_id,
@@ -2622,7 +2638,9 @@ impl App {
                     completed,
                 },
                 &state,
+                queue,
             )?;
+            self.queue_dirty = false;
             self.last_playback_save = Instant::now();
         } else {
             self.db.update_history(HistoryUpdate {
@@ -2871,7 +2889,7 @@ impl App {
 
     fn playback_snapshot(&self) -> SavedPlayback {
         SavedPlayback {
-            queue: self.queue.clone(),
+            queue: Vec::new(),
             current_index: self.queue_index,
             position_ms: self.playback.position_ms,
             volume: self.playback.volume,
@@ -2882,7 +2900,10 @@ impl App {
     }
 
     fn persist_playback(&mut self) -> Result<()> {
-        self.db.save_playback(&self.playback_snapshot())?;
+        let state = self.playback_snapshot();
+        let queue = self.queue_dirty.then_some(self.queue.as_slice());
+        self.db.save_playback(&state, queue)?;
+        self.queue_dirty = false;
         self.last_playback_save = Instant::now();
         Ok(())
     }
