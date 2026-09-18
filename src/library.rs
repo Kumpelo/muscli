@@ -114,7 +114,8 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
             .to_string_lossy()
             .into_owned();
         scan.seen_paths.insert(relative.clone());
-        let unchanged = file_fingerprint(entry.path())
+        let fingerprint = file_fingerprint(entry.path());
+        let unchanged = fingerprint
             .and_then(|(size, modified)| {
                 cached
                     .get(&relative)
@@ -134,9 +135,9 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
                 item.track.available = true;
                 item
             });
-        let result = unchanged
-            .map(Ok)
-            .unwrap_or_else(|| read_track(paths, &id, &root, entry.path()));
+        let result = unchanged.map(Ok).unwrap_or_else(|| {
+            read_track(paths, &id, &root, entry.path(), fingerprint)
+        });
         match result {
             Ok(track) => scan.tracks.push(track),
             Err(error) => {
@@ -165,14 +166,26 @@ pub fn scan_source(paths: &AppPaths, root: &Path) -> Result<SourceScan> {
     Ok(scan)
 }
 
-fn read_track(paths: &AppPaths, source_id: &str, root: &Path, path: &Path) -> Result<ScannedTrack> {
-    let metadata = fs::metadata(path)?;
-    let modified_ns = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos().min(i64::MAX as u128) as i64)
-        .unwrap_or(0);
+fn read_track(
+    paths: &AppPaths,
+    source_id: &str,
+    root: &Path,
+    path: &Path,
+    fingerprint: Option<(u64, i64)>,
+) -> Result<ScannedTrack> {
+    let (file_size, modified_ns) = match fingerprint {
+        Some(value) => value,
+        None => {
+            let metadata = fs::metadata(path)?;
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+                .unwrap_or(0);
+            (metadata.len(), modified_ns)
+        }
+    };
     let tagged = Probe::open(path)?.guess_file_type()?.read()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
     let stem = path
@@ -244,7 +257,7 @@ fn read_track(paths: &AppPaths, source_id: &str, root: &Path, path: &Path) -> Re
             available: true,
             favorite: false,
         },
-        file_size: metadata.len(),
+        file_size,
         modified_ns,
     })
 }
