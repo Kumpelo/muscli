@@ -16,6 +16,17 @@ pub struct Database {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryUpdate<'a> {
+    pub history_id: i64,
+    pub track_id: &'a str,
+    pub listened_delta_ms: u64,
+    pub position_ms: u64,
+    pub was_counted: bool,
+    pub count_now: bool,
+    pub completed: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LibraryHealth {
     pub tracks: usize,
@@ -750,17 +761,17 @@ impl Database {
 
     fn update_history_tx(
         tx: &rusqlite::Transaction<'_>,
-        history_id: i64,
-        track_id: &str,
-        listened_delta_ms: u64,
-        position_ms: u64,
-        was_counted: bool,
-        count_now: bool,
-        completed: bool,
+        update: HistoryUpdate<'_>,
     ) -> Result<()> {
         tx.execute(
             "UPDATE history SET listened_ms=listened_ms+?2,position_ms=?3,counted=counted OR ?4,completed=completed OR ?5 WHERE id=?1",
-            params![history_id, listened_delta_ms.min(i64::MAX as u64) as i64, position_ms.min(i64::MAX as u64) as i64, count_now, completed],
+            params![
+                update.history_id,
+                update.listened_delta_ms.min(i64::MAX as u64) as i64,
+                update.position_ms.min(i64::MAX as u64) as i64,
+                update.count_now,
+                update.completed
+            ],
         )?;
         tx.execute(
             "INSERT INTO track_stats(track_id,play_count,total_listen_ms,last_played_at,resume_position_ms)
@@ -771,63 +782,31 @@ impl Database {
                 last_played_at=excluded.last_played_at,
                 resume_position_ms=excluded.resume_position_ms",
             params![
-                track_id,
-                i64::from(count_now && !was_counted),
-                listened_delta_ms.min(i64::MAX as u64) as i64,
-                if completed { 0 } else { position_ms }.min(i64::MAX as u64) as i64,
+                update.track_id,
+                i64::from(update.count_now && !update.was_counted),
+                update.listened_delta_ms.min(i64::MAX as u64) as i64,
+                if update.completed { 0 } else { update.position_ms }
+                    .min(i64::MAX as u64) as i64,
             ],
         )?;
         Ok(())
     }
 
-    pub fn update_history(
-        &mut self,
-        history_id: i64,
-        track_id: &str,
-        listened_delta_ms: u64,
-        position_ms: u64,
-        was_counted: bool,
-        count_now: bool,
-        completed: bool,
-    ) -> Result<()> {
+    pub fn update_history(&mut self, update: HistoryUpdate<'_>) -> Result<()> {
         let tx = self.conn.transaction()?;
-        Self::update_history_tx(
-            &tx,
-            history_id,
-            track_id,
-            listened_delta_ms,
-            position_ms,
-            was_counted,
-            count_now,
-            completed,
-        )?;
+        Self::update_history_tx(&tx, update)?;
         tx.commit()?;
         Ok(())
     }
 
     pub fn update_history_and_playback(
         &mut self,
-        history_id: i64,
-        track_id: &str,
-        listened_delta_ms: u64,
-        position_ms: u64,
-        was_counted: bool,
-        count_now: bool,
-        completed: bool,
+        update: HistoryUpdate<'_>,
         state: &SavedPlayback,
     ) -> Result<()> {
         let playback = serde_json::to_string(state)?;
         let tx = self.conn.transaction()?;
-        Self::update_history_tx(
-            &tx,
-            history_id,
-            track_id,
-            listened_delta_ms,
-            position_ms,
-            was_counted,
-            count_now,
-            completed,
-        )?;
+        Self::update_history_tx(&tx, update)?;
         tx.execute(
             "INSERT INTO app_state(key,value) VALUES('playback',?1)
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
