@@ -598,13 +598,12 @@ async fn run_inner(
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let loop_result: Result<()> = async {
         while !app.should_quit {
-            let maintenance_delay = if app.playback.status == PlaybackStatus::Playing
-                || app.scan_running
-                || app.gain_rx.is_some()
-            {
+            let maintenance_delay = if app.scan_running || app.gain_rx.is_some() {
                 Duration::from_millis(100)
-            } else {
+            } else if app.playback.status == PlaybackStatus::Playing {
                 Duration::from_millis(250)
+            } else {
+                Duration::from_millis(500)
             };
 
             tokio::select! {
@@ -616,6 +615,11 @@ async fn run_inner(
                 action = app.actions.recv() => {
                     if let Some(action) = action {
                         app.handle_action(action)?;
+                    }
+                }
+                event = app.mpv.recv_event() => {
+                    if let Some(event) = event {
+                        app.handle_player_event(event)?;
                     }
                 }
                 action = app.remote_actions.recv() => {
@@ -637,6 +641,7 @@ async fn run_inner(
                 _ = tokio::time::sleep(maintenance_delay) => {}
             }
 
+            app.playback.position_ms = app.mpv.position_ms();
             while let Ok(event) = terminal_events.try_recv() {
                 handle_terminal_event(&mut app, event)?;
             }
