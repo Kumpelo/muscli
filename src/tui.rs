@@ -389,11 +389,13 @@ struct App {
     actions: tokio_mpsc::UnboundedReceiver<PlayerAction>,
     remote_actions: tokio_mpsc::UnboundedReceiver<RemoteCommand>,
     _control_server: ControlServer,
-    gain_rx: Option<Receiver<GainMessage>>,
+    gain_tx: tokio_mpsc::UnboundedSender<GainMessage>,
+    gain_rx: tokio_mpsc::UnboundedReceiver<GainMessage>,
+    gain_running: bool,
     gain_progress: Option<(usize, usize)>,
-    scan_rx: Receiver<ScanMessage>,
-    scan_tx: Sender<ScanMessage>,
-    watch_rx: Receiver<()>,
+    scan_rx: tokio_mpsc::UnboundedReceiver<ScanMessage>,
+    scan_tx: tokio_mpsc::UnboundedSender<ScanMessage>,
+    watch_rx: tokio_mpsc::UnboundedReceiver<()>,
     scan_running: bool,
     scan_pending: bool,
     last_scan: Instant,
@@ -477,8 +479,9 @@ async fn run_inner(
         Ok(bridge) => (Some(bridge), None),
         Err(error) => (None, Some(format!("MPRIS no disponible: {error}"))),
     };
-    let (scan_tx, scan_rx) = mpsc::channel();
-    let (watch_tx, watch_rx) = mpsc::channel();
+    let (scan_tx, scan_rx) = tokio_mpsc::unbounded_channel();
+    let (watch_tx, watch_rx) = tokio_mpsc::unbounded_channel();
+    let (gain_tx, gain_rx) = tokio_mpsc::unbounded_channel();
     start_watchers(&config, watch_tx);
     let discord = if config.discord_enabled {
         config.discord_application_id.clone().map(|application_id| {
@@ -555,7 +558,9 @@ async fn run_inner(
         actions,
         remote_actions,
         _control_server: control_server,
-        gain_rx: None,
+        gain_tx,
+        gain_rx,
+        gain_running: false,
         gain_progress: None,
         scan_rx,
         scan_tx,
@@ -626,9 +631,7 @@ async fn run_inner(
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let loop_result: Result<()> = async {
         while !app.should_quit {
-            let maintenance_delay = if app.scan_running || app.gain_rx.is_some() {
-                Duration::from_millis(100)
-            } else if app.playback.status == PlaybackStatus::Playing {
+            let maintenance_delay = if app.playback.status == PlaybackStatus::Playing {
                 Duration::from_millis(250)
             } else {
                 Duration::from_secs(1)
@@ -653,6 +656,21 @@ async fn run_inner(
                 action = app.remote_actions.recv() => {
                     if let Some(action) = action {
                         app.handle_remote_action(action)?;
+                    }
+                }
+                message = app.scan_rx.recv() => {
+                    if let Some(message) = message {
+                        app.handle_scan(message)?;
+                    }
+                }
+                message = app.gain_rx.recv() => {
+                    if let Some(message) = message {
+                        app.handle_gain_message(message)?;
+                    }
+                }
+                changed = app.watch_rx.recv() => {
+                    if changed.is_some() {
+                        app.scan_pending = true;
                     }
                 }
                 result = app.cover_decode_rx.recv() => {
@@ -685,13 +703,15 @@ async fn run_inner(
             while let Ok(message) = app.scan_rx.try_recv() {
                 app.handle_scan(message)?;
             }
-            app.handle_gain_messages()?;
-            app.tick_history()?;
-            app.refresh_theme();
+            while let Ok(message) = app.gain_rx.try_recv() {
+                app.handle_gain_message(message)?;
+            }
             if app.watch_rx.try_recv().is_ok() {
                 while app.watch_rx.try_recv().is_ok() {}
                 app.scan_pending = true;
             }
+            app.tick_history()?;
+            app.refresh_theme();
             if app.scan_pending
                 && !app.scan_running
                 && app.last_scan.elapsed() > Duration::from_secs(2)
@@ -2319,7 +2339,7 @@ impl App {
     }
 
     fn start_gain_analysis(&mut self) -> Result<()> {
-        if !self.config.replaygain_enabled || self.gain_rx.is_some() {
+        if !self.config.replaygain_enabled || self.gain_running {
             return Ok(());
         }
         let candidates = self.db.gain_analysis_candidates(false)?;
@@ -2327,44 +2347,41 @@ impl App {
             return Ok(());
         }
         let total = candidates.len();
-        self.gain_rx = Some(replaygain::start(
+        self.gain_running = true;
+        replaygain::start(
             candidates,
             self.config.replaygain_target_lufs,
-        ));
+            self.gain_tx.clone(),
+        );
         self.gain_progress = Some((0, total));
         Ok(())
     }
 
-    fn handle_gain_messages(&mut self) -> Result<()> {
-        let Some(receiver) = self.gain_rx.take() else {
-            return Ok(());
-        };
-        let mut done = false;
-        while let Ok(message) = receiver.try_recv() {
-            match message {
-                GainMessage::Result {
-                    track_id,
-                    result,
-                    size,
-                    modified,
-                    completed,
-                    total,
-                } => {
-                    self.db.save_gain(&track_id, result, size, modified)?;
-                    self.gain_progress = Some((completed, total));
-                    self.status = format!("Analizando volumen {completed}/{total}");
-                    self.dirty = true;
-                }
-                GainMessage::Error(error) => self.status = format!("ReplayGain: {error}"),
-                GainMessage::Done => {
-                    self.gain_progress = None;
-                    self.status = "Análisis de volumen terminado".into();
-                    done = true;
-                }
+    fn handle_gain_message(&mut self, message: GainMessage) -> Result<()> {
+        match message {
+            GainMessage::Result {
+                track_id,
+                result,
+                size,
+                modified,
+                completed,
+                total,
+            } => {
+                self.db.save_gain(&track_id, result, size, modified)?;
+                self.gain_progress = Some((completed, total));
+                self.status = format!("Analizando volumen {completed}/{total}");
+                self.dirty = true;
             }
-        }
-        if !done {
-            self.gain_rx = Some(receiver);
+            GainMessage::Error(error) => {
+                self.status = format!("ReplayGain: {error}");
+                self.dirty = true;
+            }
+            GainMessage::Done => {
+                self.gain_running = false;
+                self.gain_progress = None;
+                self.status = "Análisis de volumen terminado".into();
+                self.dirty = true;
+            }
         }
         Ok(())
     }
@@ -2706,7 +2723,7 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
     Ok(())
 }
 
-fn start_watchers(config: &Config, tx: Sender<()>) {
+fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<()>) {
     let configured = config.sources.clone();
     thread::Builder::new()
         .name("muscli-watcher".into())
