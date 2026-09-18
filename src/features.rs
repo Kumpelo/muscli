@@ -10,6 +10,51 @@ pub struct Genre {
     pub track_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct SearchIndex {
+    fields: Vec<[String; 4]>,
+}
+
+impl SearchIndex {
+    pub fn build(tracks: &[Track]) -> Self {
+        Self {
+            fields: tracks
+                .iter()
+                .map(|track| {
+                    [
+                        fold(&track.title),
+                        fold(&track.artist),
+                        fold(&track.album),
+                        fold(&track.genre),
+                    ]
+                })
+                .collect(),
+        }
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Vec<usize> {
+        let query = fold(query.trim());
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let mut scored = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fields)| {
+                fields
+                    .iter()
+                    .filter_map(|field| fuzzy_score(field, &query))
+                    .max()
+                    .map(|score| (index, score))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by_key(|(index, score)| (std::cmp::Reverse(*score), *index));
+        scored.truncate(limit);
+        scored.into_iter().map(|(index, _)| index).collect()
+    }
+}
+
 pub fn group_genres(tracks: &[Track]) -> Vec<Genre> {
     let mut grouped: BTreeMap<String, Genre> = BTreeMap::new();
     for track in tracks {
@@ -32,25 +77,7 @@ pub fn group_genres(tracks: &[Track]) -> Vec<Genre> {
 }
 
 pub fn fuzzy_search(tracks: &[Track], query: &str, limit: usize) -> Vec<usize> {
-    let query = fold(query.trim());
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let mut scored = tracks
-        .iter()
-        .enumerate()
-        .filter_map(|(index, track)| {
-            let fields = [&track.title, &track.artist, &track.album, &track.genre];
-            fields
-                .into_iter()
-                .filter_map(|field| fuzzy_score(&fold(field), &query))
-                .max()
-                .map(|score| (index, score))
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by_key(|(index, score)| (std::cmp::Reverse(*score), *index));
-    scored.truncate(limit);
-    scored.into_iter().map(|(index, _)| index).collect()
+    SearchIndex::build(tracks).search(query, limit)
 }
 
 fn fuzzy_score(value: &str, query: &str) -> Option<usize> {
@@ -209,6 +236,14 @@ mod tests {
     #[test]
     fn fuzzy_score_tolerates_a_typo() {
         assert!(fuzzy_score("skrillex", "skrilex").is_some());
+    }
+
+    #[test]
+    fn search_index_reuses_normalized_track_fields() {
+        let tracks = vec![track("Música", "House", false), track("Other", "Jazz", false)];
+        let index = SearchIndex::build(&tracks);
+        assert_eq!(index.search("musica", 10), [0]);
+        assert_eq!(index.search("jazz", 10), [1]);
     }
 
     #[test]
