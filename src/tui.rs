@@ -603,7 +603,7 @@ async fn run_inner(
             } else if app.playback.status == PlaybackStatus::Playing {
                 Duration::from_millis(250)
             } else {
-                Duration::from_millis(500)
+                Duration::from_secs(1)
             };
 
             tokio::select! {
@@ -672,12 +672,9 @@ async fn run_inner(
                 app.start_scan();
             }
 
-            let draw_interval = if app.playback.status == PlaybackStatus::Playing {
-                Duration::from_millis(250)
-            } else {
-                Duration::from_secs(2)
-            };
-            if app.dirty || last_draw.elapsed() >= draw_interval {
+            let periodic_draw_due = app.playback.status == PlaybackStatus::Playing
+                && last_draw.elapsed() >= Duration::from_millis(250);
+            if app.dirty || periodic_draw_due {
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;
                 if app.cover_sig_now != app.cover_sig {
