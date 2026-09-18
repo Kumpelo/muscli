@@ -789,24 +789,7 @@ impl App {
         self.saved_queues = self.db.load_saved_queues()?;
         self.history = self.db.load_history(500)?;
         self.rebuild_home_tracks();
-        let now = chrono::Utc::now().timestamp();
-        self.smart_matches = self
-            .smart_playlists
-            .iter()
-            .map(|playlist| {
-                (
-                    playlist.id,
-                    evaluate_smart_playlist(
-                        playlist,
-                        &self.tracks,
-                        &self.search_index,
-                        &self.stats,
-                        &self.added_at,
-                        now,
-                    ),
-                )
-            })
-            .collect();
+        self.rebuild_smart_matches();
         self.refresh_artist_releases();
         if self.view == View::AlbumDetail && self.opened_album().is_none() {
             self.view = self.album_parent_view;
@@ -826,6 +809,89 @@ impl App {
         {
             self.view = View::Genres;
             self.opened_genre_name = None;
+        }
+        self.selected = self.selected.min(self.item_count().saturating_sub(1));
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn rebuild_smart_matches(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        self.smart_matches = self
+            .smart_playlists
+            .iter()
+            .map(|playlist| {
+                (
+                    playlist.id,
+                    evaluate_smart_playlist(
+                        playlist,
+                        &self.tracks,
+                        &self.search_index,
+                        &self.stats,
+                        &self.added_at,
+                        now,
+                    ),
+                )
+            })
+            .collect();
+    }
+
+    fn rebuild_smart_matches_for_field(&mut self, field: &str) {
+        let now = chrono::Utc::now().timestamp();
+        for playlist in &self.smart_playlists {
+            if playlist.rules.iter().any(|rule| rule.field == field) {
+                self.smart_matches.insert(
+                    playlist.id,
+                    evaluate_smart_playlist(
+                        playlist,
+                        &self.tracks,
+                        &self.search_index,
+                        &self.stats,
+                        &self.added_at,
+                        now,
+                    ),
+                );
+            }
+        }
+    }
+
+    fn set_favorite_local(&mut self, track_id: &str, favorite: bool) {
+        let Some(index) = self.track_index.get(track_id).copied() else {
+            return;
+        };
+        self.tracks[index].favorite = favorite;
+        match self.favorite_indices.binary_search(&index) {
+            Ok(position) if !favorite => {
+                self.favorite_indices.remove(position);
+            }
+            Err(position) if favorite => {
+                self.favorite_indices.insert(position, index);
+            }
+            _ => {}
+        }
+        self.rebuild_smart_matches_for_field("favorite");
+        self.selected = self.selected.min(self.item_count().saturating_sub(1));
+        self.dirty = true;
+    }
+
+    fn refresh_playlists(&mut self) -> Result<()> {
+        self.playlists = self.db.load_playlists()?;
+        self.selected = self.selected.min(self.item_count().saturating_sub(1));
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn refresh_smart_playlists(&mut self) -> Result<()> {
+        self.smart_playlists = self.db.load_smart_playlists()?;
+        self.rebuild_smart_matches();
+        if self
+            .opened_smart_playlist
+            .is_some_and(|id| !self.smart_playlists.iter().any(|playlist| playlist.id == id))
+        {
+            self.opened_smart_playlist = None;
+            if self.view == View::SmartPlaylistDetail {
+                self.view = View::SmartPlaylists;
+            }
         }
         self.selected = self.selected.min(self.item_count().saturating_sub(1));
         self.dirty = true;
@@ -1575,7 +1641,7 @@ impl App {
                     if self.playlists.is_empty() {
                         let playlist = self.db.create_playlist("Mi playlist")?;
                         self.db.add_to_playlist(playlist, &id)?;
-                        self.reload_library()?;
+                        self.refresh_playlists()?;
                         self.status = "Añadida a Mi playlist".into();
                     } else {
                         self.input = Some(InputMode::ChoosePlaylist {
@@ -1698,7 +1764,7 @@ impl App {
             KeyCode::Char('f') => {
                 if let Some(id) = self.selected_track_id() {
                     let value = self.db.toggle_favorite(&id)?;
-                    self.reload_library()?;
+                    self.set_favorite_local(&id, value);
                     self.status = if value {
                         "Añadida a favoritos"
                     } else {
@@ -1732,10 +1798,11 @@ impl App {
                     self.input = Some(InputMode::ChoosePlaylist { track_id, selected });
                 }
                 KeyCode::Enter => {
-                    if let Some(playlist) = self.playlists.get(selected) {
+                    if let Some(playlist) = self.playlists.get_mut(selected) {
                         self.db.add_to_playlist(playlist.id, &track_id)?;
+                        playlist.track_ids.push(track_id);
                         self.status = format!("Añadida a {}", playlist.name);
-                        self.reload_library()?;
+                        self.dirty = true;
                     }
                     self.input = None;
                 }
@@ -1825,7 +1892,7 @@ impl App {
                     }
                     KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.db.save_smart_playlist(&playlist)?;
-                        self.reload_library()?;
+                        self.refresh_smart_playlists()?;
                         self.input = None;
                         self.status = "Lista inteligente guardada".into();
                         self.dirty = true;
@@ -1878,7 +1945,7 @@ impl App {
                     KeyCode::Enter => {
                         if mode == InputMode::NewPlaylist && !self.input_buffer.trim().is_empty() {
                             self.db.create_playlist(self.input_buffer.trim())?;
-                            self.reload_library()?;
+                            self.refresh_playlists()?;
                             self.status = format!("Playlist creada: {}", self.input_buffer.trim());
                         }
                         if mode == InputMode::Search {
@@ -2158,7 +2225,7 @@ impl App {
             }
             3 => {
                 let favorite = self.db.toggle_favorite(&track_id)?;
-                self.reload_library()?;
+                self.set_favorite_local(&track_id, favorite);
                 self.status = if favorite {
                     "Añadida a favoritos"
                 } else {
