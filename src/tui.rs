@@ -2300,7 +2300,10 @@ fn start_watchers(config: &Config, tx: Sender<()>) {
                 let _ = watcher.watch(root, RecursiveMode::Recursive);
             }
 
-            let mut known_removable = BTreeSet::new();
+            let mut known_removable = crate::config::discover_removable_roots()
+                .into_iter()
+                .filter(|path| path.exists())
+                .collect::<BTreeSet<_>>();
             let mut watched_removable = BTreeSet::new();
             loop {
                 let current_removable = crate::config::discover_removable_roots()
