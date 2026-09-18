@@ -61,7 +61,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 3 {
+        if version > 4 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -216,6 +216,25 @@ impl Database {
                 "CREATE INDEX IF NOT EXISTS tracks_source_scan
                  ON tracks(source_id, available, file_size, duration_ms);
                  PRAGMA user_version = 3;",
+            )?;
+            tx.commit()?;
+        }
+
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 3 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS tracks_library_order
+                 ON tracks(
+                    album_artist COLLATE NOCASE,
+                    album COLLATE NOCASE,
+                    disc_number,
+                    track_number,
+                    title COLLATE NOCASE
+                 );
+                 PRAGMA user_version = 4;",
             )?;
             tx.commit()?;
         }
