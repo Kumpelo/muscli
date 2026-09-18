@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::Result;
@@ -256,7 +256,7 @@ impl Default for UiTheme {
 }
 
 impl UiTheme {
-    fn load() -> Self {
+    fn source_paths() -> [Option<PathBuf>; 2] {
         let state_home = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| {
@@ -265,15 +265,22 @@ impl UiTheme {
         let config_home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .map(|home| home.join(".config"));
-        let paths = [
+        [
             state_home.map(|root| root.join("omarchy/current/theme/colors.toml")),
             config_home.map(|root| root.join("omarchy/current/theme/colors.toml")),
-        ];
-        paths
-            .into_iter()
-            .flatten()
-            .find_map(|path| Self::from_file(&path))
-            .unwrap_or_default()
+        ]
+    }
+
+    fn load_with_source() -> (Self, Option<PathBuf>, Option<SystemTime>) {
+        for path in Self::source_paths().into_iter().flatten() {
+            if let Some(theme) = Self::from_file(&path) {
+                let modified = fs::metadata(&path)
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok());
+                return (theme, Some(path), modified);
+            }
+        }
+        (Self::default(), None, None)
     }
 
     fn from_file(path: &Path) -> Option<Self> {
@@ -387,9 +394,12 @@ struct App {
     cover_decode_rx: tokio_mpsc::UnboundedReceiver<CoverDecodeResult>,
     cover_decode_pending: HashSet<(PathBuf, u32)>,
     album_columns: usize,
-    last_mpris_signature: String,
-    last_discord_signature: String,
+    last_mpris_signature: Option<(Option<u64>, PlaybackStatus, u64, bool, RepeatMode, bool, bool)>,
+    last_mpris_position_signature: Option<(u64, u64)>,
+    last_discord_signature: Option<(Option<u64>, PlaybackStatus, u64, u64)>,
     theme: UiTheme,
+    theme_path: Option<PathBuf>,
+    theme_modified: Option<SystemTime>,
     history_id: Option<i64>,
     history_track_id: Option<String>,
     listened_this_session_ms: u64,
@@ -455,6 +465,7 @@ async fn run_inner(
         None
     };
     let compact = compact_requested || config.compact_default;
+    let (theme, theme_path, theme_modified) = UiTheme::load_with_source();
     let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
     let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
     start_cover_decode_worker(cover_decode_requests, cover_results_tx);
@@ -539,9 +550,12 @@ async fn run_inner(
         cover_decode_rx,
         cover_decode_pending: HashSet::new(),
         album_columns: 1,
-        last_mpris_signature: String::new(),
-        last_discord_signature: String::new(),
-        theme: UiTheme::load(),
+        last_mpris_signature: None,
+        last_mpris_position_signature: None,
+        last_discord_signature: None,
+        theme,
+        theme_path,
+        theme_modified,
         history_id: None,
         history_track_id: None,
         listened_this_session_ms: 0,
@@ -772,11 +786,26 @@ impl App {
             return;
         }
         self.last_theme_check = Instant::now();
-        let theme = UiTheme::load();
-        if theme != self.theme {
-            self.theme = theme;
-            self.status = "Tema de Omarchy actualizado".into();
-            self.dirty = true;
+
+        #[cfg(unix)]
+        {
+            let modified = self
+                .theme_path
+                .as_ref()
+                .and_then(|path| fs::metadata(path).ok())
+                .and_then(|metadata| metadata.modified().ok());
+            if self.theme_path.is_some() && modified == self.theme_modified {
+                return;
+            }
+
+            let (theme, path, modified) = UiTheme::load_with_source();
+            self.theme_path = path;
+            self.theme_modified = modified;
+            if theme != self.theme {
+                self.theme = theme;
+                self.status = "Tema de Omarchy actualizado".into();
+                self.dirty = true;
+            }
         }
     }
 
@@ -2495,50 +2524,59 @@ impl App {
         }
     }
 
+    fn current_track_hash(&self) -> Option<u64> {
+        self.current_track().map(|track| {
+            let mut hasher = DefaultHasher::new();
+            track.id.hash(&mut hasher);
+            hasher.finish()
+        })
+    }
+
     async fn sync_mpris(&mut self) {
-        let signature = format!(
-            "{:?}|{}|{}|{:?}|{}|{}",
+        let index = self.queue_index.unwrap_or(0);
+        let state_signature = (
+            self.current_track_hash(),
             self.playback.status,
-            self.playback.volume,
+            self.playback.volume.to_bits(),
             self.shuffle,
             self.repeat,
-            self.queue_index.unwrap_or(usize::MAX),
-            self.playback.position_ms / 1000
+            index > 0,
+            index + 1 < self.queue.len(),
         );
-        if signature == self.last_mpris_signature {
-            return;
-        }
-        self.last_mpris_signature = signature;
+        let position_signature = (self.playback.duration_ms, self.playback.position_ms / 1000);
+
         if let Some(mpris) = &self.mpris {
-            let index = self.queue_index.unwrap_or(0);
-            let _ = mpris
-                .sync(
-                    self.current_track(),
-                    &self.playback,
-                    self.shuffle,
-                    self.repeat,
-                    index > 0,
-                    index + 1 < self.queue.len(),
-                )
-                .await;
+            if self.last_mpris_signature != Some(state_signature) {
+                let _ = mpris
+                    .sync(
+                        self.current_track(),
+                        &self.playback,
+                        self.shuffle,
+                        self.repeat,
+                        state_signature.5,
+                        state_signature.6,
+                    )
+                    .await;
+                self.last_mpris_signature = Some(state_signature);
+            }
+            if self.last_mpris_position_signature != Some(position_signature) {
+                let _ = mpris.sync_position(&self.playback).await;
+                self.last_mpris_position_signature = Some(position_signature);
+            }
         }
     }
 
     fn sync_discord(&mut self) {
-        let track_id = self
-            .current_track()
-            .map(|track| track.id.as_str())
-            .unwrap_or("");
-        let signature = format!(
-            "{track_id}|{:?}|{}|{}",
+        let signature = (
+            self.current_track_hash(),
             self.playback.status,
             self.playback.duration_ms,
-            self.playback.position_ms / 15_000
+            self.playback.position_ms / 15_000,
         );
-        if signature == self.last_discord_signature {
+        if self.last_discord_signature == Some(signature) {
             return;
         }
-        self.last_discord_signature = signature;
+        self.last_discord_signature = Some(signature);
         if let Some(discord) = &self.discord {
             discord.sync(self.current_track(), &self.playback);
         }
