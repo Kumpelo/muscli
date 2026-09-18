@@ -311,6 +311,8 @@ struct App {
     added_at: HashMap<String, i64>,
     history: Vec<HistoryEntry>,
     genres: Vec<Genre>,
+    genre_album_cache: HashMap<String, Vec<usize>>,
+    genre_artist_cache: HashMap<String, Vec<usize>>,
     view: View,
     focus: Focus,
     selected: usize,
@@ -451,6 +453,8 @@ async fn run_inner(
         added_at: HashMap::new(),
         history: Vec::new(),
         genres: Vec::new(),
+        genre_album_cache: HashMap::new(),
+        genre_artist_cache: HashMap::new(),
         view: View::Home,
         focus: Focus::Content,
         selected: 0,
@@ -640,6 +644,7 @@ impl App {
             .collect();
         self.artists = group_artists(&self.tracks);
         self.genres = group_genres(&self.tracks);
+        self.rebuild_genre_indices();
         self.playlists = self.db.load_playlists()?;
         self.smart_playlists = self.db.load_smart_playlists()?;
         self.saved_queues = self.db.load_saved_queues()?;
@@ -952,24 +957,63 @@ impl App {
             .unwrap_or_default()
     }
 
-    fn genre_album_indices(&self) -> Vec<usize> {
-        let ids = self.genre_track_ids().into_iter().collect::<HashSet<_>>();
-        self.albums
+    fn rebuild_genre_indices(&mut self) {
+        let track_genre = self
+            .genres
             .iter()
-            .enumerate()
-            .filter(|(_, album)| album.track_ids.iter().any(|id| ids.contains(id)))
-            .map(|(index, _)| index)
-            .collect()
+            .flat_map(|genre| {
+                genre
+                    .track_ids
+                    .iter()
+                    .map(move |track_id| (track_id.as_str(), genre.name.as_str()))
+            })
+            .collect::<HashMap<_, _>>();
+
+        let mut album_cache = HashMap::<String, Vec<usize>>::new();
+        for (index, album) in self.albums.iter().enumerate() {
+            let mut seen = HashSet::new();
+            for track_id in &album.track_ids {
+                if let Some(genre) = track_genre.get(track_id.as_str())
+                    && seen.insert(*genre)
+                {
+                    album_cache.entry((*genre).to_owned()).or_default().push(index);
+                }
+            }
+        }
+
+        let mut artist_cache = HashMap::<String, Vec<usize>>::new();
+        for (index, artist) in self.artists.iter().enumerate() {
+            let mut seen = HashSet::new();
+            for track_id in &artist.track_ids {
+                if let Some(genre) = track_genre.get(track_id.as_str())
+                    && seen.insert(*genre)
+                {
+                    artist_cache
+                        .entry((*genre).to_owned())
+                        .or_default()
+                        .push(index);
+                }
+            }
+        }
+
+        self.genre_album_cache = album_cache;
+        self.genre_artist_cache = artist_cache;
+    }
+
+    fn genre_album_indices(&self) -> Vec<usize> {
+        self.opened_genre_name
+            .as_deref()
+            .and_then(|name| self.genre_album_cache.get(name))
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn genre_artist_indices(&self) -> Vec<usize> {
-        let ids = self.genre_track_ids().into_iter().collect::<HashSet<_>>();
-        self.artists
-            .iter()
-            .enumerate()
-            .filter(|(_, artist)| artist.track_ids.iter().any(|id| ids.contains(id)))
-            .map(|(index, _)| index)
-            .collect()
+        self.opened_genre_name
+            .as_deref()
+            .and_then(|name| self.genre_artist_cache.get(name))
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn genre_items_len(&self) -> usize {
