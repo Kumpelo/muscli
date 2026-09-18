@@ -157,12 +157,19 @@ mod tests {
             r"\\.\pipe\muscli-test-control-{}",
             std::process::id()
         ));
-        let (server, receiver) = ControlServer::start(&socket).unwrap();
+        let (server, mut receiver) = ControlServer::start(&socket).unwrap();
         assert!(send(&socket, RemoteCommand::VolumeSet(45)).unwrap());
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
-            RemoteCommand::VolumeSet(45)
-        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let command = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        });
+        assert_eq!(command, RemoteCommand::VolumeSet(45));
         drop(server);
     }
 }
