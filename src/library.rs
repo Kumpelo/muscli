@@ -298,6 +298,9 @@ fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Resul
         let thumbnail = image.thumbnail(512, 512);
         let temporary = paths.cover_cache_dir().join(format!(".{key}.tmp"));
         thumbnail.save_with_format(&temporary, image::ImageFormat::Png)?;
+        if target.exists() {
+            fs::remove_file(&target)?;
+        }
         fs::rename(temporary, &target)?;
     }
     Ok(target)
