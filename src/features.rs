@@ -18,6 +18,15 @@ pub struct SearchIndex {
     fields: Vec<[String; 4]>,
 }
 
+struct RuleContext<'a> {
+    track_index: usize,
+    track: &'a Track,
+    search_index: &'a SearchIndex,
+    stats: Option<&'a TrackStats>,
+    added_at: &'a HashMap<String, i64>,
+    now: i64,
+}
+
 impl SearchIndex {
     pub fn build(tracks: &[Track]) -> Self {
         let _profile = crate::profiling::span("search_index_build");
@@ -130,17 +139,16 @@ pub fn evaluate_smart_playlist(
         .iter()
         .enumerate()
         .filter(|(track_index, track)| {
+            let context = RuleContext {
+                track_index: *track_index,
+                track,
+                search_index,
+                stats: stats.get(&track.id),
+                added_at,
+                now,
+            };
             let mut values = playlist.rules.iter().enumerate().map(|(rule_index, rule)| {
-                rule_matches(
-                    rule,
-                    folded_rule_values[rule_index].as_deref(),
-                    *track_index,
-                    track,
-                    search_index,
-                    stats.get(&track.id),
-                    added_at,
-                    now,
-                )
+                rule_matches(rule, folded_rule_values[rule_index].as_deref(), &context)
             });
             match playlist.match_mode {
                 SmartMatch::All => values.all(std::convert::identity),
@@ -183,33 +191,33 @@ pub fn evaluate_smart_playlist(
 fn rule_matches(
     rule: &SmartRule,
     folded_string: Option<&str>,
-    track_index: usize,
-    track: &Track,
-    search_index: &SearchIndex,
-    stats: Option<&TrackStats>,
-    added_at: &HashMap<String, i64>,
-    now: i64,
+    context: &RuleContext<'_>,
 ) -> bool {
     let number = rule.value.as_i64().unwrap_or_default();
     let string = folded_string.unwrap_or_default();
     match (rule.field.as_str(), rule.operator.as_str()) {
-        ("title", "contains") => search_index.fields[track_index][0].contains(string),
-        ("artist", "contains") => search_index.fields[track_index][1].contains(string),
-        ("album", "contains") => search_index.fields[track_index][2].contains(string),
-        ("genre", "contains") => search_index.fields[track_index][3].contains(string),
-        ("favorite", "is") => track.favorite == rule.value.as_bool().unwrap_or(false),
-        ("available", "is") => track.available == rule.value.as_bool().unwrap_or(false),
+        ("title", "contains") => context.search_index.fields[context.track_index][0].contains(string),
+        ("artist", "contains") => context.search_index.fields[context.track_index][1].contains(string),
+        ("album", "contains") => context.search_index.fields[context.track_index][2].contains(string),
+        ("genre", "contains") => context.search_index.fields[context.track_index][3].contains(string),
+        ("favorite", "is") => context.track.favorite == rule.value.as_bool().unwrap_or(false),
+        ("available", "is") => context.track.available == rule.value.as_bool().unwrap_or(false),
         ("played", "is") => {
-            (stats.map_or(0, |value| value.play_count) > 0) == rule.value.as_bool().unwrap_or(false)
+            (context.stats.map_or(0, |value| value.play_count) > 0)
+                == rule.value.as_bool().unwrap_or(false)
         }
-        ("play_count", "gte") => stats.map_or(0, |value| value.play_count) >= number.max(0) as u64,
-        ("duration_ms", "gte") => track.duration_ms >= number.max(0) as u64,
-        ("added_days", "lte") => added_at
-            .get(&track.id)
-            .is_some_and(|timestamp| now.saturating_sub(*timestamp) <= number * 86_400),
-        ("last_played_days", "lte") => stats
+        ("play_count", "gte") => {
+            context.stats.map_or(0, |value| value.play_count) >= number.max(0) as u64
+        }
+        ("duration_ms", "gte") => context.track.duration_ms >= number.max(0) as u64,
+        ("added_days", "lte") => context
+            .added_at
+            .get(&context.track.id)
+            .is_some_and(|timestamp| context.now.saturating_sub(*timestamp) <= number * 86_400),
+        ("last_played_days", "lte") => context
+            .stats
             .and_then(|value| value.last_played_at)
-            .is_some_and(|timestamp| now.saturating_sub(timestamp) <= number * 86_400),
+            .is_some_and(|timestamp| context.now.saturating_sub(timestamp) <= number * 86_400),
         _ => false,
     }
 }

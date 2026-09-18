@@ -30,7 +30,7 @@ use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use crate::{
     config::{Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
-    db::{Database, group_albums, group_artists},
+    db::{Database, HistoryUpdate, group_albums, group_artists},
     discord::DiscordPresence,
     features::{Genre, SearchIndex, evaluate_smart_playlist, group_genres},
     instance::InstanceGuard,
@@ -2240,26 +2240,28 @@ impl App {
         if save_playback {
             let state = self.playback_snapshot();
             self.db.update_history_and_playback(
-                history_id,
-                &track_id,
-                self.pending_listen_ms,
-                self.playback.position_ms,
-                self.history_counted,
-                count_now,
-                completed,
+                HistoryUpdate {
+                    history_id,
+                    track_id: &track_id,
+                    listened_delta_ms: self.pending_listen_ms,
+                    position_ms: self.playback.position_ms,
+                    was_counted: self.history_counted,
+                    count_now,
+                    completed,
+                },
                 &state,
             )?;
             self.last_playback_save = Instant::now();
         } else {
-            self.db.update_history(
+            self.db.update_history(HistoryUpdate {
                 history_id,
-                &track_id,
-                self.pending_listen_ms,
-                self.playback.position_ms,
-                self.history_counted,
+                track_id: &track_id,
+                listened_delta_ms: self.pending_listen_ms,
+                position_ms: self.playback.position_ms,
+                was_counted: self.history_counted,
                 count_now,
                 completed,
-            )?;
+            })?;
         }
         self.pending_listen_ms = 0;
         self.history_counted |= count_now;
