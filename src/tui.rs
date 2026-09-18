@@ -33,6 +33,8 @@ use ratatui::{
 use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use tokio::sync::mpsc as tokio_mpsc;
 
+use render::draw;
+
 use crate::{
     config::{Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
@@ -3094,7 +3096,7 @@ fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
     Ok(shutdown_rx)
 }
 
-include!("tui/render.rs");
+mod render;
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(
@@ -3196,6 +3198,7 @@ fn format_duration(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::render::track_viewport;
     use super::*;
 
     #[test]
