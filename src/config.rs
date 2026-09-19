@@ -35,6 +35,9 @@ pub struct Config {
     /// Worker threads for library scanning. `0` derives a value from the
     /// machine, capped so a spinning disk is not thrashed by seeks.
     pub scan_threads: usize,
+    /// Let mpv open the next track before the current one ends, so album sides
+    /// run together without a gap.
+    pub gapless: bool,
 }
 
 impl Default for Config {
@@ -55,6 +58,7 @@ impl Default for Config {
             show_covers: true,
             volume_step: 5,
             scan_threads: 0,
+            gapless: true,
         }
     }
 }

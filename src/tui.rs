@@ -272,6 +272,8 @@ struct App {
     queue: Vec<String>,
     queue_index: Option<usize>,
     queue_dirty: bool,
+    /// Queue index of the track handed to mpv to play next, when one is armed.
+    prefetched: Option<usize>,
     shuffle: bool,
     repeat: RepeatMode,
     playback: PlaybackState,
@@ -417,6 +419,7 @@ async fn run_inner(
         queue: saved.queue,
         queue_index: saved.current_index,
         queue_dirty: false,
+        prefetched: None,
         shuffle: saved.shuffle,
         repeat: saved.repeat,
         playback: PlaybackState {
@@ -602,6 +605,10 @@ async fn run_inner(
 
             let periodic_draw_due = app.playback.status == PlaybackStatus::Playing
                 && last_draw.elapsed() >= Duration::from_millis(250);
+            // Re-armed here rather than at every queue mutation; see
+            // sync_prefetch.
+            app.sync_prefetch()?;
+
             if app.dirty || periodic_draw_due {
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;

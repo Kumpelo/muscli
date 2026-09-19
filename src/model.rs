@@ -206,6 +206,9 @@ pub enum PlayerAction {
 #[derive(Debug, Clone)]
 pub enum PlayerEvent {
     Position(u64),
+    /// mpv moved within its playlist, which happens on its own when it rolls
+    /// into a prefetched entry.
+    PlaylistPosition(i64),
     Duration(u64),
     Paused(bool),
     Volume(f64),
