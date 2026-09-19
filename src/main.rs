@@ -247,7 +247,16 @@ fn main() -> Result<()> {
                 // Naming by track id ties the file to one exact file on disk;
                 // naming by tags survives that file being moved.
                 let name = match (track, artist, title) {
-                    (Some(id), _, _) => format!("{id}.lrc"),
+                    (Some(id), _, _) => {
+                        let db = Database::open(&paths.database_file())?;
+                        let stored_id = db
+                            .load_tracks()?
+                            .into_iter()
+                            .find(|candidate| candidate.id == id)
+                            .map(|candidate| candidate.id)
+                            .with_context(|| format!("unknown track id: {id}"))?;
+                        format!("{stored_id}.lrc")
+                    }
                     (None, Some(artist), Some(title)) => {
                         lyrics::descriptive_name(artist.as_str(), title.as_str())
                     }
