@@ -262,6 +262,14 @@ fn seeded_playlists_gain_a_translation_key_on_upgrade() {
              INSERT INTO smart_playlists(name, match_mode, rules_json)
                 VALUES('Metal favorito', 'all', '[]');
              INSERT INTO smart_playlists(name, match_mode, rules_json)
+                VALUES('Agregadas recientemente', 'all', '[]');
+             INSERT INTO smart_playlists(name, match_mode, rules_json)
+                VALUES('No escuchadas', 'all', '[]');
+             INSERT INTO smart_playlists(name, match_mode, rules_json)
+                VALUES('Más reproducidas', 'all', '[]');
+             INSERT INTO smart_playlists(name, match_mode, rules_json)
+                VALUES('Más de 8 minutos', 'all', '[]');
+             INSERT INTO smart_playlists(name, match_mode, rules_json)
                 VALUES('Mis rarezas', 'all', '[]');
              PRAGMA user_version = 4;",
         )
@@ -273,10 +281,34 @@ fn seeded_playlists_gain_a_translation_key_on_upgrade() {
 
     let seeded = playlists
         .iter()
+        .filter(|playlist| playlist.preset_key.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        seeded.len(),
+        5,
+        "the five translated legacy presets must stay five rows after seeding"
+    );
+    let keys = seeded
+        .iter()
+        .filter_map(|playlist| playlist.preset_key.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        keys.len(),
+        5,
+        "each built-in preset key must identify exactly one row"
+    );
+    assert_eq!(
+        playlists.len(),
+        6,
+        "the five presets plus the user's playlist are the only rows"
+    );
+
+    let metal = playlists
+        .iter()
         .find(|playlist| playlist.name == "Metal favorito")
         .expect("the seeded playlist survives");
     assert_eq!(
-        seeded.preset_key.as_deref(),
+        metal.preset_key.as_deref(),
         Some("preset.metal_favorites"),
         "a playlist muscli seeded should be recognised"
     );
