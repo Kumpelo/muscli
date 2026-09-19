@@ -141,6 +141,23 @@ impl App {
         Some(self.tracks.get(track_index)?.path.clone())
     }
 
+    /// Load lyrics for the current track, if they have been imported.
+    ///
+    /// Cached per track rather than read every frame; a miss is remembered as
+    /// a miss so a track without lyrics is not looked up repeatedly.
+    pub(super) fn sync_lyrics(&mut self) {
+        let current = self.current_track().map(|track| track.id.clone());
+        if current == self.lyrics_track {
+            return;
+        }
+        self.lyrics = self
+            .current_track()
+            .cloned()
+            .and_then(|track| crate::lyrics::load(&self.paths, &track));
+        self.lyrics_track = current;
+        self.dirty = true;
+    }
+
     /// Keep mpv's queued entry in step with whatever would play next.
     ///
     /// Driven from the event loop rather than from each mutation, because the

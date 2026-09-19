@@ -4,8 +4,8 @@ use muscli::t;
 
 use muscli::{
     cli::{
-        Cli, Command, LibraryCommand, RemoteCommand as CliRemoteCommand, SetupCommand,
-        VolumeCommand,
+        Cli, Command, LibraryCommand, LyricsCommand, RemoteCommand as CliRemoteCommand,
+        SetupCommand, VolumeCommand,
     },
     config::{Config, all_sources},
     control::{self, RemoteCommand},
@@ -14,7 +14,7 @@ use muscli::{
     i18n::{self, Language},
     library,
     library::{prune_cover_cache, prune_unreferenced_covers},
-    omarchy,
+    lyrics, omarchy,
     paths::AppPaths,
     replaygain,
     tui::keys,
@@ -125,6 +125,29 @@ fn main() -> Result<()> {
                 println!("{action:<24}  {bound}");
             }
         }
+        Some(Command::Lyrics { command }) => match command {
+            LyricsCommand::Where => println!("{}", paths.lyrics_dir().display()),
+            LyricsCommand::Import {
+                path,
+                track,
+                artist,
+                title,
+            } => {
+                // Naming by track id ties the file to one exact file on disk;
+                // naming by tags survives that file being moved.
+                let name = match (track, artist, title) {
+                    (Some(id), _, _) => format!("{id}.lrc"),
+                    (None, Some(artist), Some(title)) => {
+                        lyrics::descriptive_name(artist.as_str(), title.as_str())
+                    }
+                    _ => anyhow::bail!(
+                        "give --track ID, or both --artist and --title, to say which song these lyrics belong to"
+                    ),
+                };
+                let written = lyrics::import(&paths, &path, &name)?;
+                println!("{}", t!("cli.lyrics_imported", path = written.display()));
+            }
+        },
         Some(Command::Doctor) => {
             for check in doctor::run(&paths, &config)? {
                 println!(

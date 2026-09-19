@@ -67,7 +67,7 @@ use crate::{
     t,
 };
 
-const VIEWS: [View; 13] = [
+const VIEWS: [View; 14] = [
     View::Home,
     View::Albums,
     View::Artists,
@@ -79,6 +79,7 @@ const VIEWS: [View; 13] = [
     View::History,
     View::Search,
     View::Queue,
+    View::Lyrics,
     View::Settings,
     View::Help,
 ];
@@ -133,6 +134,7 @@ enum View {
     Queue,
     Settings,
     Help,
+    Lyrics,
 }
 
 impl View {
@@ -155,6 +157,7 @@ impl View {
             Self::Queue => "view.queue",
             Self::Settings => "view.settings",
             Self::Help => "view.help",
+            Self::Lyrics => "view.lyrics",
         })
     }
 
@@ -175,6 +178,7 @@ impl View {
             Self::Queue => "󰕲",
             Self::Settings => "󰒓",
             Self::Help => "󰋖",
+            Self::Lyrics => "󰲹",
         }
     }
 }
@@ -301,6 +305,9 @@ struct App {
     should_quit: bool,
     dirty: bool,
     covers: Covers,
+    /// Lyrics for the loaded track, and which track they were loaded for.
+    lyrics: Option<crate::lyrics::Lyrics>,
+    lyrics_track: Option<String>,
     /// Key bindings in effect: the defaults with any user overrides applied.
     bindings: Vec<keys::Binding>,
     album_columns: usize,
@@ -471,6 +478,8 @@ async fn run_inner(
         should_quit: false,
         dirty: true,
         bindings,
+        lyrics: None,
+        lyrics_track: None,
         covers: Covers {
             picker,
             current: None,
@@ -642,6 +651,7 @@ async fn run_inner(
             // Re-armed here rather than at every queue mutation; see
             // sync_prefetch.
             app.sync_prefetch()?;
+            app.sync_lyrics();
 
             if app.dirty || periodic_draw_due {
                 app.refresh_cover();
@@ -686,6 +696,9 @@ impl App {
             View::History => self.history.len(),
             View::Search => self.search_results().len(),
             View::Queue => self.queue.len(),
+            // The lyrics view has no selectable list of its own; it follows
+            // whatever is playing.
+            View::Lyrics => 0,
             View::Settings => SETTINGS.len(),
             View::Help => 0,
         }
@@ -779,6 +792,7 @@ impl App {
                 .iter()
                 .map(|&i| self.tracks[i].id.clone())
                 .collect(),
+            View::Lyrics => Vec::new(),
             View::Queue => self.queue.clone(),
             View::Albums => self
                 .albums
@@ -836,6 +850,7 @@ impl App {
                 .search_results()
                 .get(self.selected)
                 .map(|&i| self.tracks[i].id.clone()),
+            View::Lyrics => self.current_track().map(|track| track.id.clone()),
             View::Queue => self.queue.get(self.selected).cloned(),
             View::Albums => self
                 .albums

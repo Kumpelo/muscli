@@ -9,6 +9,7 @@ pub mod fsutil;
 pub mod i18n;
 pub mod instance;
 pub mod library;
+pub mod lyrics;
 pub mod model;
 pub mod mpris;
 #[cfg(unix)]

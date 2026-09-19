@@ -111,6 +111,22 @@ CI runs these checks on Linux and Windows. Tags matching `v*` create draft
 GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
 CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.1`.
 
+## Lyrics
+
+Lyrics are never picked up automatically. An `.lrc` file sitting next to a
+track is left alone; lyrics live in their own directory and only get there when
+you put them there:
+
+```bash
+muscli lyrics import song.lrc --artist ARTIST --title TITLE
+muscli lyrics import song.lrc --track TRACK_ID
+muscli lyrics where
+```
+
+Naming by artist and title survives the audio file being moved; naming by track
+id does not, because the id is derived from the path. Timed lines follow
+playback; a file without timestamps is shown as plain text.
+
 ## Key bindings
 
 `muscli keys` lists the bindings in effect. To change them, write
