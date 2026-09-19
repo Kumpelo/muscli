@@ -1,6 +1,9 @@
 //! Small filesystem helpers shared across modules.
 
-use std::{fs, path::Path};
+use std::path::Path;
+
+#[cfg(unix)]
+use std::fs;
 
 use anyhow::Result;
 
