@@ -769,7 +769,13 @@ async fn run_inner(
                     // Las portadas cambiaron de sitio: un repintado parcial deja
                     // mezcladas la vieja y la nueva, así que limpio y redibujo.
                     app.cover_sig = app.cover_sig_now;
-                    terminal.clear()?;
+                    // `Terminal::clear` consulta primero la posición del cursor.
+                    // Algunos terminales (incluido Kitty en ciertas sesiones)
+                    // no responden a esa consulta y Crossterm expira tras dos
+                    // segundos. Redimensionar el viewport actual produce el
+                    // mismo borrado y reinicia ambos buffers sin esa consulta.
+                    let area = terminal.size()?;
+                    terminal.resize(area.into())?;
                     terminal.draw(|frame| draw(frame, &mut app))?;
                 }
                 app.sync_mpris().await;
