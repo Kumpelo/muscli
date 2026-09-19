@@ -661,7 +661,11 @@ async fn run_inner(
                     // The covers moved. A partial repaint would leave the old
                     // and the new mixed together, so clear and redraw.
                     app.covers.drawn_signature = app.covers.pending_signature;
-                    terminal.clear()?;
+                    // Terminal::clear queries the cursor first and can stall
+                    // for two seconds on Kitty in some sessions. Resizing the
+                    // current viewport clears both buffers without that query.
+                    let area = terminal.size()?;
+                    terminal.resize(area.into())?;
                     terminal.draw(|frame| draw(frame, &mut app))?;
                 }
                 app.sync_mpris().await;
