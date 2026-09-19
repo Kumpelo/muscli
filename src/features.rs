@@ -58,11 +58,19 @@ impl SearchIndex {
         let max_distance = (query.chars().count() / 3).max(1);
         let mut best = BinaryHeap::<Reverse<(usize, Reverse<usize>)>>::with_capacity(limit + 1);
         for (index, fields) in self.fields.iter().enumerate() {
-            let Some(score) = fields
-                .iter()
-                .filter_map(|field| fuzzy_score(field, &query, max_distance))
-                .max()
-            else {
+            // Stop at the first field that matches exactly: nothing can beat
+            // it, and evaluating the rest means a substring search and a word
+            // by word edit distance over text that cannot change the outcome.
+            let mut score = 0usize;
+            for field in fields {
+                if let Some(found) = fuzzy_score(field, &query, max_distance) {
+                    score = score.max(found);
+                    if score >= EXACT_SCORE {
+                        break;
+                    }
+                }
+            }
+            if score == 0 {
                 continue;
             };
             let rank = (score, Reverse(index));
@@ -108,15 +116,23 @@ pub fn fuzzy_search(tracks: &[Track], query: &str, limit: usize) -> Vec<usize> {
     SearchIndex::build(tracks).search(query, limit)
 }
 
+/// The score of an exact match; nothing scores higher.
+const EXACT_SCORE: usize = 10_000;
+
 fn fuzzy_score(value: &str, query: &str, max_distance: usize) -> Option<usize> {
     if value == query {
-        return Some(10_000);
+        return Some(EXACT_SCORE);
     }
-    if value.starts_with(query) {
-        return Some(9_000usize.saturating_sub(value.len() - query.len()));
-    }
-    if let Some(position) = value.find(query) {
-        return Some(8_000usize.saturating_sub(position));
+    // A field shorter than the query cannot contain it, and can only match by
+    // edit distance if the difference is within the budget. Checking that
+    // first skips the substring search over the many fields that cannot match.
+    if value.len() >= query.len() {
+        if value.starts_with(query) {
+            return Some(9_000usize.saturating_sub(value.len() - query.len()));
+        }
+        if let Some(position) = value.find(query) {
+            return Some(8_000usize.saturating_sub(position));
+        }
     }
     value
         .split_whitespace()
