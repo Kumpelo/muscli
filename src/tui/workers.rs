@@ -71,6 +71,24 @@ pub(super) enum WatchEvent {
 /// mechanism only on Windows.
 const REMOVABLE_POLL: Duration = Duration::from_secs(5);
 
+fn watch_path_may_affect_library(kind: &EventKind, path: &Path) -> bool {
+    if crate::library::is_indexable(path) || path.is_dir() {
+        return true;
+    }
+    if path.is_file() {
+        return false;
+    }
+
+    // Removed/renamed paths often no longer have metadata. Only discard the
+    // event when the backend explicitly says it was a non-audio file; unknown
+    // kinds may be directories (including names such as Album.2024).
+    !matches!(
+        kind,
+        EventKind::Create(notify::event::CreateKind::File)
+            | EventKind::Remove(notify::event::RemoveKind::File)
+    )
+}
+
 pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<WatchEvent>) {
     let configured = config.sources.clone();
     thread::Builder::new()
@@ -100,7 +118,7 @@ pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<Wa
                     for path in &event.paths {
                         // A directory event matters too: renaming or deleting a
                         // folder changes the library without touching a file.
-                        if !crate::library::is_indexable(path) && path.extension().is_some() {
+                        if !watch_path_may_affect_library(&event.kind, path) {
                             continue;
                         }
                         if let Some(root) = roots

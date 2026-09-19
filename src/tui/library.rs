@@ -414,6 +414,17 @@ impl App {
                         Err(error) => {
                             let _ = tx
                                 .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
+                            if !full {
+                                match db.mark_source_unavailable_by_root(&root) {
+                                    Ok(count) => changed |= count > 0,
+                                    Err(mark_error) => {
+                                        let _ = tx.send(ScanMessage::Error(format!(
+                                            "{}: could not mark source unavailable: {mark_error:#}",
+                                            root.display()
+                                        )));
+                                    }
+                                }
+                            }
                             continue;
                         }
                     };
