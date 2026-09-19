@@ -18,7 +18,7 @@ pub fn detect_language() -> Option<Language> {
 /// Windows has no locale environment variables, so ask the API.
 #[cfg(windows)]
 pub fn detect_language() -> Option<Language> {
-    use windows::Win32::System::WindowsProgramming::GetUserDefaultLocaleName;
+    use windows::Win32::Globalization::GetUserDefaultLocaleName;
 
     let mut buffer = [0u16; 85];
     let length = unsafe { GetUserDefaultLocaleName(&mut buffer) };
