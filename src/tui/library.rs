@@ -42,20 +42,45 @@ impl PendingScan {
     }
 }
 
-impl App {
-    pub(super) fn reload_library(&mut self) -> Result<()> {
-        let _profile = crate::profiling::span("reload_library");
-        let library = self.db.load_library_state()?;
-        self.tracks = library.tracks;
-        self.stats = library.stats;
-        self.added_at = library.added_at;
-        let (search_index, albums, artists, genres) = if self.tracks.len() >= 2_000 {
+/// Everything the views read, as a pure function of the database.
+///
+/// Built away from `App` so it can be assembled on a worker thread: a rescan of
+/// a large library otherwise froze the render loop while every track was read
+/// and regrouped.
+pub(super) struct LibrarySnapshot {
+    tracks: Vec<Track>,
+    stats: HashMap<String, TrackStats>,
+    added_at: HashMap<String, i64>,
+    track_index: HashMap<String, usize>,
+    favorite_indices: Vec<usize>,
+    albums: Vec<Album>,
+    album_index: HashMap<String, usize>,
+    artists: Vec<Artist>,
+    artist_index: HashMap<String, usize>,
+    genres: Vec<Genre>,
+    search_index: SearchIndex,
+    playlists: Vec<Playlist>,
+    smart_playlists: Vec<SmartPlaylist>,
+    saved_queues: Vec<SavedQueue>,
+    history: Vec<HistoryEntry>,
+}
+
+impl LibrarySnapshot {
+    pub(super) fn load(db: &Database) -> Result<Self> {
+        let _profile = crate::profiling::span("library_snapshot");
+        let library = db.load_library_state()?;
+        let tracks = library.tracks;
+
+        // The four derived indexes are independent, so on a big library they
+        // are worth building side by side; below that the threads cost more
+        // than they save.
+        let (search_index, albums, artists, genres) = if tracks.len() >= 2_000 {
             thread::scope(|scope| -> Result<_> {
-                let tracks = &self.tracks;
-                let search = scope.spawn(|| SearchIndex::build(tracks));
-                let albums = scope.spawn(|| group_albums(tracks));
-                let artists = scope.spawn(|| group_artists(tracks));
-                let genres = scope.spawn(|| group_genres(tracks));
+                let borrowed = &tracks;
+                let search = scope.spawn(|| SearchIndex::build(borrowed));
+                let albums = scope.spawn(|| group_albums(borrowed));
+                let artists = scope.spawn(|| group_artists(borrowed));
+                let genres = scope.spawn(|| group_genres(borrowed));
                 Ok((
                     search
                         .join()
@@ -73,54 +98,122 @@ impl App {
             })?
         } else {
             (
-                SearchIndex::build(&self.tracks),
-                group_albums(&self.tracks),
-                group_artists(&self.tracks),
-                group_genres(&self.tracks),
+                SearchIndex::build(&tracks),
+                group_albums(&tracks),
+                group_artists(&tracks),
+                group_genres(&tracks),
             )
         };
-        self.search_index = search_index;
-        self.albums = albums;
-        self.artists = artists;
-        self.genres = genres;
+
+        Ok(Self {
+            track_index: tracks
+                .iter()
+                .enumerate()
+                .map(|(index, track)| (track.id.clone(), index))
+                .collect(),
+            favorite_indices: tracks
+                .iter()
+                .enumerate()
+                .filter_map(|(index, track)| track.favorite.then_some(index))
+                .collect(),
+            album_index: albums
+                .iter()
+                .enumerate()
+                .map(|(index, album)| (album.key.clone(), index))
+                .collect(),
+            artist_index: artists
+                .iter()
+                .enumerate()
+                .map(|(index, artist)| (artist.name.clone(), index))
+                .collect(),
+            tracks,
+            stats: library.stats,
+            added_at: library.added_at,
+            albums,
+            artists,
+            genres,
+            search_index,
+            playlists: db.load_playlists()?,
+            smart_playlists: db.load_smart_playlists()?,
+            saved_queues: db.load_saved_queues()?,
+            history: db.load_history(500)?,
+        })
+    }
+}
+
+impl App {
+    /// Adopt a freshly built snapshot.
+    ///
+    /// Only the parts that depend on live application state - the search query,
+    /// the open detail views, the cursor - are recomputed here; everything else
+    /// was prepared off-thread.
+    pub(super) fn install_snapshot(&mut self, snapshot: LibrarySnapshot) {
+        self.tracks = snapshot.tracks;
+        self.stats = snapshot.stats;
+        self.added_at = snapshot.added_at;
+        self.track_index = snapshot.track_index;
+        self.favorite_indices = snapshot.favorite_indices;
+        self.albums = snapshot.albums;
+        self.album_index = snapshot.album_index;
+        self.artists = snapshot.artists;
+        self.artist_index = snapshot.artist_index;
+        self.genres = snapshot.genres;
+        self.search_index = snapshot.search_index;
+        self.playlists = snapshot.playlists;
+        self.smart_playlists = snapshot.smart_playlists;
+        self.saved_queues = snapshot.saved_queues;
+        self.history = snapshot.history;
+
         self.refresh_search();
-        self.track_index = self
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.id.clone(), i))
-            .collect();
-        self.favorite_indices = self
-            .tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, track)| track.favorite.then_some(index))
-            .collect();
-        self.album_index = self
-            .albums
-            .iter()
-            .enumerate()
-            .map(|(index, album)| (album.key.clone(), index))
-            .collect();
-        self.artist_index = self
-            .artists
-            .iter()
-            .enumerate()
-            .map(|(index, artist)| (artist.name.clone(), index))
-            .collect();
         self.rebuild_genre_indices();
-        self.playlists = self.db.load_playlists()?;
-        self.smart_playlists = self.db.load_smart_playlists()?;
-        self.saved_queues = self.db.load_saved_queues()?;
-        self.history = self.db.load_history(500)?;
         self.rebuild_home_tracks();
         self.rebuild_smart_matches();
         // A rescan can delete whatever is currently open; unwind to the
         // deepest level that still exists.
         self.prune_nav();
         self.selected = self.selected.min(self.item_count().saturating_sub(1));
+        self.reload_running = false;
         self.dirty = true;
+    }
+
+    /// Load the library on this thread.
+    ///
+    /// Used for the first load, where the restored session needs the tracks
+    /// before the UI can draw anything meaningful.
+    pub(super) fn reload_library(&mut self) -> Result<()> {
+        let snapshot = LibrarySnapshot::load(&self.db)?;
+        self.install_snapshot(snapshot);
         Ok(())
+    }
+
+    /// Ask the worker to rebuild the library in the background.
+    ///
+    /// Requests while one is already running are collapsed into a single
+    /// follow-up, so a burst of scans does not queue a burst of reloads.
+    pub(super) fn request_reload(&mut self) {
+        if self.reload_running {
+            self.reload_again = true;
+            return;
+        }
+        self.reload_running = true;
+        if self.reload_tx.send(()).is_err() {
+            // The worker is gone; fall back to loading here rather than
+            // leaving the library stale.
+            self.reload_running = false;
+            let _ = self.reload_library();
+        }
+    }
+
+    pub(super) fn handle_reload_result(&mut self, snapshot: LibrarySnapshot) {
+        self.install_snapshot(snapshot);
+        self.status = format!(
+            "{} canciones · {} álbumes · listo",
+            self.tracks.len(),
+            self.albums.len()
+        );
+        if std::mem::take(&mut self.reload_again) {
+            self.request_reload();
+        }
     }
 
     pub(super) fn rebuild_smart_matches(&mut self) {
@@ -388,12 +481,10 @@ impl App {
             ScanMessage::Done { changed } => {
                 self.scan_running = false;
                 if changed {
-                    self.reload_library()?;
-                    self.status = format!(
-                        "{} canciones · {} álbumes · listo",
-                        self.tracks.len(),
-                        self.albums.len()
-                    );
+                    // Rebuilt off-thread; the summary lands with the snapshot.
+                    self.status = "Actualizando biblioteca…".into();
+                    self.request_reload();
+                    self.dirty = true;
                 } else {
                     self.status = format!(
                         "{} canciones · {} álbumes · sin cambios",

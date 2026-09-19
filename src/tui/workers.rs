@@ -279,3 +279,32 @@ pub(super) fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<
     });
     Ok(shutdown_rx)
 }
+
+/// Rebuilds the library snapshot away from the render loop.
+///
+/// Keeps one database connection open for its lifetime rather than reopening
+/// per request, and collapses a backlog into a single rebuild: what matters is
+/// the latest state, not how many times it was asked for.
+pub(super) fn start_library_worker(
+    database_file: PathBuf,
+    requests: Receiver<()>,
+    results: tokio_mpsc::UnboundedSender<Box<LibrarySnapshot>>,
+) {
+    thread::Builder::new()
+        .name("muscli-library".into())
+        .spawn(move || {
+            let Ok(db) = Database::open(&database_file) else {
+                return;
+            };
+            while requests.recv().is_ok() {
+                while requests.try_recv().is_ok() {}
+                let Ok(snapshot) = LibrarySnapshot::load(&db) else {
+                    continue;
+                };
+                if results.send(Box::new(snapshot)).is_err() {
+                    break;
+                }
+            }
+        })
+        .ok();
+}

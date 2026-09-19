@@ -35,7 +35,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 use covers::Covers;
 use input::{display_rule_value, handle_terminal_event};
-use library::PendingScan;
+use library::{LibrarySnapshot, PendingScan};
 use nav::{NavFrame, NavTarget};
 use playback::HistoryTally;
 use render::draw;
@@ -43,7 +43,7 @@ use settings::SETTINGS;
 use theme::UiTheme;
 use workers::{
     CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult, WatchEvent,
-    start_cover_decode_worker, start_search_worker, start_shutdown_listener,
+    start_cover_decode_worker, start_library_worker, start_search_worker, start_shutdown_listener,
     start_terminal_event_reader, start_watchers,
 };
 
@@ -294,6 +294,12 @@ struct App {
     watch_rx: tokio_mpsc::UnboundedReceiver<WatchEvent>,
     scan_running: bool,
     scan_pending: PendingScan,
+    reload_tx: Sender<()>,
+    reload_rx: tokio_mpsc::UnboundedReceiver<Box<LibrarySnapshot>>,
+    /// A background library rebuild is in flight.
+    reload_running: bool,
+    /// Something changed while a rebuild was running, so run one more.
+    reload_again: bool,
     last_scan: Instant,
     status: String,
     should_quit: bool,
@@ -376,6 +382,9 @@ async fn run_inner(
     let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
     let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
     start_cover_decode_worker(cover_decode_requests, cover_results_tx);
+    let (reload_tx, reload_requests) = mpsc::channel();
+    let (reload_results_tx, reload_rx) = tokio_mpsc::unbounded_channel();
+    start_library_worker(paths.database_file(), reload_requests, reload_results_tx);
     let (search_tx, search_requests) = mpsc::channel();
     let (search_results_tx, search_rx) = tokio_mpsc::unbounded_channel();
     start_search_worker(search_requests, search_results_tx);
@@ -445,6 +454,10 @@ async fn run_inner(
         watch_rx,
         scan_running: false,
         scan_pending: PendingScan::default(),
+        reload_tx,
+        reload_rx,
+        reload_running: false,
+        reload_again: false,
         last_scan: Instant::now() - Duration::from_secs(5),
         status: mpris_warning.unwrap_or_else(|| "Cargando biblioteca…".into()),
         should_quit: false,
@@ -559,6 +572,11 @@ async fn run_inner(
                         app.handle_search_result(result);
                     }
                 }
+                snapshot = app.reload_rx.recv() => {
+                    if let Some(snapshot) = snapshot {
+                        app.handle_reload_result(*snapshot);
+                    }
+                }
                 shutdown = shutdown_rx.recv() => {
                     if shutdown.is_some() {
                         app.should_quit = true;
@@ -592,6 +610,9 @@ async fn run_inner(
             }
             while let Ok(result) = app.search_rx.try_recv() {
                 app.handle_search_result(result);
+            }
+            while let Ok(snapshot) = app.reload_rx.try_recv() {
+                app.handle_reload_result(*snapshot);
             }
             app.tick_history()?;
             app.refresh_theme();
