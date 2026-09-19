@@ -151,13 +151,16 @@ pub fn write_tags(path: &Path, analysis: ReplayGainAnalysis) -> Result<()> {
         .with_context(|| format!("could not open {}", path.display()))?
         .guess_file_type()?
         .read()?;
-    // Start from the file's existing tag so nothing else in it is lost; fall
-    // back to a fresh Vorbis comment block for a file with no tag at all.
+    // Prefer an existing tag that this container can actually write. A
+    // tagless file gets the container's primary writable tag type (ID3v2 for
+    // MP3/AAC, Vorbis comments for FLAC/Ogg/Opus, MP4 ilst for MP4, etc.).
+    let primary_tag_type = tagged.primary_tag_type();
     let mut tag = tagged
-        .primary_tag()
-        .or_else(|| tagged.first_tag())
+        .tags()
+        .iter()
+        .find(|tag| tagged.tag_support(tag.tag_type()).is_writable())
         .cloned()
-        .unwrap_or_else(|| Tag::new(TagType::VorbisComments));
+        .unwrap_or_else(|| Tag::new(primary_tag_type));
 
     // The ReplayGain 1.0 field names, in the units the specification defines.
     tag.insert_text(
