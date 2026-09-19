@@ -209,7 +209,13 @@ mod tests {
     #[test]
     fn import_rejects_paths_outside_the_lyrics_directory() {
         let fixture = tempfile::tempdir().expect("temporary directory");
-        let paths = AppPaths::from_root(fixture.path().join("muscli"));
+        let root = fixture.path().join("muscli");
+        let paths = AppPaths {
+            config_dir: root.join("config"),
+            data_dir: root.join("data"),
+            cache_dir: root.join("cache"),
+            runtime_dir: root.join("runtime"),
+        };
         let source = fixture.path().join("source.lrc");
         fs::write(&source, "[00:01.00]hello\n").expect("writing source lyrics");
 
