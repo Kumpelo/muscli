@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::paths::AppPaths;
+use crate::{fsutil::atomic_replace, paths::AppPaths};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +32,24 @@ pub struct Config {
     pub compact_default: bool,
     pub show_covers: bool,
     pub volume_step: u8,
+    /// Worker threads for library scanning. `0` derives a value from the
+    /// machine, capped so a spinning disk is not thrashed by seeks.
+    pub scan_threads: usize,
+    /// Let mpv open the next track before the current one ends, so album sides
+    /// run together without a gap.
+    pub gapless: bool,
+    /// Interface language: "auto", "en" or "es". Auto follows the system
+    /// locale and falls back to English.
+    pub language: String,
+    /// File extensions to index. Empty means the built-in list.
+    pub audio_extensions: Vec<String>,
+    /// Equaliser gains in decibels, one per band of `EQUALIZER_BANDS`. Empty
+    /// or all zero means no equaliser at all.
+    pub equalizer: Vec<f32>,
 }
+
+/// Centre frequencies of the equaliser bands, an octave apart.
+pub const EQUALIZER_BANDS: [u32; 8] = [60, 150, 400, 1_000, 2_400, 6_000, 12_000, 16_000];
 
 impl Default for Config {
     fn default() -> Self {
@@ -51,6 +68,11 @@ impl Default for Config {
             compact_default: false,
             show_covers: true,
             volume_step: 5,
+            scan_threads: 0,
+            gapless: true,
+            language: "auto".into(),
+            audio_extensions: Vec::new(),
+            equalizer: Vec::new(),
         }
     }
 }
@@ -98,43 +120,6 @@ impl Config {
             .retain(|item| item != &canonical && item != path);
         before != self.sources.len()
     }
-}
-
-#[cfg(unix)]
-fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
-    fs::rename(source, target)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn atomic_replace(source: &Path, target: &Path) -> Result<()> {
-    use windows::{
-        Win32::Storage::FileSystem::{
-            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        },
-        core::PCWSTR,
-    };
-
-    let source: Vec<u16> = source
-        .as_os_str()
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let target: Vec<u16> = target
-        .as_os_str()
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        MoveFileExW(
-            PCWSTR(source.as_ptr()),
-            PCWSTR(target.as_ptr()),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    }?;
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -191,4 +176,72 @@ pub fn all_sources(config: &Config) -> Vec<PathBuf> {
     sources.sort();
     sources.dedup();
     sources
+}
+
+impl Config {
+    /// The equaliser bands, paired with their configured gains.
+    ///
+    /// A configuration with too few or too many gains is used as far as it
+    /// goes rather than rejected: a hand-edited file should not stop playback.
+    pub fn equalizer_bands(&self) -> Vec<(u32, f32)> {
+        EQUALIZER_BANDS
+            .iter()
+            .zip(self.equalizer.iter().copied().chain(std::iter::repeat(0.0)))
+            .map(|(frequency, gain)| (*frequency, gain.clamp(-12.0, 12.0)))
+            .collect()
+    }
+
+    /// The scan options this configuration asks for.
+    pub fn scan_options(&self) -> crate::library::ScanOptions {
+        crate::library::ScanOptions {
+            threads: self.scan_threads,
+            cover_cache_bytes: self.cover_cache_mb * 1024 * 1024,
+            full: true,
+            extensions: if self.audio_extensions.is_empty() {
+                crate::library::DEFAULT_EXTENSIONS
+                    .iter()
+                    .map(|extension| (*extension).to_owned())
+                    .collect()
+            } else {
+                self.audio_extensions.clone()
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_equalizer_is_flat() {
+        let config = Config::default();
+        let bands = config.equalizer_bands();
+        assert_eq!(bands.len(), EQUALIZER_BANDS.len());
+        assert!(bands.iter().all(|(_, gain)| *gain == 0.0));
+    }
+
+    #[test]
+    fn a_short_list_of_gains_is_used_as_far_as_it_goes() {
+        // A hand-edited configuration file should not stop playback.
+        let config = Config {
+            equalizer: vec![3.0, -2.0],
+            ..Config::default()
+        };
+        let bands = config.equalizer_bands();
+        assert_eq!(bands[0], (EQUALIZER_BANDS[0], 3.0));
+        assert_eq!(bands[1], (EQUALIZER_BANDS[1], -2.0));
+        assert!(bands[2..].iter().all(|(_, gain)| *gain == 0.0));
+    }
+
+    #[test]
+    fn extra_gains_are_ignored_and_absurd_ones_clamped() {
+        let config = Config {
+            equalizer: vec![99.0; EQUALIZER_BANDS.len() + 4],
+            ..Config::default()
+        };
+        let bands = config.equalizer_bands();
+        assert_eq!(bands.len(), EQUALIZER_BANDS.len());
+        assert!(bands.iter().all(|(_, gain)| *gain == 12.0));
+    }
 }

@@ -132,6 +132,51 @@ fn first_number(value: &str) -> Option<f64> {
         .and_then(|number| number.parse().ok())
 }
 
+/// Write the analysis into the file's own tags.
+///
+/// This is the only thing muscli does that modifies a user's audio files, so
+/// it never happens as part of a scan or of analysis: it is a separate command
+/// that has to be asked for. Existing tags with these names are replaced;
+/// nothing else in the file is touched.
+pub fn write_tags(path: &Path, analysis: ReplayGainAnalysis) -> Result<()> {
+    use lofty::{
+        config::WriteOptions,
+        file::TaggedFileExt,
+        prelude::{ItemKey, TagExt},
+        probe::Probe,
+        tag::Tag,
+    };
+
+    let tagged = Probe::open(path)
+        .with_context(|| format!("could not open {}", path.display()))?
+        .guess_file_type()?
+        .read()?;
+    // Prefer an existing tag that this container can actually write. A
+    // tagless file gets the container's primary writable tag type (ID3v2 for
+    // MP3/AAC, Vorbis comments for FLAC/Ogg/Opus, MP4 ilst for MP4, etc.).
+    let primary_tag_type = tagged.primary_tag_type();
+    let mut tag = tagged
+        .tags()
+        .iter()
+        .find(|tag| tagged.tag_support(tag.tag_type()).is_writable())
+        .cloned()
+        .unwrap_or_else(|| Tag::new(primary_tag_type));
+
+    // The ReplayGain 1.0 field names, in the units the specification defines.
+    tag.insert_text(
+        ItemKey::ReplayGainTrackGain,
+        format!("{:.2} dB", analysis.gain_db),
+    );
+    tag.insert_text(
+        ItemKey::ReplayGainTrackPeak,
+        format!("{:.6}", 10f64.powf(analysis.true_peak_db / 20.0)),
+    );
+
+    tag.save_to_path(path, WriteOptions::default())
+        .with_context(|| format!("could not write tags to {}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
