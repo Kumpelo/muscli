@@ -30,7 +30,12 @@ pub fn parse(source: &str, base: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
     let mut pending_label: Option<String> = None;
 
-    for raw in source.lines() {
+    for (index, raw) in source.lines().enumerate() {
+        let raw = if index == 0 {
+            raw.strip_prefix('﻿').unwrap_or(raw)
+        } else {
+            raw
+        };
         let line = raw.trim();
         if line.is_empty() {
             continue;
@@ -95,6 +100,22 @@ mod tests {
         let entries = parse("a.flac\nb.flac\n", &base());
         assert_eq!(
             entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>(),
+            [base().join("a.flac"), base().join("b.flac")]
+        );
+    }
+
+    #[test]
+    fn a_utf8_bom_is_ignored_before_the_header() {
+        let entries = parse("\u{feff}#EXTM3U\na.flac\n", &base());
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, base().join("a.flac"));
+    }
+
+    #[test]
+    fn a_utf8_bom_is_ignored_before_a_headerless_first_track() {
+        let entries = parse("\u{feff}a.flac\nb.flac\n", &base());
+        assert_eq!(
+            entries.iter().map(|entry| entry.path.clone()).collect::<Vec<_>>(),
             [base().join("a.flac"), base().join("b.flac")]
         );
     }
