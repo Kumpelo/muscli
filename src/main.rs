@@ -100,6 +100,37 @@ fn main() -> Result<()> {
                     t!("cli.pruned", tracks = tracks, covers = dangling + evicted)
                 );
             }
+            LibraryCommand::WriteGain { yes } => {
+                // The one command that changes the user's files, so it refuses
+                // to run on a bare invocation rather than asking mid-stream.
+                if !yes {
+                    anyhow::bail!("{}", t!("cli.write_gain_confirm"));
+                }
+                let db = Database::open(&paths.database_file())?;
+                let mut written = 0usize;
+                let mut skipped = 0usize;
+                for track in db.load_tracks()? {
+                    if !track.available || !track.path.exists() {
+                        skipped += 1;
+                        continue;
+                    }
+                    let Some(analysis) = db.track_gain(&track.id, false)? else {
+                        skipped += 1;
+                        continue;
+                    };
+                    match replaygain::write_tags(&track.path, analysis) {
+                        Ok(()) => written += 1,
+                        Err(error) => {
+                            skipped += 1;
+                            eprintln!("warning: {}: {error:#}", track.path.display());
+                        }
+                    }
+                }
+                println!(
+                    "{}",
+                    t!("cli.write_gain_done", written = written, skipped = skipped)
+                );
+            }
             LibraryCommand::AnalyzeGain { force } => {
                 let db = Database::open(&paths.database_file())?;
                 let candidates = db.gain_analysis_candidates(force)?;

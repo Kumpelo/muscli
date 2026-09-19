@@ -59,6 +59,8 @@
 "cli.removable" = "removable"
 "cli.removed" = "Removed {path}"
 "cli.rescan_requested" = "Rescan requested from the running muscli instance"
+"cli.write_gain_confirm" = "this rewrites tags in your audio files; pass --yes to confirm"
+"cli.write_gain_done" = "Wrote ReplayGain tags to {written} files ({skipped} skipped)"
 "context.add_to_playlist" = "Add to a playlist"
 "context.enqueue" = "Add to the end"
 "context.favorite" = "Favourite"
