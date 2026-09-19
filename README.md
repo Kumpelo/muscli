@@ -111,6 +111,21 @@ CI runs these checks on Linux and Windows. Tags matching `v*` create draft
 GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
 CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.1`.
 
+## Key bindings
+
+`muscli keys` lists the bindings in effect. To change them, write
+`keybindings.toml` in the configuration directory, naming actions as that
+command prints them:
+
+```toml
+quit = ["ctrl+q"]
+play_pause = ["space", "p"]
+```
+
+Listing an action replaces its default keys rather than adding to them. An
+entry muscli cannot read is reported and skipped; it never stops muscli
+starting.
+
 ## Language
 
 The interface is English by default and follows the system locale when it

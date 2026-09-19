@@ -301,6 +301,8 @@ struct App {
     should_quit: bool,
     dirty: bool,
     covers: Covers,
+    /// Key bindings in effect: the defaults with any user overrides applied.
+    bindings: Vec<keys::Binding>,
     album_columns: usize,
     last_mpris_signature: Option<MediaSessionSignature>,
     last_mpris_position_signature: Option<(u64, u64)>,
@@ -384,6 +386,9 @@ async fn run_inner(
     let (reload_tx, reload_requests) = mpsc::channel();
     let (reload_results_tx, reload_rx) = tokio_mpsc::unbounded_channel();
     start_library_worker(paths.database_file(), reload_requests, reload_results_tx);
+    let overrides = keys::KeyOverrides::load(&paths.keybindings_file());
+    let binding_problems = overrides.problems.clone();
+    let bindings = keys::effective_bindings(&overrides);
     let (search_tx, search_requests) = mpsc::channel();
     let (search_results_tx, search_rx) = tokio_mpsc::unbounded_channel();
     start_search_worker(search_requests, search_results_tx);
@@ -458,9 +463,14 @@ async fn run_inner(
         reload_running: false,
         reload_again: false,
         last_scan: Instant::now() - Duration::from_secs(5),
-        status: mpris_warning.unwrap_or_else(|| t!("status.loading_library").into()),
+        status: binding_problems
+            .first()
+            .map(|problem| t!("status.keybindings_problem", problem = problem))
+            .or(mpris_warning)
+            .unwrap_or_else(|| t!("status.loading_library").into()),
         should_quit: false,
         dirty: true,
+        bindings,
         covers: Covers {
             picker,
             current: None,
@@ -1263,7 +1273,7 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
 
 mod covers;
 mod input;
-mod keys;
+pub mod keys;
 mod library;
 mod nav;
 mod playback;

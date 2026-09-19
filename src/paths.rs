@@ -56,6 +56,11 @@ impl AppPaths {
         self.config_dir.join("config.toml")
     }
 
+    /// Optional user overrides for the key bindings.
+    pub fn keybindings_file(&self) -> PathBuf {
+        self.config_dir.join("keybindings.toml")
+    }
+
     pub fn database_file(&self) -> PathBuf {
         self.data_dir.join("library.db")
     }

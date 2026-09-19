@@ -14,7 +14,7 @@ impl App {
         if self.input.is_some() {
             return self.handle_input(key);
         }
-        match keys::resolve(&key, self.view, self.focus) {
+        match keys::resolve_with(&self.bindings, &key, self.view, self.focus) {
             Some(action) => self.apply(action),
             None => Ok(()),
         }

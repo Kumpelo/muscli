@@ -475,7 +475,7 @@ fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let muted = Style::default().fg(app.theme.muted);
 
     let mut lines = Vec::new();
-    for (title, entries) in keys::help_sections() {
+    for (title, entries) in keys::help_sections(&app.bindings) {
         if entries.is_empty() {
             continue;
         }
