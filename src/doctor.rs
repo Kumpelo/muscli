@@ -8,6 +8,7 @@ use anyhow::Result;
 use crate::{
     config::{Config, all_sources},
     db::Database,
+    discord::MUSCLI_DISCORD_APPLICATION_ID,
     paths::AppPaths,
     t,
 };
@@ -42,23 +43,18 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
     });
     let discord_socket = find_discord_ipc();
     checks.push(Check {
-        ok: !config.discord_enabled
-            || (config.discord_application_id.is_some() && discord_socket.is_some()),
+        ok: !config.discord_enabled || discord_socket.is_some(),
         name: "Discord Rich Presence",
         detail: if config.discord_enabled {
             match discord_socket {
                 Some(socket) => format!(
                     "enabled for {}; IPC {}",
-                    config
-                        .discord_application_id
-                        .as_deref()
-                        .unwrap_or("missing ID"),
-                    socket
+                    MUSCLI_DISCORD_APPLICATION_ID, socket
                 ),
                 None => "enabled, but Discord/Vesktop IPC is not available".into(),
             }
         } else {
-            "disabled; run `muscli setup discord APPLICATION_ID`".into()
+            "disabled; enable it in Settings or run `muscli setup discord`".into()
         },
     });
     #[cfg(unix)]
