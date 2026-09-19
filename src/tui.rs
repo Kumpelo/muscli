@@ -10,7 +10,6 @@ use std::{
 
 #[cfg(any(unix, test))]
 use std::path::Path;
-#[cfg(unix)]
 use std::time::SystemTime;
 
 use anyhow::Result;
@@ -40,7 +39,7 @@ use nav::{NavFrame, NavTarget};
 use playback::HistoryTally;
 use render::draw;
 use settings::SETTINGS;
-use theme::UiTheme;
+use theme::{ThemeChoice, UiTheme};
 use workers::{
     CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult, WatchEvent,
     start_cover_decode_worker, start_library_worker, start_search_worker, start_shutdown_listener,
@@ -317,9 +316,12 @@ struct App {
     last_mpris_position_signature: Option<(u64, u64)>,
     last_discord_signature: Option<(Option<u64>, PlaybackStatus, u64, u64)>,
     theme: UiTheme,
-    #[cfg(unix)]
+    /// A palette asked for with `--theme`, which wins over the configured one
+    /// until the setting is changed from inside the interface.
+    theme_override: Option<ThemeChoice>,
+    /// The file the palette was read from, when it came from one. Only the
+    /// `system` choice has one, and it is what `refresh_theme` watches.
     theme_path: Option<PathBuf>,
-    #[cfg(unix)]
     theme_modified: Option<SystemTime>,
     /// Listening accounting for the loaded track.
     tally: HistoryTally,
@@ -327,7 +329,12 @@ struct App {
     last_theme_check: Instant,
 }
 
-pub async fn run(paths: AppPaths, config: Config, compact: bool) -> Result<()> {
+pub async fn run(
+    paths: AppPaths,
+    config: Config,
+    compact: bool,
+    theme: Option<String>,
+) -> Result<()> {
     let _guard = InstanceGuard::acquire(&paths.lock_file())?;
     let (picker, protocol_note) = match Picker::from_query_stdio() {
         Ok(picker) => {
@@ -349,7 +356,7 @@ pub async fn run(paths: AppPaths, config: Config, compact: bool) -> Result<()> {
         ratatui::restore();
         return Err(error.into());
     }
-    let result = run_inner(&mut terminal, paths, config, picker, compact).await;
+    let result = run_inner(&mut terminal, paths, config, picker, compact, theme).await;
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     result
@@ -361,6 +368,7 @@ async fn run_inner(
     config: Config,
     picker: Picker,
     compact_requested: bool,
+    theme_requested: Option<String>,
 ) -> Result<()> {
     let db = Database::open(&paths.database_file())?;
     let saved = db.load_playback()?;
@@ -386,10 +394,12 @@ async fn run_inner(
         None
     };
     let compact = compact_requested || config.compact_default;
-    #[cfg(unix)]
-    let (theme, theme_path, theme_modified) = UiTheme::load_with_source();
-    #[cfg(windows)]
-    let theme = UiTheme::default();
+    // `--theme` applies to this run only; the configured theme is left alone
+    // until the setting is changed in the settings view.
+    let theme_override = theme_requested.as_deref().and_then(ThemeChoice::from_name);
+    let (theme, theme_path, theme_modified) = UiTheme::load(
+        theme_override.unwrap_or_else(|| ThemeChoice::parse_or_default(&config.theme)),
+    );
     let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
     let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
     start_cover_decode_worker(cover_decode_requests, cover_results_tx);
@@ -500,9 +510,8 @@ async fn run_inner(
         last_mpris_position_signature: None,
         last_discord_signature: None,
         theme,
-        #[cfg(unix)]
+        theme_override,
         theme_path,
-        #[cfg(unix)]
         theme_modified,
         tally: HistoryTally::new(),
         last_playback_save: Instant::now() - Duration::from_secs(5),

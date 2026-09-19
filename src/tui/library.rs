@@ -320,32 +320,54 @@ impl App {
         Ok(())
     }
 
+    /// Re-read the desktop's palette, so a theme switch there shows up without
+    /// restarting muscli.
+    ///
+    /// Only the `system` choice follows the desktop; every other choice is a
+    /// built-in palette, and there is nothing here to watch. The palette is
+    /// looked for again even when no file was found at start-up, so a theme
+    /// installed while muscli is running is picked up too.
     pub(super) fn refresh_theme(&mut self) {
+        if self.theme_choice() != ThemeChoice::System {
+            return;
+        }
         if self.last_theme_check.elapsed() < Duration::from_secs(1) {
             return;
         }
         self.last_theme_check = Instant::now();
 
-        #[cfg(unix)]
-        {
-            let modified = self
-                .theme_path
-                .as_ref()
-                .and_then(|path| fs::metadata(path).ok())
+        if let Some(path) = self.theme_path.clone() {
+            let modified = fs::metadata(&path)
+                .ok()
                 .and_then(|metadata| metadata.modified().ok());
-            if self.theme_path.is_some() && modified == self.theme_modified {
+            if modified == self.theme_modified {
                 return;
             }
-
-            let (theme, path, modified) = UiTheme::load_with_source();
-            self.theme_path = path;
-            self.theme_modified = modified;
-            if theme != self.theme {
-                self.theme = theme;
-                self.status = t!("status.theme_updated").into();
-                self.dirty = true;
-            }
         }
+
+        let (theme, path, modified) = UiTheme::load(ThemeChoice::System);
+        self.theme_path = path;
+        self.theme_modified = modified;
+        if theme != self.theme {
+            self.theme = theme;
+            self.status = t!("status.theme_updated").into();
+            self.dirty = true;
+        }
+    }
+
+    /// The palette in effect: what `--theme` asked for, or the configured one.
+    pub(super) fn theme_choice(&self) -> ThemeChoice {
+        self.theme_override
+            .unwrap_or_else(|| ThemeChoice::parse_or_default(&self.config.theme))
+    }
+
+    /// Load the configured palette, after the setting has been changed.
+    pub(super) fn apply_theme(&mut self) {
+        let (theme, path, modified) = UiTheme::load(self.theme_choice());
+        self.theme = theme;
+        self.theme_path = path;
+        self.theme_modified = modified;
+        self.dirty = true;
     }
 
     /// Rescan every configured and discovered source.

@@ -2,6 +2,20 @@
 
 All notable user-visible changes are documented here.
 
+## Unreleased
+
+- Added a selectable colour theme on Linux and Windows alike: `light` (the new
+  default, on a white background), `dark`, `high-contrast`, `nord`, `gruvbox`,
+  `solarized-light`, and `system` to follow the Omarchy palette on Linux. It is
+  chosen from the settings view, `theme` in `config.toml`, or `--theme` for a
+  single run. Linux installs that were following the Omarchy palette get the
+  light default and restore the old behaviour with `theme = "system"`.
+- Added the interface language to the settings view; changing it applies
+  immediately, without restarting.
+- Added the settings previously reachable only by editing `config.toml`: gapless
+  playback, scan threads, and every band of the equaliser, with a row to flatten
+  it again.
+
 ## 0.2.0-beta.1
 
 - Added Windows 11 x64 support with named-pipe IPC, removable-drive discovery,

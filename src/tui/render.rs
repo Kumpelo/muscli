@@ -451,7 +451,7 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|row| {
             ListItem::new(format!(
                 "{:<34}  {}",
-                t!(row.label),
+                app.setting_label(row),
                 app.setting_value(row.id)
             ))
         })
@@ -667,10 +667,14 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                         } else {
                             app.theme.muted
                         })
+                        // The theme's own background rather than Color::Reset:
+                        // resetting would punch the terminal's background
+                        // through a themed interface, which is a visible dark
+                        // patch under a light palette.
                         .bg(if selected {
                             app.theme.accent
                         } else {
-                            Color::Reset
+                            app.theme.background
                         }),
                 ),
                 rows[0],

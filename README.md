@@ -158,11 +158,40 @@ Listing an action replaces its default keys rather than adding to them. An
 entry muscli cannot read is reported and skipped; it never stops muscli
 starting.
 
+## Themes
+
+The interface ships with a light palette, and that is the default on Linux and
+on Windows alike. Change it from the settings view (`,`), with the left and
+right arrows on the **Theme** row, or set `theme` in `config.toml`:
+
+| `theme` | |
+|---|---|
+| `light` | white background, the default |
+| `dark` | the terminal's own palette |
+| `high-contrast` | black on white, for bright rooms and projectors |
+| `nord`, `gruvbox`, `solarized-light` | fixed palettes, identical everywhere |
+| `system` | follow the desktop: the current Omarchy theme on Linux, light elsewhere |
+
+With `system` on Linux the palette follows Omarchy live: switching theme there
+repaints muscli without restarting it. `muscli --theme dark` tries a palette
+for one run without changing the configured one.
+
 ## Language
 
-The interface is English by default and follows the system locale when it
-recognises it. Override with `language = "en"` or `language = "es"` in
-`config.toml`, or `muscli --lang es` for one run.
+The interface follows the system locale when it recognises it, and is English
+otherwise. Change it from the settings view, set `language = "en"` or
+`language = "es"` in `config.toml`, or pass `muscli --lang es` for one run.
+Changing it in the settings view takes effect immediately, without restarting.
+
+## Settings
+
+Press `,` for the settings view. Left and right adjust a value, Space and Enter
+toggle one or run the row. It covers the theme and language, compact mode,
+covers, volume step, gapless playback, ReplayGain and its mode and target,
+every equaliser band, resume and history, removable-drive detection, scan
+threads, the cover-cache budget and Discord Rich Presence, and it can start a
+rescan or a ReplayGain analysis. Every change is written to `config.toml` as
+it is made; that file remains editable by hand.
 
 muscli is MIT licensed. Contributions are welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
