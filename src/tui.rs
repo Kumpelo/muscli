@@ -295,7 +295,7 @@ struct App {
     scan_running: bool,
     scan_pending: PendingScan,
     reload_tx: Sender<()>,
-    reload_rx: tokio_mpsc::UnboundedReceiver<Result<Box<LibrarySnapshot>, String>>,
+    reload_rx: tokio_mpsc::UnboundedReceiver<std::result::Result<Box<LibrarySnapshot>, String>>,
     /// A background library rebuild is in flight.
     reload_running: bool,
     /// Something changed while a rebuild was running, so run one more.
