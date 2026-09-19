@@ -54,6 +54,8 @@
 "cli.keys_header" = "Acción                    Teclas"
 "cli.lyrics_imported" = "Letra importada en {path}"
 "cli.not_configured" = "No configurada: {path}"
+"cli.playlist_exported" = "Exportadas {count} pistas a {path}"
+"cli.playlist_imported" = "Importadas {count} pistas en {name}"
 "cli.prune_requested" = "Mantenimiento solicitado a la instancia de muscli en marcha"
 "cli.pruned" = "Eliminadas {tracks} pistas ausentes y {covers} referencias de portada huérfanas"
 "cli.removable" = "extraíble"

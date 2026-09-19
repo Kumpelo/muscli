@@ -10,6 +10,7 @@ pub mod i18n;
 pub mod instance;
 pub mod library;
 pub mod lyrics;
+pub mod m3u;
 pub mod model;
 pub mod mpris;
 #[cfg(unix)]

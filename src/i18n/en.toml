@@ -54,6 +54,8 @@
 "cli.keys_header" = "Action                    Keys"
 "cli.lyrics_imported" = "Lyrics imported to {path}"
 "cli.not_configured" = "Not configured: {path}"
+"cli.playlist_exported" = "Exported {count} tracks to {path}"
+"cli.playlist_imported" = "Imported {count} tracks into {name}"
 "cli.prune_requested" = "Maintenance requested from the running muscli instance"
 "cli.pruned" = "Pruned {tracks} missing tracks and {covers} dangling cover references"
 "cli.removable" = "removable"
