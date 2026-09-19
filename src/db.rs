@@ -1737,8 +1737,20 @@ mod tests {
         assert!(db.mark_source_unavailable_by_root(Path::new("/music"))? > 0);
 
         let tracks = db.load_tracks()?;
-        assert!(!tracks.iter().find(|track| track.id == "one").unwrap().available);
-        assert!(tracks.iter().find(|track| track.id == "two").unwrap().available);
+        assert!(
+            !tracks
+                .iter()
+                .find(|track| track.id == "one")
+                .unwrap()
+                .available
+        );
+        assert!(
+            tracks
+                .iter()
+                .find(|track| track.id == "two")
+                .unwrap()
+                .available
+        );
         Ok(())
     }
 
