@@ -663,3 +663,45 @@ fn a_partial_scan_does_not_declare_other_sources_missing() {
         "the drive that actually went away is marked unavailable"
     );
 }
+
+#[test]
+fn a_scan_reports_how_far_along_it_is() {
+    // A first import of a large drive used to show nothing until the whole
+    // source finished. The count must reach the number of files and never
+    // exceed it, from however many threads report concurrently.
+    let fixture = Fixture::new();
+    const FILES: usize = 150;
+    for index in 0..FILES {
+        write_track(
+            &fixture.source().join(format!("{index:03}.flac")),
+            &TrackSpec::new(&format!("Track {index:03}")).millis(32),
+        );
+    }
+
+    let db = Database::open(&fixture.paths().database_file()).expect("opening the database");
+    let seen = std::sync::Mutex::new(Vec::new());
+    let report = |done: usize, total: usize| {
+        seen.lock().expect("progress lock").push((done, total));
+    };
+
+    let scan =
+        muscli::library::scan_source_reporting(fixture.paths(), &fixture.source(), &db, 4, &report)
+            .expect("scanning with progress");
+
+    assert_eq!(scan.track_count, FILES);
+    let seen = seen.into_inner().expect("progress lock");
+    assert!(!seen.is_empty(), "progress should have been reported");
+    assert!(
+        seen.iter().all(|(_, total)| *total == FILES),
+        "the total must be the file count throughout"
+    );
+    assert!(
+        seen.iter().all(|(done, _)| *done <= FILES),
+        "progress must never overshoot: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter().map(|(done, _)| *done).max(),
+        Some(FILES),
+        "and must reach the end"
+    );
+}

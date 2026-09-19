@@ -6,6 +6,10 @@
 //! current.
 
 use super::*;
+use crate::library::scan_source_reporting;
+
+/// How many files between progress messages.
+const PROGRESS_STEP: usize = 250;
 
 /// Sources waiting to be rescanned.
 ///
@@ -372,14 +376,34 @@ impl App {
                 let mut ids = BTreeSet::new();
                 let mut changed = false;
                 for root in roots {
-                    let scan = match scan_source_with_database(&paths, &root, &db, scan_threads) {
-                        Ok(scan) => scan,
-                        Err(error) => {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
-                            continue;
+                    let label = root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Music")
+                        .to_owned();
+                    let progress_tx = tx.clone();
+                    let report = move |done: usize, total: usize| {
+                        // Only worth a message every so often; a per-file
+                        // update would flood the channel and the status line.
+                        if done == total || done.is_multiple_of(PROGRESS_STEP) {
+                            let _ = progress_tx.send(ScanMessage::Progress {
+                                label: label.clone(),
+                                done,
+                                total,
+                            });
                         }
                     };
+                    let scan =
+                        match scan_source_reporting(&paths, &root, &db, scan_threads, &report) {
+                            Ok(scan) => scan,
+                            Err(error) => {
+                                let _ = tx.send(ScanMessage::Error(format!(
+                                    "{}: {error:#}",
+                                    root.display()
+                                )));
+                                continue;
+                            }
+                        };
                     ids.insert(scan.id.clone());
                     changed |= !scan.tracks.is_empty() || !scan.missing_track_ids.is_empty();
                     let moved_tracks = match db.upsert_scan(
@@ -457,6 +481,10 @@ impl App {
 
     pub(super) fn handle_scan(&mut self, message: ScanMessage) -> Result<()> {
         match message {
+            ScanMessage::Progress { label, done, total } => {
+                self.status = format!("Escaneando {label}: {done}/{total}");
+                self.dirty = true;
+            }
             ScanMessage::Source {
                 label,
                 tracks,
