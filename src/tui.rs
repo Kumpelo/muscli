@@ -47,6 +47,7 @@ use workers::{
 };
 
 use crate::{
+    audio::{AudioBackend, MpvPlayer},
     config::{Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
     db::{Database, HistoryUpdate, group_albums, group_artists},
@@ -61,7 +62,6 @@ use crate::{
     },
     mpris::MprisBridge,
     paths::AppPaths,
-    player::MpvPlayer,
     replaygain::{self, GainMessage},
     t,
 };
@@ -278,7 +278,8 @@ struct App {
     playback: PlaybackState,
     muted_volume: Option<f64>,
     compact: bool,
-    mpv: MpvPlayer,
+    player: Box<dyn AudioBackend>,
+    player_events: tokio_mpsc::UnboundedReceiver<PlayerEvent>,
     mpris: Option<MprisBridge>,
     discord: Option<DiscordPresence>,
     actions: tokio_mpsc::UnboundedReceiver<PlayerAction>,
@@ -372,7 +373,8 @@ async fn run_inner(
 ) -> Result<()> {
     let db = Database::open(&paths.database_file())?;
     let saved = db.load_playback()?;
-    let mpv = MpvPlayer::start(&paths.mpv_socket())?;
+    let (player_events_tx, player_events) = tokio_mpsc::unbounded_channel();
+    let mpv = MpvPlayer::start(&paths.mpv_socket(), player_events_tx)?;
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     let saved_volume = saved.volume.clamp(0.0, 1.0);
     mpv.set_volume(saved_volume)?;
@@ -461,7 +463,8 @@ async fn run_inner(
         muted_volume: (saved_volume == 0.0)
             .then_some(saved.last_nonzero_volume.unwrap_or(1.0).clamp(0.01, 1.0)),
         compact,
-        mpv,
+        player: Box::new(mpv),
+        player_events,
         mpris,
         discord,
         actions,
@@ -537,7 +540,7 @@ async fn run_inner(
             0
         };
         app.load_current(resume_position)?;
-        app.mpv.pause(true)?;
+        app.player.pause(true)?;
         app.playback.status = PlaybackStatus::Paused;
         app.status = t!(
             "status.session_restored",
@@ -570,7 +573,7 @@ async fn run_inner(
                         app.handle_action(action)?;
                     }
                 }
-                event = app.mpv.recv_event() => {
+                event = app.player_events.recv() => {
                     if let Some(event) = event {
                         app.handle_player_event(event)?;
                     }
@@ -619,11 +622,11 @@ async fn run_inner(
                 _ = tokio::time::sleep(maintenance_delay) => {}
             }
 
-            app.playback.position_ms = app.mpv.position_ms();
+            app.playback.position_ms = app.player.position_ms();
             while let Ok(event) = terminal_events.try_recv() {
                 handle_terminal_event(&mut app, event)?;
             }
-            while let Some(event) = app.mpv.try_event() {
+            while let Ok(event) = app.player_events.try_recv() {
                 app.handle_player_event(event)?;
             }
             while let Ok(action) = app.actions.try_recv() {

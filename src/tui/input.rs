@@ -231,7 +231,7 @@ impl App {
                     self.queue.clear();
                     self.queue_index = None;
                     self.queue_dirty = true;
-                    self.mpv.stop()?;
+                    self.player.stop()?;
                     self.playback.status = PlaybackStatus::Stopped;
                     self.input = None;
                     self.status = t!("status.queue_cleared").into();

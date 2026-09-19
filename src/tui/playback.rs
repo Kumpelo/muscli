@@ -86,15 +86,15 @@ impl App {
         if !track.available || !track.path.exists() {
             self.status = t!("status.unavailable", title = track.title);
             self.playback.status = PlaybackStatus::Stopped;
-            self.mpv.stop()?;
+            self.player.stop()?;
             self.dirty = true;
             return Ok(());
         }
         self.apply_replay_gain(&track)?;
-        self.mpv.load(&track.path, position_ms)?;
+        self.player.load(&track.path, position_ms)?;
         // A replace wipes mpv's playlist, so whatever was queued behind is gone.
         self.prefetched = None;
-        self.mpv.pause(false)?;
+        self.player.pause(false)?;
         self.playback.status = PlaybackStatus::Playing;
         self.playback.position_ms = position_ms;
         self.playback.duration_ms = track.duration_ms;
@@ -118,7 +118,7 @@ impl App {
             None
         };
         let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
-        self.mpv.set_replay_gain(gain)
+        self.player.set_replay_gain(gain)
     }
 
     /// The queue index `next` would move to, without moving there.
@@ -195,11 +195,11 @@ impl App {
         }
         match wanted.and_then(|index| self.queue_track_path(index)) {
             Some(path) => {
-                self.mpv.set_prefetch(&path)?;
+                self.player.set_prefetch(Some(&path))?;
                 self.prefetched = wanted;
             }
             None => {
-                self.mpv.clear_prefetch()?;
+                self.player.set_prefetch(None)?;
                 self.prefetched = None;
             }
         }
@@ -231,7 +231,7 @@ impl App {
         }
         // Make the playing file entry 0 again, so the next one can be queued
         // behind it and the playlist never grows.
-        self.mpv.drop_finished_entry()?;
+        self.player.adopt_prefetch()?;
         self.status.clear();
         self.dirty = true;
         self.persist_playback()?;
@@ -245,7 +245,7 @@ impl App {
         }
         self.playback.status = PlaybackStatus::Stopped;
         self.status = t!("status.queue_exhausted").into();
-        self.mpv.stop()?;
+        self.player.stop()?;
         self.dirty = true;
         Ok(())
     }
@@ -452,12 +452,12 @@ impl App {
                 {
                     self.next()?;
                 } else {
-                    self.mpv.pause(false)?;
+                    self.player.pause(false)?;
                     self.playback.status = PlaybackStatus::Playing;
                 }
             }
             PlayerAction::Pause => {
-                self.mpv.pause(true)?;
+                self.player.pause(true)?;
                 self.playback.status = PlaybackStatus::Paused;
                 self.flush_history(false)?;
             }
@@ -470,22 +470,22 @@ impl App {
                 {
                     self.next()?;
                 } else {
-                    self.mpv.toggle()?;
+                    self.player.toggle()?;
                 }
             }
             PlayerAction::Stop => {
-                self.mpv.stop()?;
+                self.player.stop()?;
                 self.playback.status = PlaybackStatus::Stopped;
             }
             PlayerAction::Next => self.next()?,
             PlayerAction::Previous => self.previous()?,
             PlayerAction::SeekRelative(offset_ms) => {
-                self.mpv.seek_relative(offset_ms as f64 / 1000.0)?
+                self.player.seek_relative(offset_ms as f64 / 1000.0)?
             }
-            PlayerAction::SeekAbsolute(position) => self.mpv.seek_absolute_ms(position)?,
+            PlayerAction::SeekAbsolute(position) => self.player.seek_absolute_ms(position)?,
             PlayerAction::SetVolume(volume) => {
                 self.playback.volume = volume.clamp(0.0, 1.0);
-                self.mpv.set_volume(self.playback.volume)?;
+                self.player.set_volume(self.playback.volume)?;
                 if self.playback.volume > 0.0 {
                     self.muted_volume = None;
                 }
@@ -497,7 +497,7 @@ impl App {
                 } else {
                     self.playback.volume = self.muted_volume.take().unwrap_or(1.0);
                 }
-                self.mpv.set_volume(self.playback.volume)?;
+                self.player.set_volume(self.playback.volume)?;
             }
             PlayerAction::SetShuffle(value) => self.shuffle = value,
             PlayerAction::SetRepeat(value) => self.repeat = value,

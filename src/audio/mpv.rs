@@ -15,20 +15,21 @@ use anyhow::{Context, Result};
 use interprocess::TryClone;
 use interprocess::local_socket::{GenericFilePath, Stream, ToFsName, prelude::*};
 use serde_json::{Value, json};
-use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::model::PlayerEvent;
+
+use super::{AudioBackend, Capabilities};
 
 pub struct MpvPlayer {
     child: Option<Child>,
     writer: Arc<Mutex<Stream>>,
-    events: UnboundedReceiver<PlayerEvent>,
     position_ms: Arc<AtomicU64>,
     socket: std::path::PathBuf,
 }
 
 impl MpvPlayer {
-    pub fn start(socket: &Path) -> Result<Self> {
+    pub fn start(socket: &Path, events: UnboundedSender<PlayerEvent>) -> Result<Self> {
         if socket.exists() {
             fs::remove_file(socket).ok();
         }
@@ -67,7 +68,7 @@ impl MpvPlayer {
 
         let reader = stream.try_clone()?;
         let writer = Arc::new(Mutex::new(stream));
-        let (tx, events) = tokio_mpsc::unbounded_channel();
+        let tx = events;
         let position_ms = Arc::new(AtomicU64::new(0));
         let event_position_ms = position_ms.clone();
         thread::Builder::new()
@@ -94,7 +95,6 @@ impl MpvPlayer {
         let player = Self {
             child: Some(child),
             writer,
-            events,
             position_ms,
             socket: socket.to_path_buf(),
         };
@@ -245,13 +245,70 @@ impl MpvPlayer {
     pub fn position_ms(&self) -> u64 {
         self.position_ms.load(Ordering::Relaxed)
     }
+}
 
-    pub fn try_event(&mut self) -> Option<PlayerEvent> {
-        self.events.try_recv().ok()
+impl AudioBackend for MpvPlayer {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            name: "mpv",
+            replay_gain: true,
+            equalizer: true,
+            volume: true,
+            gapless: true,
+        }
     }
 
-    pub async fn recv_event(&mut self) -> Option<PlayerEvent> {
-        self.events.recv().await
+    fn load(&mut self, path: &Path, position_ms: u64) -> Result<()> {
+        MpvPlayer::load(self, path, position_ms)
+    }
+
+    fn set_prefetch(&mut self, path: Option<&Path>) -> Result<()> {
+        match path {
+            Some(path) => MpvPlayer::set_prefetch(self, path),
+            None => MpvPlayer::clear_prefetch(self),
+        }
+    }
+
+    fn adopt_prefetch(&mut self) -> Result<()> {
+        // mpv is playing the second playlist entry; dropping the first makes
+        // the playing one entry zero again, so the playlist never grows.
+        MpvPlayer::drop_finished_entry(self)
+    }
+
+    fn pause(&mut self, paused: bool) -> Result<()> {
+        MpvPlayer::pause(self, paused)
+    }
+
+    fn toggle(&mut self) -> Result<()> {
+        MpvPlayer::toggle(self)
+    }
+
+    fn seek_relative(&mut self, seconds: f64) -> Result<()> {
+        MpvPlayer::seek_relative(self, seconds)
+    }
+
+    fn seek_absolute_ms(&mut self, position_ms: u64) -> Result<()> {
+        MpvPlayer::seek_absolute_ms(self, position_ms)
+    }
+
+    fn set_volume(&mut self, volume: f64) -> Result<()> {
+        MpvPlayer::set_volume(self, volume)
+    }
+
+    fn set_replay_gain(&mut self, gain_db: Option<f64>) -> Result<()> {
+        MpvPlayer::set_replay_gain(self, gain_db)
+    }
+
+    fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()> {
+        MpvPlayer::set_equalizer(self, bands)
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        MpvPlayer::stop(self)
+    }
+
+    fn position_ms(&self) -> u64 {
+        MpvPlayer::position_ms(self)
     }
 }
 
