@@ -1401,7 +1401,10 @@ impl Database {
                  FROM tracks current JOIN tracks peer
                    ON peer.album=current.album COLLATE NOCASE
                   AND peer.album_artist=current.album_artist COLLATE NOCASE
-                 WHERE current.id=?1 AND peer.gain_db IS NOT NULL",
+                 WHERE current.id=?1
+                   AND peer.gain_db IS NOT NULL
+                   AND peer.gain_file_size=peer.file_size
+                   AND peer.gain_modified_ns=peer.modified_ns",
             )?;
             let rows = stmt
                 .query_map([track_id], |row| {
@@ -1435,7 +1438,10 @@ impl Database {
             Ok(self
                 .conn
                 .query_row(
-                    "SELECT gain_db,true_peak_db FROM tracks WHERE id=?1",
+                    "SELECT gain_db,true_peak_db FROM tracks
+                     WHERE id=?1
+                       AND gain_file_size=file_size
+                       AND gain_modified_ns=modified_ns",
                     [track_id],
                     |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?)),
                 )
@@ -1613,6 +1619,39 @@ mod tests {
         assert!(tracks[0].favorite);
         assert_eq!(db.load_playlists()?[0].track_ids, ["new-id"]);
         assert_eq!(db.load_playback()?.queue, ["new-id"]);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_gain_is_not_returned_after_the_audio_changes() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let original = ScannedTrack {
+            track: track("one", 1),
+            file_size: 100,
+            modified_ns: 1,
+        };
+        db.upsert_scan("s", Path::new("/music"), "Music", &[original], &[])?;
+        db.save_gain(
+            "one",
+            ReplayGainAnalysis {
+                gain_db: -4.0,
+                true_peak_db: -1.0,
+            },
+            100,
+            1,
+        )?;
+        assert!(db.track_gain("one", false)?.is_some());
+
+        let changed = ScannedTrack {
+            track: track("one", 1),
+            file_size: 101,
+            modified_ns: 2,
+        };
+        db.upsert_scan("s", Path::new("/music"), "Music", &[changed], &[])?;
+        assert!(
+            db.track_gain("one", false)?.is_none(),
+            "a gain calculated for previous file contents must not be reused"
+        );
         Ok(())
     }
 
