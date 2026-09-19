@@ -80,26 +80,9 @@ impl App {
         self.history = self.db.load_history(500)?;
         self.rebuild_home_tracks();
         self.rebuild_smart_matches();
-        self.refresh_artist_releases();
-        if self.view == View::AlbumDetail && self.opened_album().is_none() {
-            self.view = self.album_parent_view;
-            self.opened_album_key = None;
-        }
-        if self.view == View::ArtistDetail && self.opened_artist().is_none() {
-            self.view = View::Artists;
-            self.opened_artist_name = None;
-            self.artist_release_keys.clear();
-        }
-        if self.view == View::GenreDetail
-            && !self.genres.iter().any(|genre| {
-                self.opened_genre_name
-                    .as_deref()
-                    .is_some_and(|name| genre.name == name)
-            })
-        {
-            self.view = View::Genres;
-            self.opened_genre_name = None;
-        }
+        // A rescan can delete whatever is currently open; unwind to the
+        // deepest level that still exists.
+        self.prune_nav();
         self.selected = self.selected.min(self.item_count().saturating_sub(1));
         self.dirty = true;
         Ok(())
@@ -174,17 +157,7 @@ impl App {
     pub(super) fn refresh_smart_playlists(&mut self) -> Result<()> {
         self.smart_playlists = self.db.load_smart_playlists()?;
         self.rebuild_smart_matches();
-        if self.opened_smart_playlist.is_some_and(|id| {
-            !self
-                .smart_playlists
-                .iter()
-                .any(|playlist| playlist.id == id)
-        }) {
-            self.opened_smart_playlist = None;
-            if self.view == View::SmartPlaylistDetail {
-                self.view = View::SmartPlaylists;
-            }
-        }
+        self.prune_nav();
         self.selected = self.selected.min(self.item_count().saturating_sub(1));
         self.dirty = true;
         Ok(())
