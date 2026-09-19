@@ -33,8 +33,10 @@ use ratatui::{
 use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use tokio::sync::mpsc as tokio_mpsc;
 
+use covers::Covers;
 use input::{display_rule_value, handle_terminal_event};
 use nav::{NavFrame, NavTarget};
+use playback::HistoryTally;
 use render::draw;
 use settings::SETTINGS;
 use theme::UiTheme;
@@ -293,20 +295,7 @@ struct App {
     status: String,
     should_quit: bool,
     dirty: bool,
-    picker: Picker,
-    cover: Option<CoverState>,
-    // Firma de qué portadas se dibujaron y dónde. Las imágenes de kitty van
-    // ancladas a celdas de texto, y ratatui solo reescribe las celdas que
-    // cambian: si una portada se mueve, quedan restos de la anterior mezclados
-    // con la nueva. Comparando la firma entre fotogramas sabemos cuándo hace
-    // falta repintar la pantalla entera.
-    cover_sig: u64,
-    cover_sig_now: u64,
-    album_covers: HashMap<PathBuf, StatefulProtocol>,
-    album_cover_order: VecDeque<PathBuf>,
-    cover_decode_tx: Sender<CoverDecodeRequest>,
-    cover_decode_rx: tokio_mpsc::UnboundedReceiver<CoverDecodeResult>,
-    cover_decode_pending: HashSet<(PathBuf, u32)>,
+    covers: Covers,
     album_columns: usize,
     last_mpris_signature: Option<MediaSessionSignature>,
     last_mpris_position_signature: Option<(u64, u64)>,
@@ -316,13 +305,8 @@ struct App {
     theme_path: Option<PathBuf>,
     #[cfg(unix)]
     theme_modified: Option<SystemTime>,
-    history_id: Option<i64>,
-    history_track_id: Option<String>,
-    listened_this_session_ms: u64,
-    pending_listen_ms: u64,
-    history_counted: bool,
-    last_history_tick: Instant,
-    last_history_flush: Instant,
+    /// Listening accounting for the loaded track.
+    tally: HistoryTally,
     last_playback_save: Instant,
     last_theme_check: Instant,
 }
@@ -461,15 +445,17 @@ async fn run_inner(
         status: mpris_warning.unwrap_or_else(|| "Cargando biblioteca…".into()),
         should_quit: false,
         dirty: true,
-        picker,
-        cover: None,
-        cover_sig: 0,
-        cover_sig_now: 0,
-        album_covers: HashMap::new(),
-        album_cover_order: VecDeque::new(),
-        cover_decode_tx,
-        cover_decode_rx,
-        cover_decode_pending: HashSet::new(),
+        covers: Covers {
+            picker,
+            current: None,
+            drawn_signature: 0,
+            pending_signature: 0,
+            grid: HashMap::new(),
+            grid_order: VecDeque::new(),
+            requests: cover_decode_tx,
+            results: cover_decode_rx,
+            in_flight: HashSet::new(),
+        },
         album_columns: 1,
         last_mpris_signature: None,
         last_mpris_position_signature: None,
@@ -479,13 +465,7 @@ async fn run_inner(
         theme_path,
         #[cfg(unix)]
         theme_modified,
-        history_id: None,
-        history_track_id: None,
-        listened_this_session_ms: 0,
-        pending_listen_ms: 0,
-        history_counted: false,
-        last_history_tick: Instant::now(),
-        last_history_flush: Instant::now(),
+        tally: HistoryTally::new(),
         last_playback_save: Instant::now() - Duration::from_secs(5),
         last_theme_check: Instant::now(),
     };
@@ -565,7 +545,7 @@ async fn run_inner(
                         app.scan_pending = true;
                     }
                 }
-                result = app.cover_decode_rx.recv() => {
+                result = app.covers.results.recv() => {
                     if let Some(result) = result {
                         app.handle_cover_decode_result(result);
                     }
@@ -625,10 +605,10 @@ async fn run_inner(
             if app.dirty || periodic_draw_due {
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;
-                if app.cover_sig_now != app.cover_sig {
+                if app.covers.pending_signature != app.covers.drawn_signature {
                     // Las portadas cambiaron de sitio: un repintado parcial deja
                     // mezcladas la vieja y la nueva, así que limpio y redibujo.
-                    app.cover_sig = app.cover_sig_now;
+                    app.covers.drawn_signature = app.covers.pending_signature;
                     terminal.clear()?;
                     terminal.draw(|frame| draw(frame, &mut app))?;
                 }

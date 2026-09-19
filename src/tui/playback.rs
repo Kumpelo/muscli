@@ -6,6 +6,49 @@
 
 use super::*;
 
+/// Listening accounting for the track currently loaded.
+///
+/// These seven values only make sense together: loading a track resets all of
+/// them, and a flush has to clear the pending delta and restart the flush clock
+/// in the same breath. As separate fields on App nothing said so.
+pub(super) struct HistoryTally {
+    /// The in-progress history row, when history recording is enabled.
+    pub(super) entry: Option<i64>,
+    pub(super) track_id: Option<String>,
+    /// Listened since this track was loaded; decides whether the play counts.
+    pub(super) listened_ms: u64,
+    /// Listened since the last flush; added to the stored total.
+    pub(super) pending_ms: u64,
+    /// Whether this play has already been counted, so a later flush does not
+    /// count it twice.
+    pub(super) counted: bool,
+    pub(super) last_tick: Instant,
+    pub(super) last_flush: Instant,
+}
+
+impl HistoryTally {
+    pub(super) fn new() -> Self {
+        Self {
+            entry: None,
+            track_id: None,
+            listened_ms: 0,
+            pending_ms: 0,
+            counted: false,
+            last_tick: Instant::now(),
+            last_flush: Instant::now(),
+        }
+    }
+
+    /// Begin accounting for a freshly loaded track.
+    fn restart(&mut self, entry: i64, track_id: String) {
+        *self = Self {
+            entry: Some(entry),
+            track_id: Some(track_id),
+            ..Self::new()
+        };
+    }
+}
+
 impl App {
     pub(super) fn load_current(&mut self, position_ms: u64) -> Result<()> {
         self.flush_history(false)?;
@@ -35,13 +78,8 @@ impl App {
         self.playback.position_ms = position_ms;
         self.playback.duration_ms = track.duration_ms;
         if self.config.history_enabled {
-            self.history_id = Some(self.db.start_history(&track.id)?);
-            self.history_track_id = Some(track.id.clone());
-            self.listened_this_session_ms = 0;
-            self.pending_listen_ms = 0;
-            self.history_counted = false;
-            self.last_history_tick = Instant::now();
-            self.last_history_flush = Instant::now();
+            let entry = self.db.start_history(&track.id)?;
+            self.tally.restart(entry, track.id.clone());
         }
         self.status.clear();
         self.dirty = true;
@@ -175,18 +213,18 @@ impl App {
     }
 
     pub(super) fn tick_history(&mut self) -> Result<()> {
-        let elapsed = self.last_history_tick.elapsed();
-        self.last_history_tick = Instant::now();
+        let elapsed = self.tally.last_tick.elapsed();
+        self.tally.last_tick = Instant::now();
         let playing = self.playback.status == PlaybackStatus::Playing;
-        if playing && self.history_id.is_some() {
+        if playing && self.tally.entry.is_some() {
             let millis = elapsed.as_millis().min(u64::MAX as u128) as u64;
-            self.listened_this_session_ms = self.listened_this_session_ms.saturating_add(millis);
-            self.pending_listen_ms = self.pending_listen_ms.saturating_add(millis);
+            self.tally.listened_ms = self.tally.listened_ms.saturating_add(millis);
+            self.tally.pending_ms = self.tally.pending_ms.saturating_add(millis);
         }
 
         let history_due = playing
-            && self.history_id.is_some()
-            && self.last_history_flush.elapsed() >= Duration::from_secs(5);
+            && self.tally.entry.is_some()
+            && self.tally.last_flush.elapsed() >= Duration::from_secs(5);
         let playback_due = playing
             && self.current_track().is_some()
             && self.last_playback_save.elapsed() >= Duration::from_secs(5);
@@ -214,7 +252,7 @@ impl App {
         completed: bool,
         save_playback: bool,
     ) -> Result<()> {
-        let (Some(history_id), Some(track_id)) = (self.history_id, self.history_track_id.clone())
+        let (Some(history_id), Some(track_id)) = (self.tally.entry, self.tally.track_id.clone())
         else {
             return Ok(());
         };
@@ -224,7 +262,7 @@ impl App {
             .map(|index| self.tracks[*index].duration_ms)
             .unwrap_or(self.playback.duration_ms);
         let threshold = (duration / 2).min(240_000);
-        let count_now = self.listened_this_session_ms >= threshold && threshold > 0;
+        let count_now = self.tally.listened_ms >= threshold && threshold > 0;
         let completed = completed
             || (duration > 0 && self.playback.position_ms >= duration.saturating_mul(95) / 100);
         if save_playback {
@@ -234,9 +272,9 @@ impl App {
                 HistoryUpdate {
                     history_id,
                     track_id: &track_id,
-                    listened_delta_ms: self.pending_listen_ms,
+                    listened_delta_ms: self.tally.pending_ms,
                     position_ms: self.playback.position_ms,
-                    was_counted: self.history_counted,
+                    was_counted: self.tally.counted,
                     count_now,
                     completed,
                 },
@@ -249,16 +287,16 @@ impl App {
             self.db.update_history(HistoryUpdate {
                 history_id,
                 track_id: &track_id,
-                listened_delta_ms: self.pending_listen_ms,
+                listened_delta_ms: self.tally.pending_ms,
                 position_ms: self.playback.position_ms,
-                was_counted: self.history_counted,
+                was_counted: self.tally.counted,
                 count_now,
                 completed,
             })?;
         }
-        self.pending_listen_ms = 0;
-        self.history_counted |= count_now;
-        self.last_history_flush = Instant::now();
+        self.tally.pending_ms = 0;
+        self.tally.counted |= count_now;
+        self.tally.last_flush = Instant::now();
         Ok(())
     }
 
