@@ -190,7 +190,14 @@ pub fn import(paths: &AppPaths, source: &Path, name: &str) -> Result<PathBuf> {
     if parse_lrc(&text).is_empty() {
         anyhow::bail!("{} has no lyrics in it", source.display());
     }
-    let target = directory.join(name);
+    let relative = Path::new(name);
+    if relative.is_absolute()
+        || relative.components().count() != 1
+        || relative.file_name().and_then(|name| name.to_str()) != Some(name)
+    {
+        anyhow::bail!("lyrics destination must be a single file name");
+    }
+    let target = directory.join(relative);
     fs::write(&target, text).with_context(|| format!("could not write {}", target.display()))?;
     Ok(target)
 }
@@ -198,6 +205,20 @@ pub fn import(paths: &AppPaths, source: &Path, name: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn import_rejects_paths_outside_the_lyrics_directory() {
+        let fixture = tempfile::tempdir().expect("temporary directory");
+        let paths = AppPaths::from_root(fixture.path().join("muscli"));
+        let source = fixture.path().join("source.lrc");
+        fs::write(&source, "[00:01.00]hello\n").expect("writing source lyrics");
+
+        assert!(import(&paths, &source, "../escape.lrc").is_err());
+        assert!(import(&paths, &source, "/tmp/escape.lrc").is_err());
+
+        #[cfg(windows)]
+        assert!(import(&paths, &source, r"C:\\escape.lrc").is_err());
+    }
 
     #[test]
     fn timestamps_are_parsed_in_every_common_shape() {
