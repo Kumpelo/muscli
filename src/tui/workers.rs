@@ -294,7 +294,7 @@ pub(super) fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<
 pub(super) fn start_library_worker(
     database_file: PathBuf,
     requests: Receiver<()>,
-    results: tokio_mpsc::UnboundedSender<Result<Box<LibrarySnapshot>, String>>,
+    results: tokio_mpsc::UnboundedSender<std::result::Result<Box<LibrarySnapshot>, String>>,
 ) {
     thread::Builder::new()
         .name("muscli-library".into())
