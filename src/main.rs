@@ -1,11 +1,13 @@
-use anyhow::Result;
+use std::path::Path;
+
+use anyhow::{Context, Result};
 use clap::Parser;
 use muscli::t;
 
 use muscli::{
     cli::{
-        Cli, Command, LibraryCommand, LyricsCommand, RemoteCommand as CliRemoteCommand,
-        SetupCommand, VolumeCommand,
+        Cli, Command, LibraryCommand, LyricsCommand, PlaylistCommand,
+        RemoteCommand as CliRemoteCommand, SetupCommand, VolumeCommand,
     },
     config::{Config, all_sources},
     control::{self, RemoteCommand},
@@ -14,7 +16,7 @@ use muscli::{
     i18n::{self, Language},
     library,
     library::{prune_cover_cache, prune_unreferenced_covers},
-    lyrics, omarchy,
+    lyrics, m3u, omarchy,
     paths::AppPaths,
     replaygain,
     tui::keys,
@@ -156,6 +158,84 @@ fn main() -> Result<()> {
                 println!("{action:<24}  {bound}");
             }
         }
+        Some(Command::Playlist { command }) => match command {
+            PlaylistCommand::Export { name, path } => {
+                let db = Database::open(&paths.database_file())?;
+                let playlist = db
+                    .load_playlists()?
+                    .into_iter()
+                    .find(|playlist| playlist.name.eq_ignore_ascii_case(&name))
+                    .with_context(|| format!("no playlist named {name}"))?;
+                let tracks = db.load_tracks()?;
+                let rows: Vec<_> = playlist
+                    .track_ids
+                    .iter()
+                    .filter_map(|id| tracks.iter().find(|track| &track.id == id))
+                    .map(|track| {
+                        (
+                            track.path.clone(),
+                            format!("{} - {}", track.display_artist(), track.title),
+                            track.duration_ms,
+                        )
+                    })
+                    .collect();
+                // Relative to the playlist's own directory, so it stays valid
+                // if the whole tree moves.
+                let base = path.parent().map(Path::to_path_buf);
+                std::fs::write(&path, m3u::render(&rows, base.as_deref()))?;
+                println!(
+                    "{}",
+                    t!(
+                        "cli.playlist_exported",
+                        count = rows.len(),
+                        path = path.display()
+                    )
+                );
+            }
+            PlaylistCommand::Import { path, name } => {
+                let source = std::fs::read_to_string(&path)
+                    .with_context(|| format!("could not read {}", path.display()))?;
+                let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+                let entries = m3u::parse(&source, &base);
+
+                let db = Database::open(&paths.database_file())?;
+                let tracks = db.load_tracks()?;
+                let name = name.unwrap_or_else(|| {
+                    path.file_stem()
+                        .map(|stem| stem.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Imported".to_owned())
+                });
+                let playlist = db.create_playlist(&name)?;
+
+                let mut added = 0usize;
+                let mut missing = Vec::new();
+                for entry in entries {
+                    // Match on the canonical path so a playlist written with a
+                    // different spelling of the same location still resolves.
+                    let wanted = entry.path.canonicalize().unwrap_or(entry.path.clone());
+                    match tracks.iter().find(|track| {
+                        track.path == wanted || track.path.canonicalize().is_ok_and(|p| p == wanted)
+                    }) {
+                        Some(track) => {
+                            db.add_to_playlist(playlist, &track.id)?;
+                            added += 1;
+                        }
+                        None => missing.push(
+                            entry
+                                .label
+                                .unwrap_or_else(|| entry.path.display().to_string()),
+                        ),
+                    }
+                }
+                println!(
+                    "{}",
+                    t!("cli.playlist_imported", name = name, count = added)
+                );
+                for entry in &missing {
+                    eprintln!("warning: not in the library: {entry}");
+                }
+            }
+        },
         Some(Command::Lyrics { command }) => match command {
             LyricsCommand::Where => println!("{}", paths.lyrics_dir().display()),
             LyricsCommand::Import {

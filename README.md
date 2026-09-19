@@ -57,6 +57,8 @@ muscli library prune
 muscli library analyze-gain
 muscli library write-gain --yes
 muscli doctor
+muscli playlist export NAME playlist.m3u8
+muscli playlist import playlist.m3u8
 ```
 
 FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are

@@ -35,6 +35,11 @@ pub enum Command {
     },
     /// List the key bindings in effect
     Keys,
+    /// Import and export M3U playlists
+    Playlist {
+        #[command(subcommand)]
+        command: PlaylistCommand,
+    },
     /// Manage lyrics, which are never imported automatically
     Lyrics {
         #[command(subcommand)]
@@ -132,4 +137,22 @@ pub enum LyricsCommand {
     },
     /// Show where lyrics are stored
     Where,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PlaylistCommand {
+    /// Write a playlist to an .m3u8 file
+    Export {
+        /// Name of the playlist to export
+        name: String,
+        /// Where to write it
+        path: PathBuf,
+    },
+    /// Read an .m3u/.m3u8 file into a playlist
+    Import {
+        path: PathBuf,
+        /// Playlist name; defaults to the file name
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
