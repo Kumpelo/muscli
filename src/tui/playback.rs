@@ -143,13 +143,29 @@ impl App {
 
     /// Load lyrics for the current track, if they have been imported.
     ///
-    /// Cached per track rather than read every frame; a miss is remembered as
-    /// a miss so a track without lyrics is not looked up repeatedly.
+    /// Cached per track rather than read every frame. Successful loads stay
+    /// cached; misses are retried periodically so an external `lyrics import`
+    /// becomes visible without changing track or restarting muscli.
     pub(super) fn sync_lyrics(&mut self) {
         let current = self.current_track().map(|track| track.id.clone());
-        if current == self.lyrics_track {
+        if current.is_none() {
+            if self.lyrics_track.is_some() || self.lyrics.is_some() {
+                self.lyrics_track = None;
+                self.lyrics = None;
+                self.dirty = true;
+            }
             return;
         }
+
+        let same_track = current == self.lyrics_track;
+        if same_track && self.lyrics.is_some() {
+            return;
+        }
+        if same_track && self.last_lyrics_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+
+        self.last_lyrics_check = Instant::now();
         self.lyrics = self
             .current_track()
             .cloned()

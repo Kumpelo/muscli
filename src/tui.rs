@@ -308,6 +308,8 @@ struct App {
     /// Lyrics for the loaded track, and which track they were loaded for.
     lyrics: Option<crate::lyrics::Lyrics>,
     lyrics_track: Option<String>,
+    /// Missing lyrics are retried at a low rate so CLI imports appear live.
+    last_lyrics_check: Instant,
     /// Key bindings in effect: the defaults with any user overrides applied.
     bindings: Vec<keys::Binding>,
     album_columns: usize,
@@ -481,6 +483,7 @@ async fn run_inner(
         bindings,
         lyrics: None,
         lyrics_track: None,
+        last_lyrics_check: Instant::now() - Duration::from_secs(1),
         covers: Covers {
             picker,
             current: None,
