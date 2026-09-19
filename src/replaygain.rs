@@ -144,7 +144,7 @@ pub fn write_tags(path: &Path, analysis: ReplayGainAnalysis) -> Result<()> {
         file::TaggedFileExt,
         prelude::{ItemKey, TagExt},
         probe::Probe,
-        tag::{Tag, TagType},
+        tag::Tag,
     };
 
     let tagged = Probe::open(path)

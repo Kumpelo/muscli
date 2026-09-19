@@ -17,10 +17,7 @@ pub struct Entry {
 
 fn windows_drive_absolute(path: &str) -> bool {
     let bytes = path.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && bytes[2] == b'/'
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/'
 }
 
 /// Parse a playlist.

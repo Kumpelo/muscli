@@ -5,7 +5,10 @@
 //! discovery, fuzzy search, cover decoding, terminal event reading and shutdown
 //! signals. The types here are the messages those threads send.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use notify::EventKind;
 

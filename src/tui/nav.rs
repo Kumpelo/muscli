@@ -232,9 +232,10 @@ mod tests {
             frame(View::ArtistDetail, 0, album("ah-um")),
         ];
 
-        let invalid = first_invalid_frame(&nav, |target| {
-            !matches!(target, NavTarget::Genre(name) if name == "Jazz")
-        });
+        let invalid = first_invalid_frame(
+            &nav,
+            |target| !matches!(target, NavTarget::Genre(name) if name == "Jazz"),
+        );
         assert_eq!(
             invalid,
             Some(0),
