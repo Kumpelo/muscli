@@ -986,9 +986,9 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         progress_rows[1],
     );
     let repeat = match app.repeat {
-        RepeatMode::Off => "off",
-        RepeatMode::Track => "una",
-        RepeatMode::Queue => "cola",
+        RepeatMode::Off => t!("label.repeat_off"),
+        RepeatMode::Track => t!("label.repeat_track"),
+        RepeatMode::Queue => t!("label.repeat_queue"),
     };
     frame.render_widget(
         Paragraph::new(format!(
