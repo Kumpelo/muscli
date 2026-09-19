@@ -15,6 +15,7 @@ use std::path::Path;
 use anyhow::Result;
 
 pub mod decode;
+pub mod dsp;
 pub mod measure;
 pub mod mpv;
 

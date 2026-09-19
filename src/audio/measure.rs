@@ -232,6 +232,76 @@ pub fn thd_n(signal: &[f32], sample_rate: u32, fundamental_hz: f64) -> f64 {
     10.0 * (residual / fundamental).log10()
 }
 
+/// How far the harmonics of `fundamental_hz` stand above the noise beside them.
+///
+/// Zero decibels means the harmonic bins hold no more than their neighbours,
+/// which is to say there are no harmonics -- only noise. That is the question
+/// dither is an answer to, and comparing each harmonic against its own
+/// surroundings rather than against the fundamental keeps the answer
+/// independent of how loud the noise happens to be.
+///
+/// Infinity is a real result: a tone whose period divides the buffer exactly,
+/// quantised without dither, puts every last bit of its error on harmonics
+/// and leaves the bins between them empty.
+pub fn harmonics_above_noise(signal: &[f32], sample_rate: u32, fundamental_hz: f64) -> f64 {
+    /// Bins either side of a harmonic, skipping the few it might smear into.
+    const REFERENCE: std::ops::Range<usize> = 8..40;
+
+    let spectrum = spectrum(signal, sample_rate);
+    let fundamental_bin = spectrum.bin_for(fundamental_hz);
+    let magnitudes = spectrum.magnitudes();
+    let power = |bin: usize| magnitudes[bin] * magnitudes[bin];
+
+    let mut harmonic_power = 0.0;
+    let mut harmonic_bins = 0usize;
+    let mut noise_power = 0.0;
+    let mut noise_bins = 0usize;
+
+    for order in 2..=10 {
+        let centre = fundamental_bin * order;
+        if centre + REFERENCE.end >= magnitudes.len() {
+            break;
+        }
+        for offset in -1i64..=1 {
+            harmonic_power += power((centre as i64 + offset) as usize);
+            harmonic_bins += 1;
+        }
+        for distance in REFERENCE {
+            noise_power += power(centre - distance) + power(centre + distance);
+            noise_bins += 2;
+        }
+    }
+
+    if harmonic_bins == 0 || noise_bins == 0 {
+        return 0.0;
+    }
+    if noise_power <= 0.0 {
+        return if harmonic_power > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        };
+    }
+    let harmonic = harmonic_power / harmonic_bins as f64;
+    let noise = noise_power / noise_bins as f64;
+    10.0 * (harmonic / noise).log10()
+}
+
+/// The power between two frequencies, as an amplitude in decibels.
+///
+/// Used to ask where a noise floor sits rather than how big it is overall,
+/// which is the only way to tell a noise shaper apart from a noise generator.
+pub fn band_level(signal: &[f32], sample_rate: u32, low: f64, high: f64) -> f64 {
+    let spectrum = spectrum(signal, sample_rate);
+    let first = spectrum.bin_for(low).max(1);
+    let last = spectrum.bin_for(high);
+    let power: f64 = spectrum.magnitudes()[first..=last]
+        .iter()
+        .map(|magnitude| magnitude * magnitude)
+        .sum();
+    db(power.sqrt())
+}
+
 /// Measure what `process` does to a single frequency, in decibels.
 ///
 /// Twice `frames` samples go in and only the second half is analysed, so a
