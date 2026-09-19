@@ -45,8 +45,12 @@ pub fn flac_bytes(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
     );
 
     let blocks: Vec<&[i16]> = samples.chunks(BLOCK).collect();
-    let min_block = blocks.iter().map(|b| b.len()).min().unwrap_or(BLOCK) as u16;
-    let max_block = blocks.iter().map(|b| b.len()).max().unwrap_or(BLOCK) as u16;
+    // A fixed-block-size stream declares the same minimum and maximum even
+    // though its last frame is usually short; declaring the short one makes it
+    // a variable-block-size stream, whose frame headers carry sample numbers
+    // rather than frame numbers, and a decoder that believes the header loses
+    // sync on the second frame.
+    let block = blocks.iter().map(|b| b.len()).max().unwrap_or(BLOCK) as u16;
 
     let mut out = Vec::with_capacity(samples.len() * 2 + 128);
     out.extend_from_slice(b"fLaC");
@@ -55,8 +59,8 @@ pub fn flac_bytes(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
     out.push(0x80);
     out.extend_from_slice(&[0x00, 0x00, 0x22]);
 
-    out.extend_from_slice(&min_block.to_be_bytes());
-    out.extend_from_slice(&max_block.to_be_bytes());
+    out.extend_from_slice(&block.to_be_bytes());
+    out.extend_from_slice(&block.to_be_bytes());
     out.extend_from_slice(&[0, 0, 0]); // min frame size: unknown
     out.extend_from_slice(&[0, 0, 0]); // max frame size: unknown
 
