@@ -104,24 +104,13 @@ const CONTEXT_ACTIONS: [&str; 7] = [
     "Mostrar artista",
 ];
 
-const HELP_SECTIONS: [(&str, &str); 6] = [
+/// Help for keys the binding table cannot describe: the smart-playlist editor
+/// runs its own modal loop, and the Omarchy hotkeys belong to Hyprland.
+const EXTRA_HELP: [(&str, &str); 2] = [
     (
-        "Navegación",
-        "↑↓←→ / hjkl mover · Enter abrir/reproducir · Tab cambiar panel · Esc volver",
+        "Editor de listas inteligentes",
+        "Tab cambia de campo · Enter edita el valor · a/d añade o quita regla · m modo · s orden · l límite · Ctrl+S guarda",
     ),
-    (
-        "Reproducción",
-        "Space pausa · n/p siguiente/anterior · +/- volumen · s shuffle · r repetir · m compacto",
-    ),
-    (
-        "Biblioteca",
-        "/ buscar · f favorito · a añadir a cola · P playlist · x menú contextual",
-    ),
-    (
-        "Cola",
-        "Shift+J/K reordenar · d/Delete quitar · C limpiar · S guardar · L cargar",
-    ),
-    ("Ventanas", ", Settings · ? Ayuda · q salir"),
     (
         "Omarchy global",
         "Shift+Vol± volumen de muscli · Vol± volumen del sistema · Super+Shift+Alt+M compacto",

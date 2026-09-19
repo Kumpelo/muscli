@@ -243,6 +243,210 @@ pub(super) fn resolve(key: &KeyEvent, view: View, focus: Focus) -> Option<Action
         .map(|binding| binding.action)
 }
 
+/// Where a binding appears on the help screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Category {
+    Navigation,
+    Playback,
+    Library,
+    Queue,
+    Windows,
+}
+
+impl Category {
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::Navigation => "Navegación",
+            Self::Playback => "Reproducción",
+            Self::Library => "Biblioteca",
+            Self::Queue => "Cola",
+            Self::Windows => "Ventanas",
+        }
+    }
+
+    const ORDER: [Self; 5] = [
+        Self::Navigation,
+        Self::Playback,
+        Self::Library,
+        Self::Queue,
+        Self::Windows,
+    ];
+}
+
+impl Action {
+    fn category(self) -> Category {
+        match self {
+            Self::MoveSelection(_)
+            | Self::AlbumStep(_)
+            | Self::AlbumRow(_)
+            | Self::SelectFirst
+            | Self::SelectLast
+            | Self::Activate
+            | Self::Back
+            | Self::ToggleFocus
+            | Self::FocusSidebar
+            | Self::FocusContent
+            | Self::NextGenreTab => Category::Navigation,
+            Self::Player(_)
+            | Self::ToggleShuffle
+            | Self::CycleRepeat
+            | Self::Remote(_)
+            | Self::ToggleCompact => Category::Playback,
+            Self::OpenSearch
+            | Self::NewPlaylist
+            | Self::AddSelectedToPlaylist
+            | Self::EnqueueSelected
+            | Self::ToggleFavorite
+            | Self::OpenContextMenu
+            | Self::EditSmartPlaylist => Category::Library,
+            Self::QueueMove(_)
+            | Self::QueueRemove
+            | Self::QueueClear
+            | Self::QueueSave
+            | Self::QueueLoad => Category::Queue,
+            Self::OpenView(_) | Self::Quit | Self::Setting(_) => Category::Windows,
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Quit => "Salir guardando el estado",
+            Self::Back => "Volver",
+            Self::OpenView(View::Help) => "Ayuda",
+            Self::OpenView(View::Settings) => "Settings",
+            Self::OpenView(_) => "Abrir vista",
+            Self::ToggleCompact => "Modo compacto",
+            Self::OpenSearch => "Buscar",
+            Self::NewPlaylist => "Nueva playlist",
+            Self::AddSelectedToPlaylist => "Añadir a una playlist",
+            Self::NextGenreTab => "Cambiar de sección",
+            Self::ToggleFocus => "Cambiar de panel",
+            Self::FocusSidebar => "Ir al menú lateral",
+            Self::FocusContent => "Ir al contenido",
+            Self::MoveSelection(amount) if amount < 0 => "Subir",
+            Self::MoveSelection(_) => "Bajar",
+            Self::AlbumStep(amount) if amount < 0 => "Álbum anterior",
+            Self::AlbumStep(_) => "Álbum siguiente",
+            Self::AlbumRow(amount) if amount < 0 => "Fila anterior",
+            Self::AlbumRow(_) => "Fila siguiente",
+            Self::SelectFirst => "Ir al principio",
+            Self::SelectLast => "Ir al final",
+            Self::Activate => "Abrir o reproducir",
+            Self::OpenContextMenu => "Menú contextual",
+            Self::QueueMove(amount) if amount < 0 => "Subir en la cola",
+            Self::QueueMove(_) => "Bajar en la cola",
+            Self::QueueRemove => "Quitar de la cola",
+            Self::QueueClear => "Vaciar la cola",
+            Self::QueueSave => "Guardar la cola",
+            Self::QueueLoad => "Cargar una cola",
+            Self::EditSmartPlaylist => "Editar la lista inteligente",
+            Self::Player(PlayerAction::Toggle) => "Pausa / reanudar",
+            Self::Player(PlayerAction::Next) => "Siguiente pista",
+            Self::Player(PlayerAction::Previous) => "Pista anterior",
+            Self::Player(_) => "Reproducción",
+            Self::ToggleShuffle => "Aleatorio",
+            Self::CycleRepeat => "Repetición",
+            Self::EnqueueSelected => "Añadir a la cola",
+            Self::ToggleFavorite => "Favorito",
+            Self::Remote(RemoteCommand::VolumeUp) => "Subir volumen",
+            Self::Remote(RemoteCommand::VolumeDown) => "Bajar volumen",
+            Self::Remote(_) => "Volumen",
+            Self::Setting(SettingInput::Decrease) => "Bajar el valor",
+            Self::Setting(SettingInput::Increase) => "Subir el valor",
+            Self::Setting(SettingInput::Toggle) => "Activar o desactivar",
+        }
+    }
+}
+
+/// How a key is written on the help screen.
+fn key_label(code: KeyCode, mods: KeyModifiers) -> String {
+    let base = match code {
+        KeyCode::Char(' ') => "Space".to_owned(),
+        // Uppercase bindings are reached with Shift, which is how people think
+        // of them even though the table matches on the character.
+        KeyCode::Char(character) if character.is_uppercase() => format!("Shift+{character}"),
+        KeyCode::Char(character) => character.to_string(),
+        KeyCode::Up => "↑".to_owned(),
+        KeyCode::Down => "↓".to_owned(),
+        KeyCode::Left => "←".to_owned(),
+        KeyCode::Right => "→".to_owned(),
+        KeyCode::Enter => "Enter".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Tab => "Tab".to_owned(),
+        KeyCode::Home => "Inicio".to_owned(),
+        KeyCode::End => "Fin".to_owned(),
+        KeyCode::Delete => "Supr".to_owned(),
+        other => format!("{other:?}"),
+    };
+    if mods.contains(KeyModifiers::CONTROL) {
+        format!("Ctrl+{base}")
+    } else {
+        base
+    }
+}
+
+/// A scope worth mentioning next to a binding.
+fn scope_hint(scope: Scope) -> Option<&'static str> {
+    match scope {
+        Scope::Anywhere => None,
+        Scope::AlbumGrid => Some("en la cuadrícula"),
+        Scope::View(view) => Some(match view {
+            View::Queue => "en Cola",
+            View::Settings => "en Settings",
+            View::SmartPlaylists => "en Listas inteligentes",
+            View::GenreDetail => "en un género",
+            View::AlbumDetail => "en un álbum",
+            _ => "en esta vista",
+        }),
+    }
+}
+
+pub(super) struct HelpEntry {
+    pub(super) keys: String,
+    pub(super) description: &'static str,
+    pub(super) scope: Option<&'static str>,
+}
+
+/// The help screen, derived from the bindings themselves.
+///
+/// Written by hand it drifted: `c`, `e`, Home/End and Ctrl+C were bound but
+/// undocumented, and the smart-playlist editor hints listed two keys fewer than
+/// the editor implements. Deriving it means a binding cannot be added without
+/// appearing here.
+pub(super) fn help_sections() -> Vec<(&'static str, Vec<HelpEntry>)> {
+    Category::ORDER
+        .into_iter()
+        .map(|category| {
+            let mut entries: Vec<HelpEntry> = Vec::new();
+            for binding in BINDINGS {
+                if binding.action.category() != category {
+                    continue;
+                }
+                let description = binding.action.describe();
+                let scope = scope_hint(binding.scope);
+                let label = key_label(binding.code, binding.mods);
+                // Several keys often drive one action (↑ and k); list them
+                // together instead of repeating the row.
+                match entries
+                    .iter_mut()
+                    .find(|entry| entry.description == description && entry.scope == scope)
+                {
+                    Some(entry) => {
+                        entry.keys.push_str(" / ");
+                        entry.keys.push_str(&label);
+                    }
+                    None => entries.push(HelpEntry {
+                        keys: label,
+                        description,
+                        scope,
+                    }),
+                }
+            }
+            (category.title(), entries)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +614,51 @@ mod tests {
             resolve(&press(KeyCode::Tab), View::Genres, Focus::Content),
             Some(Action::ToggleFocus)
         );
+    }
+
+    #[test]
+    fn every_binding_appears_in_the_help() {
+        // The anti-drift guarantee. Adding a binding without giving it a
+        // category and a description fails here rather than quietly leaving the
+        // help screen wrong, which is how it got out of date before.
+        let listed: usize = help_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries)
+            .map(|entry| entry.keys.split(" / ").count())
+            .sum();
+        assert_eq!(
+            listed,
+            BINDINGS.len(),
+            "every binding must be reachable from the help screen"
+        );
+    }
+
+    #[test]
+    fn keys_the_old_help_forgot_are_documented_now() {
+        let text: String = help_sections()
+            .iter()
+            .flat_map(|(_, entries)| entries)
+            .map(|entry| entry.keys.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+        // All of these were bound but absent from the hand-written help.
+        for key in ["c", "e", "Inicio", "Fin", "Ctrl+c"] {
+            assert!(
+                text.split(' ').any(|listed| listed == key),
+                "{key} should be documented; got {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn aliases_share_one_help_row() {
+        let sections = help_sections();
+        let row = sections
+            .iter()
+            .flat_map(|(_, entries)| entries)
+            .find(|entry| entry.description == "Bajar" && entry.scope.is_none())
+            .expect("a row for moving down");
+        assert_eq!(row.keys, "↓ / j", "arrow and vim keys belong on one row");
     }
 
     #[test]
