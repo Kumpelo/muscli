@@ -294,7 +294,7 @@ pub(super) fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<
 pub(super) fn start_library_worker(
     database_file: PathBuf,
     requests: Receiver<()>,
-    results: tokio_mpsc::UnboundedSender<Box<LibrarySnapshot>>,
+    results: tokio_mpsc::UnboundedSender<Result<Box<LibrarySnapshot>, String>>,
 ) {
     thread::Builder::new()
         .name("muscli-library".into())
@@ -304,10 +304,10 @@ pub(super) fn start_library_worker(
             };
             while requests.recv().is_ok() {
                 while requests.try_recv().is_ok() {}
-                let Ok(snapshot) = LibrarySnapshot::load(&db) else {
-                    continue;
-                };
-                if results.send(Box::new(snapshot)).is_err() {
+                let result = LibrarySnapshot::load(&db)
+                    .map(Box::new)
+                    .map_err(|error| format!("{error:#}"));
+                if results.send(result).is_err() {
                     break;
                 }
             }
