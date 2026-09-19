@@ -209,13 +209,25 @@ impl App {
         }
     }
 
-    pub(super) fn handle_reload_result(&mut self, snapshot: LibrarySnapshot) {
-        self.install_snapshot(snapshot);
-        self.status = t!(
-            "status.library_ready",
-            tracks = self.tracks.len(),
-            albums = self.albums.len()
-        );
+    pub(super) fn handle_reload_result(
+        &mut self,
+        result: Result<Box<LibrarySnapshot>, String>,
+    ) {
+        self.reload_running = false;
+        match result {
+            Ok(snapshot) => {
+                self.install_snapshot(*snapshot);
+                self.status = t!(
+                    "status.library_ready",
+                    tracks = self.tracks.len(),
+                    albums = self.albums.len()
+                );
+            }
+            Err(error) => {
+                self.status = t!("status.database_error", error = error);
+                self.dirty = true;
+            }
+        }
         if std::mem::take(&mut self.reload_again) {
             self.request_reload();
         }
