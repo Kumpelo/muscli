@@ -359,7 +359,7 @@ impl App {
         let tx = self.scan_tx.clone();
         let paths = self.paths.clone();
         let cover_cache_bytes = self.config.cover_cache_mb * 1024 * 1024;
-        let scan_threads = self.config.scan_threads;
+        let options = self.config.scan_options();
         self.scan_running = true;
         self.last_scan = Instant::now();
         self.status = t!("status.scanning_sources", count = roots.len());
@@ -397,17 +397,14 @@ impl App {
                             });
                         }
                     };
-                    let scan =
-                        match scan_source_reporting(&paths, &root, &db, scan_threads, &report) {
-                            Ok(scan) => scan,
-                            Err(error) => {
-                                let _ = tx.send(ScanMessage::Error(format!(
-                                    "{}: {error:#}",
-                                    root.display()
-                                )));
-                                continue;
-                            }
-                        };
+                    let scan = match scan_source_reporting(&paths, &root, &db, &options, &report) {
+                        Ok(scan) => scan,
+                        Err(error) => {
+                            let _ = tx
+                                .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
+                            continue;
+                        }
+                    };
                     ids.insert(scan.id.clone());
                     changed |= !scan.tracks.is_empty() || !scan.missing_track_ids.is_empty();
                     let moved_tracks = match db.upsert_scan(

@@ -30,7 +30,7 @@ fn options(threads: usize) -> ScanOptions {
     ScanOptions {
         threads,
         cover_cache_bytes: CACHE_LIMIT,
-        full: true,
+        ..ScanOptions::default()
     }
 }
 
@@ -95,7 +95,7 @@ fn bench_cold(criterion: &mut Criterion, name: &str, with_art: bool) {
                         }
                     }
                     let mut db = fresh_database(&database_file);
-                    scan_to_database(&mut db, fixture.paths(), &roots, options(threads))
+                    scan_to_database(&mut db, fixture.paths(), &roots, &options(threads))
                         .expect("scanning the benchmark library")
                 })
             },
@@ -118,7 +118,7 @@ fn warm_rescan(criterion: &mut Criterion) {
     let roots = vec![fixture.source()];
     let mut db =
         Database::open(&fixture.paths().database_file()).expect("opening the benchmark database");
-    scan_to_database(&mut db, fixture.paths(), &roots, options(1)).expect("priming the index");
+    scan_to_database(&mut db, fixture.paths(), &roots, &options(1)).expect("priming the index");
 
     let mut group = criterion.benchmark_group("scan");
     group.sample_size(20);
@@ -128,7 +128,7 @@ fn warm_rescan(criterion: &mut Criterion) {
             &threads,
             |bencher, &threads| {
                 bencher.iter(|| {
-                    scan_to_database(&mut db, fixture.paths(), &roots, options(threads))
+                    scan_to_database(&mut db, fixture.paths(), &roots, &options(threads))
                         .expect("rescanning the benchmark library")
                 })
             },

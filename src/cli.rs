@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "muscli",
     version,
-    about = "Fast local FLAC player for the terminal"
+    about = "Fast local music player for the terminal"
 )]
 pub struct Cli {
     /// Start with the compact player layout

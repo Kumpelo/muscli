@@ -65,16 +65,8 @@ fn main() -> Result<()> {
                 }
                 let sources = all_sources(&config);
                 let mut db = Database::open(&paths.database_file())?;
-                let report = library::scan_to_database(
-                    &mut db,
-                    &paths,
-                    &sources,
-                    library::ScanOptions {
-                        threads: config.scan_threads,
-                        cover_cache_bytes: config.cover_cache_mb * 1024 * 1024,
-                        full: true,
-                    },
-                )?;
+                let report =
+                    library::scan_to_database(&mut db, &paths, &sources, &config.scan_options())?;
                 println!(
                     "{}",
                     t!(

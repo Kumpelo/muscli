@@ -16,11 +16,9 @@ use muscli::{
 
 use common::{Fixture, TrackSpec, png_bytes, write_track};
 
-const OPTIONS: ScanOptions = ScanOptions {
-    threads: 0,
-    cover_cache_bytes: 64 * 1024 * 1024,
-    full: true,
-};
+fn options() -> ScanOptions {
+    ScanOptions::default()
+}
 
 fn open_db(fixture: &Fixture) -> Database {
     Database::open(&fixture.paths().database_file()).expect("opening the test database")
@@ -28,7 +26,7 @@ fn open_db(fixture: &Fixture) -> Database {
 
 fn scan(fixture: &Fixture, db: &mut Database) -> muscli::library::ScanReport {
     let roots = vec![fixture.source()];
-    scan_to_database(db, fixture.paths(), &roots, OPTIONS).expect("scanning the test source")
+    scan_to_database(db, fixture.paths(), &roots, &options()).expect("scanning the test source")
 }
 
 fn titles(db: &Database) -> Vec<String> {
@@ -106,7 +104,7 @@ fn rescanning_an_unchanged_library_rewrites_nothing() {
 
     // A second pass must recognise both files through the fingerprint cache and
     // hand the database nothing to write.
-    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db, 0)
+    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db, &options())
         .expect("rescanning the source");
     assert_eq!(second.track_count, 2, "both files should still be counted");
     assert!(
@@ -133,7 +131,7 @@ fn touching_one_file_reindexes_only_that_file() {
     // Rewrite one file with different tags; its size and mtime both move.
     write_track(&changed, &TrackSpec::new("After").millis(700));
 
-    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db, 0)
+    let second = scan_source_with_database(fixture.paths(), &fixture.source(), &db, &options())
         .expect("rescanning the source");
     assert_eq!(
         second.tracks.len(),
@@ -398,8 +396,8 @@ fn a_second_source_is_indexed_independently() {
 
     let mut db = open_db(&fixture);
     let roots: Vec<PathBuf> = vec![fixture.source(), other];
-    let report =
-        scan_to_database(&mut db, fixture.paths(), &roots, OPTIONS).expect("scanning both sources");
+    let report = scan_to_database(&mut db, fixture.paths(), &roots, &options())
+        .expect("scanning both sources");
 
     assert_eq!(report.sources, 2);
     assert_eq!(report.tracks, 2);
@@ -471,10 +469,9 @@ fn one_thread_and_four_threads_produce_identical_results() {
             &mut db,
             fixture.paths(),
             &roots,
-            ScanOptions {
+            &ScanOptions {
                 threads,
-                cover_cache_bytes: 64 * 1024 * 1024,
-                full: true,
+                ..ScanOptions::default()
             },
         )
         .expect("scanning the test source");
@@ -630,7 +627,7 @@ fn a_partial_scan_does_not_declare_other_sources_missing() {
 
     let mut db = open_db(&fixture);
     let both: Vec<PathBuf> = vec![fixture.source(), other.clone()];
-    scan_to_database(&mut db, fixture.paths(), &both, OPTIONS).expect("full scan");
+    scan_to_database(&mut db, fixture.paths(), &both, &options()).expect("full scan");
     assert!(
         db.load_tracks()
             .unwrap()
@@ -642,9 +639,10 @@ fn a_partial_scan_does_not_declare_other_sources_missing() {
     // Now rescan only the first source, as a file change there would.
     let partial = ScanOptions {
         full: false,
-        ..OPTIONS
+        ..options()
     };
-    scan_to_database(&mut db, fixture.paths(), &[fixture.source()], partial).expect("partial scan");
+    scan_to_database(&mut db, fixture.paths(), &[fixture.source()], &partial)
+        .expect("partial scan");
 
     let tracks = db.load_tracks().expect("loading tracks");
     assert_eq!(tracks.len(), 2);
@@ -655,7 +653,7 @@ fn a_partial_scan_does_not_declare_other_sources_missing() {
 
     // A full pass is still allowed to notice a source really has gone.
     fs::remove_dir_all(&other).expect("unplugging the second drive");
-    scan_to_database(&mut db, fixture.paths(), &both, OPTIONS).expect("full rescan");
+    scan_to_database(&mut db, fixture.paths(), &both, &options()).expect("full rescan");
     let tracks = db.load_tracks().expect("loading tracks");
     assert_eq!(
         tracks.iter().filter(|track| !track.available).count(),
@@ -684,9 +682,17 @@ fn a_scan_reports_how_far_along_it_is() {
         seen.lock().expect("progress lock").push((done, total));
     };
 
-    let scan =
-        muscli::library::scan_source_reporting(fixture.paths(), &fixture.source(), &db, 4, &report)
-            .expect("scanning with progress");
+    let scan = muscli::library::scan_source_reporting(
+        fixture.paths(),
+        &fixture.source(),
+        &db,
+        &ScanOptions {
+            threads: 4,
+            ..options()
+        },
+        &report,
+    )
+    .expect("scanning with progress");
 
     assert_eq!(scan.track_count, FILES);
     let seen = seen.into_inner().expect("progress lock");
@@ -704,4 +710,51 @@ fn a_scan_reports_how_far_along_it_is() {
         Some(FILES),
         "and must reach the end"
     );
+}
+
+#[test]
+fn more_than_flac_is_indexed() {
+    // lofty tags and mpv plays all of these, so the only thing that ever kept
+    // them out was the extension filter.
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("song.flac"), &TrackSpec::new("Flac"));
+    // The generator writes FLAC streams; renaming is enough to prove the
+    // filter admits the extension, and lofty identifies the content itself.
+    for extension in ["mp3", "ogg", "wav"] {
+        let source = fixture.source().join("song.flac");
+        let target = fixture.source().join(format!("song.{extension}"));
+        fs::copy(&source, &target).expect("copying the fixture");
+    }
+
+    let mut db = open_db(&fixture);
+    let report = scan(&fixture, &mut db);
+
+    assert_eq!(
+        report.tracks + report.skipped,
+        4,
+        "every audio extension should be offered to the tag reader"
+    );
+    assert!(
+        report.tracks >= 1,
+        "and at least the genuine FLAC must be indexed"
+    );
+}
+
+#[test]
+fn the_extension_list_can_be_narrowed() {
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("keep.flac"), &TrackSpec::new("Keep"));
+    let source = fixture.source().join("keep.flac");
+    fs::copy(&source, fixture.source().join("skip.mp3")).expect("copying the fixture");
+
+    let mut db = open_db(&fixture);
+    let narrowed = ScanOptions {
+        extensions: vec!["flac".into()],
+        ..options()
+    };
+    let report = scan_to_database(&mut db, fixture.paths(), &[fixture.source()], &narrowed)
+        .expect("scanning with a narrowed list");
+
+    assert_eq!(report.tracks, 1);
+    assert_eq!(titles(&db), ["Keep"]);
 }

@@ -41,6 +41,8 @@ pub struct Config {
     /// Interface language: "auto", "en" or "es". Auto follows the system
     /// locale and falls back to English.
     pub language: String,
+    /// File extensions to index. Empty means the built-in list.
+    pub audio_extensions: Vec<String>,
 }
 
 impl Default for Config {
@@ -63,6 +65,7 @@ impl Default for Config {
             scan_threads: 0,
             gapless: true,
             language: "auto".into(),
+            audio_extensions: Vec::new(),
         }
     }
 }
@@ -166,4 +169,23 @@ pub fn all_sources(config: &Config) -> Vec<PathBuf> {
     sources.sort();
     sources.dedup();
     sources
+}
+
+impl Config {
+    /// The scan options this configuration asks for.
+    pub fn scan_options(&self) -> crate::library::ScanOptions {
+        crate::library::ScanOptions {
+            threads: self.scan_threads,
+            cover_cache_bytes: self.cover_cache_mb * 1024 * 1024,
+            full: true,
+            extensions: if self.audio_extensions.is_empty() {
+                crate::library::DEFAULT_EXTENSIONS
+                    .iter()
+                    .map(|extension| (*extension).to_owned())
+                    .collect()
+            } else {
+                self.audio_extensions.clone()
+            },
+        }
+    }
 }
