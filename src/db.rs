@@ -375,6 +375,23 @@ impl Database {
     }
 
     fn seed_smart_playlists(&self) -> Result<()> {
+        // A short-lived pre-merge v5 build could create both the translated
+        // legacy row and a second English seed with the same preset_key.
+        // Repair that state first, then enforce the key as the identity of a
+        // built-in preset. User-created smart playlists keep preset_key NULL.
+        self.conn.execute_batch(
+            "DELETE FROM smart_playlists
+             WHERE preset_key IS NOT NULL
+               AND id NOT IN (
+                    SELECT MIN(id) FROM smart_playlists
+                    WHERE preset_key IS NOT NULL
+                    GROUP BY preset_key
+               );
+             CREATE UNIQUE INDEX IF NOT EXISTS smart_playlists_preset_key
+             ON smart_playlists(preset_key)
+             WHERE preset_key IS NOT NULL;",
+        )?;
+
         // Stored under stable English names with a translation key beside them,
         // so the rows survive a language change and the displayed name follows
         // it.
