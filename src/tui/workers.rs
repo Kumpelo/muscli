@@ -74,8 +74,8 @@ pub(super) enum WatchEvent {
 /// mechanism only on Windows.
 const REMOVABLE_POLL: Duration = Duration::from_secs(5);
 
-fn watch_path_may_affect_library(kind: &EventKind, path: &Path) -> bool {
-    if crate::library::is_indexable(path) || path.is_dir() {
+fn watch_path_may_affect_library(kind: &EventKind, path: &Path, extensions: &[String]) -> bool {
+    if crate::library::has_extension(path, extensions) || path.is_dir() {
         return true;
     }
     if path.is_file() {
@@ -94,6 +94,7 @@ fn watch_path_may_affect_library(kind: &EventKind, path: &Path) -> bool {
 
 pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<WatchEvent>) {
     let configured = config.sources.clone();
+    let extensions = config.scan_options().extensions;
     thread::Builder::new()
         .name("muscli-watcher".into())
         .spawn(move || {
@@ -121,7 +122,7 @@ pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<Wa
                     for path in &event.paths {
                         // A directory event matters too: renaming or deleting a
                         // folder changes the library without touching a file.
-                        if !watch_path_may_affect_library(&event.kind, path) {
+                        if !watch_path_may_affect_library(&event.kind, path, &extensions) {
                             continue;
                         }
                         if let Some(root) = roots
@@ -342,4 +343,39 @@ pub(super) fn start_library_worker(
             }
         })
         .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_extensions_are_watched() {
+        let extensions = vec!["flac".to_owned(), "mp4".to_owned()];
+        assert!(watch_path_may_affect_library(
+            &EventKind::Create(notify::event::CreateKind::File),
+            Path::new("/music/new.mp4"),
+            &extensions,
+        ));
+        assert!(watch_path_may_affect_library(
+            &EventKind::Remove(notify::event::RemoveKind::File),
+            Path::new("/music/gone.mp4"),
+            &extensions,
+        ));
+    }
+
+    #[test]
+    fn dotted_removed_directories_are_not_filtered_as_files() {
+        let extensions = vec!["flac".to_owned()];
+        assert!(watch_path_may_affect_library(
+            &EventKind::Remove(notify::event::RemoveKind::Folder),
+            Path::new("/music/Artist/Album.2024"),
+            &extensions,
+        ));
+        assert!(!watch_path_may_affect_library(
+            &EventKind::Remove(notify::event::RemoveKind::File),
+            Path::new("/music/notes.txt"),
+            &extensions,
+        ));
+    }
 }

@@ -273,10 +273,20 @@ impl App {
         }
     }
 
+    fn note_library_mutation(&mut self) {
+        // A snapshot already being built may have observed the database before
+        // this edit. Queue one follow-up so installing that snapshot cannot
+        // leave the UI reverted to stale state.
+        if self.reload_running {
+            self.reload_again = true;
+        }
+    }
+
     pub(super) fn set_favorite_local(&mut self, track_id: &str, favorite: bool) {
         let Some(index) = self.track_index.get(track_id).copied() else {
             return;
         };
+        self.note_library_mutation();
         self.tracks[index].favorite = favorite;
         match self.favorite_indices.binary_search(&index) {
             Ok(position) if !favorite => {
@@ -293,6 +303,7 @@ impl App {
     }
 
     pub(super) fn refresh_playlists(&mut self) -> Result<()> {
+        self.note_library_mutation();
         self.playlists = self.db.load_playlists()?;
         self.selected = self.selected.min(self.item_count().saturating_sub(1));
         self.dirty = true;
@@ -300,6 +311,7 @@ impl App {
     }
 
     pub(super) fn refresh_smart_playlists(&mut self) -> Result<()> {
+        self.note_library_mutation();
         self.smart_playlists = self.db.load_smart_playlists()?;
         self.rebuild_smart_matches();
         self.prune_nav();
