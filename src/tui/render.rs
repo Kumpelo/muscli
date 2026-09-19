@@ -17,7 +17,7 @@ fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
 }
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    app.cover_sig_now = 0;
+    app.covers.pending_signature = 0;
     let area = frame.area();
     frame.render_widget(
         Block::default().style(
@@ -524,24 +524,24 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .filter_map(|index| app.albums[index].cover_path.clone())
         .collect::<BTreeSet<_>>();
     for path in &prefetch_covers {
-        if !app.album_covers.contains_key(path) {
+        if !app.covers.grid.contains_key(path) {
             app.request_cover_decode(path.clone(), 256);
         }
     }
     for path in &desired_covers {
-        app.album_cover_order.retain(|cached| cached != path);
-        app.album_cover_order.push_back(path.clone());
+        app.covers.grid_order.retain(|cached| cached != path);
+        app.covers.grid_order.push_back(path.clone());
     }
     let cover_capacity = 64usize.max(desired_covers.len());
-    while app.album_covers.len() > cover_capacity {
-        let Some(oldest) = app.album_cover_order.pop_front() else {
+    while app.covers.grid.len() > cover_capacity {
+        let Some(oldest) = app.covers.grid_order.pop_front() else {
             break;
         };
         if desired_covers.contains(&oldest) {
-            app.album_cover_order.push_back(oldest);
+            app.covers.grid_order.push_back(oldest);
             continue;
         }
-        app.album_covers.remove(&oldest);
+        app.covers.grid.remove(&oldest);
     }
     for position in first..last {
         let Some(index) = app.visible_album_index_at(position) else {
@@ -590,13 +590,17 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         frame.render_widget(card, rect);
         let rows = Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
         if let Some(path) = cover_path
-            && let Some(protocol) = app.album_covers.get_mut(&path)
+            && let Some(protocol) = app.covers.grid.get_mut(&path)
         {
             let zona = rows[0].inner(Margin {
                 horizontal: 1,
                 vertical: 0,
             });
-            anotar_portada(&mut app.cover_sig_now, &path.to_string_lossy(), zona);
+            anotar_portada(
+                &mut app.covers.pending_signature,
+                &path.to_string_lossy(),
+                zona,
+            );
             frame.render_widget(Clear, zona); // mismo motivo que en el panel
             frame.render_stateful_widget(StatefulImage::new(), zona, protocol);
         } else {
@@ -808,7 +812,7 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Constraint::Length(7),
     ])
     .split(inner);
-    if let Some(cover) = app.cover.as_mut() {
+    if let Some(cover) = app.covers.current.as_mut() {
         let zona = parts[0].inner(Margin {
             horizontal: 1,
             vertical: 1,
@@ -816,7 +820,7 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         // Limpiar la zona antes de dibujar: con el protocolo de imágenes de kitty,
         // la portada anterior deja restos (una franja de la otra imagen) si no se
         // borra primero.
-        anotar_portada(&mut app.cover_sig_now, "panel", zona);
+        anotar_portada(&mut app.covers.pending_signature, "panel", zona);
         frame.render_widget(Clear, zona);
         frame.render_stateful_widget(StatefulImage::new(), zona, &mut cover.protocol);
     } else {
