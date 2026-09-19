@@ -1091,24 +1091,94 @@ impl Database {
         Ok(())
     }
 
-    /// What has actually been listened to, in a window ending now.
+    /// What has actually been listened to.
     ///
-    /// Counted from `track_stats` rather than the history log, so a track
-    /// played before the log was trimmed still counts. Everything stays local;
-    /// nothing about this leaves the machine.
+    /// Lifetime totals come from `track_stats`, which survives history
+    /// pruning. A bounded window must instead be aggregated from `history`:
+    /// filtering a lifetime counter by only its last-played timestamp would
+    /// incorrectly pull old plays into the requested period.
     pub fn listening_summary(&self, since: Option<i64>) -> Result<ListeningSummary> {
+        if let Some(since) = since {
+            return self.listening_summary_since(since);
+        }
+
         let (played, total_ms): (i64, i64) = self.conn.query_row(
             "SELECT COALESCE(SUM(play_count),0), COALESCE(SUM(total_listen_ms),0)
-             FROM track_stats WHERE ?1 IS NULL OR last_played_at >= ?1",
-            [since],
+             FROM track_stats",
+            [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.title, t.artist, s.play_count
              FROM track_stats s JOIN tracks t ON t.id=s.track_id
-             WHERE s.play_count > 0 AND (?1 IS NULL OR s.last_played_at >= ?1)
+             WHERE s.play_count > 0
              ORDER BY s.play_count DESC, t.title COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_tracks = stmt
+            .query_map([], |row| {
+                Ok(SummaryRow {
+                    id: row.get(0)?,
+                    label: format!(
+                        "{} — {}",
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(1)?
+                    ),
+                    count: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT t.artist, SUM(s.play_count) AS plays
+             FROM track_stats s JOIN tracks t ON t.id=s.track_id
+             WHERE s.play_count > 0
+             GROUP BY lower(t.artist)
+             ORDER BY plays DESC, t.artist COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_artists = stmt
+            .query_map([], |row| {
+                Ok(SummaryRow {
+                    id: String::new(),
+                    label: row.get::<_, String>(0)?,
+                    count: row.get::<_, i64>(1)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(ListeningSummary {
+            plays: played.max(0) as u64,
+            listened_ms: total_ms.max(0) as u64,
+            top_tracks,
+            top_artists,
+        })
+    }
+
+    fn listening_summary_since(&self, since: i64) -> Result<ListeningSummary> {
+        let (played, total_ms): (i64, i64) = self.conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN counted != 0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(listened_ms),0)
+             FROM history
+             WHERE started_at >= ?1",
+            [since],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                t.id,
+                t.title,
+                t.artist,
+                SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) AS plays
+             FROM history h
+             JOIN tracks t ON t.id=h.track_id
+             WHERE h.started_at >= ?1
+             GROUP BY t.id, t.title, t.artist
+             HAVING SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) > 0
+             ORDER BY plays DESC, t.title COLLATE NOCASE
              LIMIT 20",
         )?;
         let top_tracks = stmt
@@ -1126,10 +1196,14 @@ impl Database {
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT t.artist, SUM(s.play_count) AS plays
-             FROM track_stats s JOIN tracks t ON t.id=s.track_id
-             WHERE s.play_count > 0 AND (?1 IS NULL OR s.last_played_at >= ?1)
+            "SELECT
+                t.artist,
+                SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) AS plays
+             FROM history h
+             JOIN tracks t ON t.id=h.track_id
+             WHERE h.started_at >= ?1
              GROUP BY lower(t.artist)
+             HAVING SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) > 0
              ORDER BY plays DESC, t.artist COLLATE NOCASE
              LIMIT 20",
         )?;
