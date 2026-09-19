@@ -299,14 +299,24 @@ pub(super) fn start_library_worker(
     thread::Builder::new()
         .name("muscli-library".into())
         .spawn(move || {
-            let Ok(db) = Database::open(&database_file) else {
-                return;
-            };
+            let mut db = Database::open(&database_file)
+                .map_err(|error| format!("{error:#}"));
+
             while requests.recv().is_ok() {
                 while requests.try_recv().is_ok() {}
-                let result = LibrarySnapshot::load(&db)
-                    .map(Box::new)
-                    .map_err(|error| format!("{error:#}"));
+
+                if db.is_err() {
+                    db = Database::open(&database_file)
+                        .map_err(|error| format!("{error:#}"));
+                }
+
+                let result = match &db {
+                    Ok(db) => LibrarySnapshot::load(db)
+                        .map(Box::new)
+                        .map_err(|error| format!("{error:#}")),
+                    Err(error) => Err(error.clone()),
+                };
+
                 if results.send(result).is_err() {
                     break;
                 }
