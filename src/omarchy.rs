@@ -50,8 +50,8 @@ o.window({ class = "^muscli-compact$" }, {
 -- <<< muscli player window <<<
 "#;
 
-// Tamaño anterior de la ventana del modo completo. Se conserva para que el setup
-// sepa reconocerlo y pueda migrarlo en vez de negarse a tocar el archivo.
+// The previous size of the full-mode window, kept so that setup
+// can recognise it and migrate it, rather than refusing to touch the file.
 const LEGACY_PLAYER_WINDOW_BLOCK: &str = r#"-- >>> muscli player window >>>
 o.window({ class = "^muscli-compact$" }, {
   float = true,
@@ -249,15 +249,15 @@ fn media_widget_is_intact_value(value: &serde_json::Value) -> bool {
 }
 
 fn desktop_entry() -> &'static str {
-    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nComment=Browse and play a local FLAC library\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli -e muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
+    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nGenericName[es]=Reproductor de música FLAC\nComment=Browse and play a local FLAC library\nComment[es]=Explora y reproduce una biblioteca FLAC local\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli -e muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
 }
 
 fn compact_desktop_entry() -> &'static str {
-    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nComment=Browse and play a local FLAC library\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli-compact -e muscli --compact\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
+    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nGenericName[es]=Reproductor de música FLAC\nComment=Browse and play a local FLAC library\nComment[es]=Explora y reproduce una biblioteca FLAC local\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli-compact -e muscli --compact\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
 }
 
 fn legacy_desktop_entry() -> &'static str {
-    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nComment=Browse and play a local FLAC library\nIcon=audio-x-generic\nExec=xdg-terminal-exec -- muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
+    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nGenericName[es]=Reproductor de música FLAC\nComment=Browse and play a local FLAC library\nComment[es]=Explora y reproduce una biblioteca FLAC local\nIcon=audio-x-generic\nExec=xdg-terminal-exec -- muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
 }
 
 fn install_hyprland(state: &mut SetupState) -> Result<()> {

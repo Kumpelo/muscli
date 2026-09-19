@@ -9,6 +9,7 @@
 
 use super::keys::SettingInput;
 use super::*;
+use crate::t;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SettingId {
@@ -29,6 +30,7 @@ pub(super) enum SettingId {
 
 pub(super) struct SettingRow {
     pub(super) id: SettingId,
+    /// Translation key for the row's name.
     pub(super) label: &'static str,
 }
 
@@ -37,23 +39,28 @@ const fn row(id: SettingId, label: &'static str) -> SettingRow {
 }
 
 pub(super) const SETTINGS: [SettingRow; 13] = [
-    row(SettingId::ReplayGain, "ReplayGain"),
-    row(SettingId::ReplayGainMode, "Modo ReplayGain"),
-    row(SettingId::TargetLufs, "Objetivo LUFS"),
-    row(SettingId::Resume, "Restaurar posiciones"),
-    row(SettingId::History, "Historial"),
-    row(SettingId::CompactDefault, "Modo compacto por defecto"),
-    row(SettingId::ShowCovers, "Mostrar portadas"),
-    row(SettingId::VolumeStep, "Paso de volumen"),
-    row(SettingId::AutoDiscover, "Autodetectar SD/USB"),
-    row(SettingId::CoverCache, "Caché de portadas"),
-    row(SettingId::Discord, "Discord Rich Presence"),
-    row(SettingId::Rescan, "Reescanear biblioteca"),
-    row(SettingId::AnalyzeGain, "Analizar ReplayGain"),
+    row(SettingId::ReplayGain, "setting.replaygain"),
+    row(SettingId::ReplayGainMode, "setting.replaygain_mode"),
+    row(SettingId::TargetLufs, "setting.target_lufs"),
+    row(SettingId::Resume, "setting.resume"),
+    row(SettingId::History, "setting.history"),
+    row(SettingId::CompactDefault, "setting.compact_default"),
+    row(SettingId::ShowCovers, "setting.show_covers"),
+    row(SettingId::VolumeStep, "setting.volume_step"),
+    row(SettingId::AutoDiscover, "setting.auto_discover"),
+    row(SettingId::CoverCache, "setting.cover_cache"),
+    row(SettingId::Discord, "setting.discord"),
+    row(SettingId::Rescan, "setting.rescan"),
+    row(SettingId::AnalyzeGain, "setting.analyze_gain"),
 ];
 
 fn switch(enabled: bool) -> String {
-    if enabled { "on" } else { "off" }.to_owned()
+    t!(if enabled {
+        "setting.value.on"
+    } else {
+        "setting.value.off"
+    })
+    .to_owned()
 }
 
 impl App {
@@ -61,29 +68,33 @@ impl App {
     pub(super) fn setting_value(&self, id: SettingId) -> String {
         match id {
             SettingId::ReplayGain => switch(self.config.replaygain_enabled),
-            SettingId::ReplayGainMode => match self.config.replaygain_mode {
-                ReplayGainMode::Album => "álbum".to_owned(),
-                ReplayGainMode::Track => "pista".to_owned(),
-            },
-            SettingId::TargetLufs => format!("{:.0} LUFS", self.config.replaygain_target_lufs),
+            SettingId::ReplayGainMode => t!(match self.config.replaygain_mode {
+                ReplayGainMode::Album => "setting.value.album",
+                ReplayGainMode::Track => "setting.value.track",
+            })
+            .to_owned(),
+            SettingId::TargetLufs => t!(
+                "setting.value.lufs",
+                value = format!("{:.0}", self.config.replaygain_target_lufs)
+            ),
             SettingId::Resume => switch(self.config.resume_enabled),
             SettingId::History => switch(self.config.history_enabled),
             SettingId::CompactDefault => switch(self.config.compact_default),
             SettingId::ShowCovers => switch(self.config.show_covers),
-            SettingId::VolumeStep => format!("{}%", self.config.volume_step),
+            SettingId::VolumeStep => t!("setting.value.percent", value = self.config.volume_step),
             SettingId::AutoDiscover => switch(self.config.auto_discover_removable),
-            SettingId::CoverCache => format!("{} MiB", self.config.cover_cache_mb),
+            SettingId::CoverCache => t!("setting.value.mib", value = self.config.cover_cache_mb),
             SettingId::Discord => switch(self.config.discord_enabled),
-            SettingId::Rescan => if self.scan_running {
-                "en curso"
+            SettingId::Rescan => t!(if self.scan_running {
+                "setting.value.running"
             } else {
-                "Enter/Space"
-            }
+                "setting.value.activate"
+            })
             .to_owned(),
             SettingId::AnalyzeGain => self
                 .gain_progress
-                .map(|(done, total)| format!("{done}/{total}"))
-                .unwrap_or_else(|| "Enter/Space".to_owned()),
+                .map(|(done, total)| t!("setting.value.progress", done = done, total = total))
+                .unwrap_or_else(|| t!("setting.value.activate").to_owned()),
         }
     }
 
@@ -140,8 +151,7 @@ impl App {
             }
             SettingId::Discord => {
                 if self.config.discord_application_id.is_none() {
-                    self.status =
-                        "Configura Discord con: muscli setup discord APPLICATION_ID".into();
+                    self.status = t!("status.discord_setup").into();
                     return Ok(());
                 }
                 self.config.discord_enabled = !self.config.discord_enabled;
@@ -166,7 +176,7 @@ impl App {
                     return Ok(());
                 }
                 self.start_scan();
-                self.status = "Reescaneo iniciado".into();
+                self.status = t!("status.rescan_started").into();
             }
             SettingId::AnalyzeGain => {
                 if horizontal {
@@ -176,7 +186,7 @@ impl App {
             }
         }
         self.config.save(&self.paths)?;
-        self.status = "Settings guardados".into();
+        self.status = t!("status.settings_saved").into();
         self.dirty = true;
         Ok(())
     }

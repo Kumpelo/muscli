@@ -87,7 +87,7 @@ pub fn group_genres(tracks: &[Track]) -> Vec<Genre> {
     let mut grouped: BTreeMap<String, Genre> = BTreeMap::new();
     for track in tracks {
         let name = if track.genre.trim().is_empty() {
-            "Sin género"
+            crate::t!("label.unknown_genre")
         } else {
             track.genre.trim()
         };
@@ -363,6 +363,7 @@ mod tests {
         let playlist = SmartPlaylist {
             id: 1,
             name: "test".into(),
+            preset_key: None,
             match_mode: SmartMatch::All,
             rules: rules.clone(),
             sort_field: "title".into(),

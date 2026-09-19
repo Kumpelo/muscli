@@ -152,7 +152,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -329,13 +329,42 @@ impl Database {
             )?;
             tx.commit()?;
         }
+
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 4 {
+            let tx = self.conn.transaction()?;
+            // Seeded playlists carry a translation key so their names can
+            // follow the interface language; a playlist the user made has none
+            // and keeps the name they chose.
+            tx.execute_batch(
+                "ALTER TABLE smart_playlists ADD COLUMN preset_key TEXT;
+                 UPDATE smart_playlists SET preset_key='preset.metal_favorites'
+                    WHERE name='Metal favorito';
+                 UPDATE smart_playlists SET preset_key='preset.recently_added'
+                    WHERE name='Agregadas recientemente';
+                 UPDATE smart_playlists SET preset_key='preset.unplayed'
+                    WHERE name='No escuchadas';
+                 UPDATE smart_playlists SET preset_key='preset.most_played'
+                    WHERE name='Más reproducidas';
+                 UPDATE smart_playlists SET preset_key='preset.long_tracks'
+                    WHERE name='Más de 8 minutos';
+                 PRAGMA user_version = 5;",
+            )?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
     fn seed_smart_playlists(&self) -> Result<()> {
+        // Stored under stable English names with a translation key beside them,
+        // so the rows survive a language change and the displayed name follows
+        // it.
         let presets = [
             (
-                "Metal favorito",
+                "preset.metal_favorites",
+                "Favourite metal",
                 "all",
                 r#"[{"field":"genre","operator":"contains","value":"metal"},{"field":"favorite","operator":"is","value":true}]"#,
                 "title",
@@ -343,7 +372,8 @@ impl Database {
                 None,
             ),
             (
-                "Agregadas recientemente",
+                "preset.recently_added",
+                "Recently added",
                 "all",
                 r#"[{"field":"added_days","operator":"lte","value":30}]"#,
                 "added_at",
@@ -351,7 +381,8 @@ impl Database {
                 None,
             ),
             (
-                "No escuchadas",
+                "preset.unplayed",
+                "Unplayed",
                 "all",
                 r#"[{"field":"played","operator":"is","value":false}]"#,
                 "title",
@@ -359,7 +390,8 @@ impl Database {
                 None,
             ),
             (
-                "Más reproducidas",
+                "preset.most_played",
+                "Most played",
                 "all",
                 r#"[{"field":"play_count","operator":"gte","value":1}]"#,
                 "play_count",
@@ -367,7 +399,8 @@ impl Database {
                 Some(100),
             ),
             (
-                "Más de 8 minutos",
+                "preset.long_tracks",
+                "Over 8 minutes",
                 "all",
                 r#"[{"field":"duration_ms","operator":"gte","value":480000}]"#,
                 "duration",
@@ -375,10 +408,10 @@ impl Database {
                 None,
             ),
         ];
-        for (name, mode, rules, sort, descending, limit) in presets {
+        for (preset_key, name, mode, rules, sort, descending, limit) in presets {
             self.conn.execute(
-                "INSERT OR IGNORE INTO smart_playlists(name,match_mode,rules_json,sort_field,descending,item_limit) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![name, mode, rules, sort, descending, limit],
+                "INSERT OR IGNORE INTO smart_playlists(name,match_mode,rules_json,sort_field,descending,item_limit,preset_key) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![name, mode, rules, sort, descending, limit, preset_key],
             )?;
         }
         Ok(())
@@ -1045,7 +1078,7 @@ impl Database {
 
     pub fn load_smart_playlists(&self) -> Result<Vec<SmartPlaylist>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id,name,match_mode,rules_json,sort_field,descending,item_limit FROM smart_playlists ORDER BY name COLLATE NOCASE",
+            "SELECT id,name,match_mode,rules_json,sort_field,descending,item_limit,preset_key FROM smart_playlists ORDER BY name COLLATE NOCASE",
         )?;
         let raw = stmt
             .query_map([], |row| {
@@ -1057,25 +1090,29 @@ impl Database {
                     row.get::<_, String>(4)?,
                     row.get::<_, bool>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         raw.into_iter()
-            .map(|(id, name, mode, rules, sort_field, descending, limit)| {
-                Ok(SmartPlaylist {
-                    id,
-                    name,
-                    match_mode: if mode == "any" {
-                        SmartMatch::Any
-                    } else {
-                        SmartMatch::All
-                    },
-                    rules: serde_json::from_str(&rules)?,
-                    sort_field,
-                    descending,
-                    limit: limit.map(|value| value.max(0) as usize),
-                })
-            })
+            .map(
+                |(id, name, mode, rules, sort_field, descending, limit, preset_key)| {
+                    Ok(SmartPlaylist {
+                        id,
+                        preset_key,
+                        name,
+                        match_mode: if mode == "any" {
+                            SmartMatch::Any
+                        } else {
+                            SmartMatch::All
+                        },
+                        rules: serde_json::from_str(&rules)?,
+                        sort_field,
+                        descending,
+                        limit: limit.map(|value| value.max(0) as usize),
+                    })
+                },
+            )
             .collect()
     }
 

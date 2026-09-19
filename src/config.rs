@@ -38,6 +38,9 @@ pub struct Config {
     /// Let mpv open the next track before the current one ends, so album sides
     /// run together without a gap.
     pub gapless: bool,
+    /// Interface language: "auto", "en" or "es". Auto follows the system
+    /// locale and falls back to English.
+    pub language: String,
 }
 
 impl Default for Config {
@@ -59,6 +62,7 @@ impl Default for Config {
             volume_step: 5,
             scan_threads: 0,
             gapless: true,
+            language: "auto".into(),
         }
     }
 }

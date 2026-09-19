@@ -12,6 +12,9 @@ pub struct Cli {
     /// Start with the compact player layout
     #[arg(long, global = true)]
     pub compact: bool,
+    /// Interface language: auto, en or es
+    #[arg(long, global = true)]
+    pub lang: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -70,8 +73,11 @@ pub enum RemoteCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum VolumeCommand {
+    /// Raise the volume by one step
     Up,
+    /// Lower the volume by one step
     Down,
+    /// Set the volume to an exact percentage
     Set { percent: u8 },
 }
 

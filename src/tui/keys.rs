@@ -13,6 +13,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Focus, View};
+use crate::t;
 use crate::{control::RemoteCommand, model::PlayerAction};
 
 /// Where a binding applies.
@@ -254,13 +255,14 @@ pub(super) enum Category {
 }
 
 impl Category {
+    /// Translation key for the section heading.
     pub(super) fn title(self) -> &'static str {
         match self {
-            Self::Navigation => "Navegación",
-            Self::Playback => "Reproducción",
-            Self::Library => "Biblioteca",
-            Self::Queue => "Cola",
-            Self::Windows => "Ventanas",
+            Self::Navigation => "help.category.navigation",
+            Self::Playback => "help.category.playback",
+            Self::Library => "help.category.library",
+            Self::Queue => "help.category.queue",
+            Self::Windows => "help.category.windows",
         }
     }
 
@@ -308,52 +310,53 @@ impl Action {
         }
     }
 
+    /// Translation key for the help screen.
     fn describe(self) -> &'static str {
         match self {
-            Self::Quit => "Salir guardando el estado",
-            Self::Back => "Volver",
-            Self::OpenView(View::Help) => "Ayuda",
-            Self::OpenView(View::Settings) => "Settings",
-            Self::OpenView(_) => "Abrir vista",
-            Self::ToggleCompact => "Modo compacto",
-            Self::OpenSearch => "Buscar",
-            Self::NewPlaylist => "Nueva playlist",
-            Self::AddSelectedToPlaylist => "Añadir a una playlist",
-            Self::NextGenreTab => "Cambiar de sección",
-            Self::ToggleFocus => "Cambiar de panel",
-            Self::FocusSidebar => "Ir al menú lateral",
-            Self::FocusContent => "Ir al contenido",
-            Self::MoveSelection(amount) if amount < 0 => "Subir",
-            Self::MoveSelection(_) => "Bajar",
-            Self::AlbumStep(amount) if amount < 0 => "Álbum anterior",
-            Self::AlbumStep(_) => "Álbum siguiente",
-            Self::AlbumRow(amount) if amount < 0 => "Fila anterior",
-            Self::AlbumRow(_) => "Fila siguiente",
-            Self::SelectFirst => "Ir al principio",
-            Self::SelectLast => "Ir al final",
-            Self::Activate => "Abrir o reproducir",
-            Self::OpenContextMenu => "Menú contextual",
-            Self::QueueMove(amount) if amount < 0 => "Subir en la cola",
-            Self::QueueMove(_) => "Bajar en la cola",
-            Self::QueueRemove => "Quitar de la cola",
-            Self::QueueClear => "Vaciar la cola",
-            Self::QueueSave => "Guardar la cola",
-            Self::QueueLoad => "Cargar una cola",
-            Self::EditSmartPlaylist => "Editar la lista inteligente",
-            Self::Player(PlayerAction::Toggle) => "Pausa / reanudar",
-            Self::Player(PlayerAction::Next) => "Siguiente pista",
-            Self::Player(PlayerAction::Previous) => "Pista anterior",
-            Self::Player(_) => "Reproducción",
-            Self::ToggleShuffle => "Aleatorio",
-            Self::CycleRepeat => "Repetición",
-            Self::EnqueueSelected => "Añadir a la cola",
-            Self::ToggleFavorite => "Favorito",
-            Self::Remote(RemoteCommand::VolumeUp) => "Subir volumen",
-            Self::Remote(RemoteCommand::VolumeDown) => "Bajar volumen",
-            Self::Remote(_) => "Volumen",
-            Self::Setting(SettingInput::Decrease) => "Bajar el valor",
-            Self::Setting(SettingInput::Increase) => "Subir el valor",
-            Self::Setting(SettingInput::Toggle) => "Activar o desactivar",
+            Self::Quit => "action.quit",
+            Self::Back => "action.back",
+            Self::OpenView(View::Help) => "action.help",
+            Self::OpenView(View::Settings) => "action.settings",
+            Self::OpenView(_) => "action.open_view",
+            Self::ToggleCompact => "action.compact",
+            Self::OpenSearch => "action.search",
+            Self::NewPlaylist => "action.new_playlist",
+            Self::AddSelectedToPlaylist => "action.add_to_playlist",
+            Self::NextGenreTab => "action.genre_tab",
+            Self::ToggleFocus => "action.toggle_focus",
+            Self::FocusSidebar => "action.focus_sidebar",
+            Self::FocusContent => "action.focus_content",
+            Self::MoveSelection(amount) if amount < 0 => "action.up",
+            Self::MoveSelection(_) => "action.down",
+            Self::AlbumStep(amount) if amount < 0 => "action.album_previous",
+            Self::AlbumStep(_) => "action.album_next",
+            Self::AlbumRow(amount) if amount < 0 => "action.row_previous",
+            Self::AlbumRow(_) => "action.row_next",
+            Self::SelectFirst => "action.first",
+            Self::SelectLast => "action.last",
+            Self::Activate => "action.activate",
+            Self::OpenContextMenu => "action.context_menu",
+            Self::QueueMove(amount) if amount < 0 => "action.queue_up",
+            Self::QueueMove(_) => "action.queue_down",
+            Self::QueueRemove => "action.queue_remove",
+            Self::QueueClear => "action.queue_clear",
+            Self::QueueSave => "action.queue_save",
+            Self::QueueLoad => "action.queue_load",
+            Self::EditSmartPlaylist => "action.edit_smart",
+            Self::Player(PlayerAction::Toggle) => "action.play_pause",
+            Self::Player(PlayerAction::Next) => "action.next_track",
+            Self::Player(PlayerAction::Previous) => "action.previous_track",
+            Self::Player(_) => "action.playback",
+            Self::ToggleShuffle => "action.shuffle",
+            Self::CycleRepeat => "action.repeat",
+            Self::EnqueueSelected => "action.enqueue",
+            Self::ToggleFavorite => "action.favorite",
+            Self::Remote(RemoteCommand::VolumeUp) => "action.volume_up",
+            Self::Remote(RemoteCommand::VolumeDown) => "action.volume_down",
+            Self::Remote(_) => "action.volume",
+            Self::Setting(SettingInput::Decrease) => "action.setting_decrease",
+            Self::Setting(SettingInput::Increase) => "action.setting_increase",
+            Self::Setting(SettingInput::Toggle) => "action.setting_toggle",
         }
     }
 }
@@ -361,7 +364,7 @@ impl Action {
 /// How a key is written on the help screen.
 fn key_label(code: KeyCode, mods: KeyModifiers) -> String {
     let base = match code {
-        KeyCode::Char(' ') => "Space".to_owned(),
+        KeyCode::Char(' ') => t!("key.space").to_owned(),
         // Uppercase bindings are reached with Shift, which is how people think
         // of them even though the table matches on the character.
         KeyCode::Char(character) if character.is_uppercase() => format!("Shift+{character}"),
@@ -370,12 +373,12 @@ fn key_label(code: KeyCode, mods: KeyModifiers) -> String {
         KeyCode::Down => "↓".to_owned(),
         KeyCode::Left => "←".to_owned(),
         KeyCode::Right => "→".to_owned(),
-        KeyCode::Enter => "Enter".to_owned(),
-        KeyCode::Esc => "Esc".to_owned(),
-        KeyCode::Tab => "Tab".to_owned(),
-        KeyCode::Home => "Inicio".to_owned(),
-        KeyCode::End => "Fin".to_owned(),
-        KeyCode::Delete => "Supr".to_owned(),
+        KeyCode::Enter => t!("key.enter").to_owned(),
+        KeyCode::Esc => t!("key.esc").to_owned(),
+        KeyCode::Tab => t!("key.tab").to_owned(),
+        KeyCode::Home => t!("key.home").to_owned(),
+        KeyCode::End => t!("key.end").to_owned(),
+        KeyCode::Delete => t!("key.delete").to_owned(),
         other => format!("{other:?}"),
     };
     if mods.contains(KeyModifiers::CONTROL) {
@@ -389,20 +392,21 @@ fn key_label(code: KeyCode, mods: KeyModifiers) -> String {
 fn scope_hint(scope: Scope) -> Option<&'static str> {
     match scope {
         Scope::Anywhere => None,
-        Scope::AlbumGrid => Some("en la cuadrícula"),
+        Scope::AlbumGrid => Some("help.scope.album_grid"),
         Scope::View(view) => Some(match view {
-            View::Queue => "en Cola",
-            View::Settings => "en Settings",
-            View::SmartPlaylists => "en Listas inteligentes",
-            View::GenreDetail => "en un género",
-            View::AlbumDetail => "en un álbum",
-            _ => "en esta vista",
+            View::Queue => "help.scope.queue",
+            View::Settings => "help.scope.settings",
+            View::SmartPlaylists => "help.scope.smart_playlists",
+            View::GenreDetail => "help.scope.genre",
+            View::AlbumDetail => "help.scope.album",
+            _ => "help.scope.this_view",
         }),
     }
 }
 
 pub(super) struct HelpEntry {
     pub(super) keys: String,
+    /// Translation keys, resolved when the help screen is drawn.
     pub(super) description: &'static str,
     pub(super) scope: Option<&'static str>,
 }
@@ -642,7 +646,9 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         // All of these were bound but absent from the hand-written help.
-        for key in ["c", "e", "Inicio", "Fin", "Ctrl+c"] {
+        // Key labels are themselves translated, so these are the English ones
+        // that the default catalogue produces.
+        for key in ["c", "e", "Home", "End", "Ctrl+c"] {
             assert!(
                 text.split(' ').any(|listed| listed == key),
                 "{key} should be documented; got {text}"
@@ -653,10 +659,12 @@ mod tests {
     #[test]
     fn aliases_share_one_help_row() {
         let sections = help_sections();
+        // Matched on the translation key rather than the rendered text, so the
+        // test says nothing about which language is active.
         let row = sections
             .iter()
             .flat_map(|(_, entries)| entries)
-            .find(|entry| entry.description == "Bajar" && entry.scope.is_none())
+            .find(|entry| entry.description == "action.down" && entry.scope.is_none())
             .expect("a row for moving down");
         assert_eq!(row.keys, "↓ / j", "arrow and vim keys belong on one row");
     }

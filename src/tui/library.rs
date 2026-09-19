@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::library::scan_source_reporting;
+use crate::t;
 
 /// How many files between progress messages.
 const PROGRESS_STEP: usize = 250;
@@ -210,10 +211,10 @@ impl App {
 
     pub(super) fn handle_reload_result(&mut self, snapshot: LibrarySnapshot) {
         self.install_snapshot(snapshot);
-        self.status = format!(
-            "{} canciones · {} álbumes · listo",
-            self.tracks.len(),
-            self.albums.len()
+        self.status = t!(
+            "status.library_ready",
+            tracks = self.tracks.len(),
+            albums = self.albums.len()
         );
         if std::mem::take(&mut self.reload_again) {
             self.request_reload();
@@ -317,7 +318,7 @@ impl App {
             self.theme_modified = modified;
             if theme != self.theme {
                 self.theme = theme;
-                self.status = "Tema de Omarchy actualizado".into();
+                self.status = t!("status.theme_updated").into();
                 self.dirty = true;
             }
         }
@@ -361,14 +362,17 @@ impl App {
         let scan_threads = self.config.scan_threads;
         self.scan_running = true;
         self.last_scan = Instant::now();
-        self.status = format!("Escaneando {} fuente(s)…", roots.len());
+        self.status = t!("status.scanning_sources", count = roots.len());
         thread::Builder::new()
             .name("muscli-scanner".into())
             .spawn(move || {
                 let mut db = match Database::open(&paths.database_file()) {
                     Ok(db) => db,
                     Err(error) => {
-                        let _ = tx.send(ScanMessage::Error(format!("Base de datos: {error:#}")));
+                        let _ = tx.send(ScanMessage::Error(t!(
+                            "status.database_error",
+                            error = format!("{error:#}")
+                        )));
                         let _ = tx.send(ScanMessage::Done { changed: false });
                         return;
                     }
@@ -443,7 +447,10 @@ impl App {
                     match db.mark_missing_sources(&ids) {
                         Ok(count) => changed |= count > 0,
                         Err(error) => {
-                            let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
+                            let _ = tx.send(ScanMessage::Error(t!(
+                                "status.sources_error",
+                                error = format!("{error:#}")
+                            )));
                         }
                     }
                 }
@@ -482,7 +489,12 @@ impl App {
     pub(super) fn handle_scan(&mut self, message: ScanMessage) -> Result<()> {
         match message {
             ScanMessage::Progress { label, done, total } => {
-                self.status = format!("Escaneando {label}: {done}/{total}");
+                self.status = t!(
+                    "status.scanning_progress",
+                    label = label,
+                    done = done,
+                    total = total
+                );
                 self.dirty = true;
             }
             ScanMessage::Source {
@@ -499,25 +511,25 @@ impl App {
                     }
                 }
                 self.queue_dirty |= queue_changed;
-                self.status = format!("Indexadas {tracks} pistas de {label}");
+                self.status = t!("status.indexed", tracks = tracks, label = label);
                 self.dirty = true;
             }
             ScanMessage::Error(error) => {
-                self.status = format!("Scan: {error}");
+                self.status = t!("status.scan_error", error = error);
                 self.dirty = true;
             }
             ScanMessage::Done { changed } => {
                 self.scan_running = false;
                 if changed {
                     // Rebuilt off-thread; the summary lands with the snapshot.
-                    self.status = "Actualizando biblioteca…".into();
+                    self.status = t!("status.updating_library").into();
                     self.request_reload();
                     self.dirty = true;
                 } else {
-                    self.status = format!(
-                        "{} canciones · {} álbumes · sin cambios",
-                        self.tracks.len(),
-                        self.albums.len()
+                    self.status = t!(
+                        "status.library_unchanged",
+                        tracks = self.tracks.len(),
+                        albums = self.albums.len()
                     );
                     self.dirty = true;
                 }
@@ -567,7 +579,7 @@ impl App {
             GainMessage::Done => {
                 self.gain_running = false;
                 self.gain_progress = None;
-                self.status = "Análisis de volumen terminado".into();
+                self.status = t!("status.gain_finished").into();
                 self.dirty = true;
             }
         }

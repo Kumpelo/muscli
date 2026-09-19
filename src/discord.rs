@@ -107,7 +107,7 @@ fn activity<'a>(presence: &'a Presence, large_image: &'a str) -> Activity<'a> {
     let artist = limited(&presence.artist, 120);
     let large_image = presence_image(&presence.artist, &presence.genre, large_image);
     let state = if presence.status == PlaybackStatus::Paused {
-        limited(&format!("En pausa · {artist}"), 120)
+        limited(&crate::t!("label.paused_presence", artist = artist), 120)
     } else {
         artist
     };
