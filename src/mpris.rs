@@ -23,7 +23,18 @@ impl MprisBridge {
             .identity("muscli")
             .desktop_entry("muscli")
             .supported_uri_schemes(["file"])
-            .supported_mime_types(["audio/flac"])
+            .supported_mime_types([
+                "audio/flac",
+                "audio/mpeg",
+                "audio/mp4",
+                "audio/aac",
+                "audio/ogg",
+                "audio/opus",
+                "audio/wav",
+                "audio/aiff",
+                "audio/x-wavpack",
+                "audio/x-ape",
+            ])
             .can_quit(true)
             .can_play(true)
             .can_pause(true)

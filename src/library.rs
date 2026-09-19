@@ -50,7 +50,7 @@ pub struct SourceScan {
 }
 
 /// How a scan should be carried out.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ScanOptions {
     /// Worker threads for tag and artwork reading. `0` derives a value from the
     /// machine. More is not always better: on a spinning disk or a USB stick,
@@ -63,6 +63,9 @@ pub struct ScanOptions {
     /// scan that marked absent sources unavailable would take the whole library
     /// offline because one folder changed.
     pub full: bool,
+    /// File extensions to index. Configurable so a library can be narrowed
+    /// back to one format.
+    pub extensions: Vec<String>,
 }
 
 impl Default for ScanOptions {
@@ -71,6 +74,7 @@ impl Default for ScanOptions {
             threads: 0,
             cover_cache_bytes: 64 * 1024 * 1024,
             full: true,
+            extensions: DEFAULT_EXTENSIONS.iter().map(|e| (*e).to_owned()).collect(),
         }
     }
 }
@@ -158,12 +162,12 @@ pub fn scan_to_database(
     db: &mut Database,
     paths: &AppPaths,
     roots: &[PathBuf],
-    options: ScanOptions,
+    options: &ScanOptions,
 ) -> Result<ScanReport> {
     let mut report = ScanReport::default();
     let mut ids = BTreeSet::new();
     for root in roots {
-        match scan_source_with_database(paths, root, db, options.threads) {
+        match scan_source_with_database(paths, root, db, options) {
             Ok(scan) => {
                 ids.insert(scan.id.clone());
                 report.sources += 1;
@@ -197,18 +201,18 @@ pub fn scan_to_database(
 /// invoked once per batch of claims rather than per file.
 pub type ProgressFn<'a> = &'a (dyn Fn(usize, usize) + Send + Sync);
 
-pub fn scan_source(paths: &AppPaths, root: &Path, threads: usize) -> Result<SourceScan> {
+pub fn scan_source(paths: &AppPaths, root: &Path, options: &ScanOptions) -> Result<SourceScan> {
     let database = Database::open(&paths.database_file()).ok();
-    scan_source_inner(paths, root, database.as_ref(), threads, None)
+    scan_source_inner(paths, root, database.as_ref(), options, None)
 }
 
 pub fn scan_source_with_database(
     paths: &AppPaths,
     root: &Path,
     database: &Database,
-    threads: usize,
+    options: &ScanOptions,
 ) -> Result<SourceScan> {
-    scan_source_inner(paths, root, Some(database), threads, None)
+    scan_source_inner(paths, root, Some(database), options, None)
 }
 
 /// As `scan_source_with_database`, reporting how far along it is.
@@ -219,17 +223,17 @@ pub fn scan_source_reporting(
     paths: &AppPaths,
     root: &Path,
     database: &Database,
-    threads: usize,
+    options: &ScanOptions,
     progress: ProgressFn<'_>,
 ) -> Result<SourceScan> {
-    scan_source_inner(paths, root, Some(database), threads, Some(progress))
+    scan_source_inner(paths, root, Some(database), options, Some(progress))
 }
 
 fn scan_source_inner(
     paths: &AppPaths,
     root: &Path,
     database: Option<&Database>,
-    threads: usize,
+    options: &ScanOptions,
     progress: Option<ProgressFn<'_>>,
 ) -> Result<SourceScan> {
     let _profile = crate::profiling::span("scan_source");
@@ -251,7 +255,7 @@ fn scan_source_inner(
 
     // Phase 1: walk the tree. Cheap, and it fixes the order everything else
     // reports in, so results stay identical run to run.
-    let candidates = collect_candidates(&root);
+    let candidates = collect_candidates(&root, &options.extensions);
 
     // Phase 2: read tags and artwork, in parallel when it is worth it.
     let caches = ScanCaches::default();
@@ -262,7 +266,7 @@ fn scan_source_inner(
         cached: &cached,
         caches: &caches,
     };
-    let outcomes = read_candidates(&context, &candidates, threads, progress);
+    let outcomes = read_candidates(&context, &candidates, options.threads, progress);
 
     // Phase 3: fold the outcomes back together in walk order.
     let mut scan = SourceScan {
@@ -307,21 +311,38 @@ fn scan_source_inner(
     Ok(scan)
 }
 
+/// Audio formats indexed unless the configuration narrows the list.
+///
+/// Every one of these is tagged by lofty and played by mpv, so supporting them
+/// costs nothing beyond admitting the extension.
+pub const DEFAULT_EXTENSIONS: [&str; 11] = [
+    "flac", "mp3", "m4a", "aac", "alac", "ogg", "opus", "wav", "aiff", "wv", "ape",
+];
+
 /// Whether the scanner would index this path.
 ///
 /// Shared with the filesystem watcher so the two cannot disagree about what
 /// counts as a library change.
 pub fn is_indexable(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+    has_extension(path, &DEFAULT_EXTENSIONS)
 }
 
-fn collect_candidates(root: &Path) -> Vec<(PathBuf, String)> {
+/// Whether `path` carries one of `extensions`, ignoring case.
+pub fn has_extension(path: &Path, extensions: &[impl AsRef<str>]) -> bool {
+    let Some(found) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    extensions
+        .iter()
+        .any(|allowed| allowed.as_ref().eq_ignore_ascii_case(found))
+}
+
+fn collect_candidates(root: &Path, extensions: &[String]) -> Vec<(PathBuf, String)> {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file() && is_indexable(entry.path()))
+        .filter(|entry| entry.file_type().is_file() && has_extension(entry.path(), extensions))
         .map(|entry| {
             let relative = entry
                 .path()

@@ -2,7 +2,7 @@
 
 > [Documentación en español](docs/README.es.md)
 
-muscli is a fast, local-first FLAC player with a Spotify-like terminal UI. It
+muscli is a fast, local-first music player with a Spotify-like terminal UI. It
 indexes removable drives and local folders, keeps playlists usable while a
 drive is offline, and delegates gapless audio playback to mpv, which opens the
 next track before the current one ends. It has no
@@ -58,8 +58,9 @@ muscli library analyze-gain
 muscli doctor
 ```
 
-Only `.flac` files are indexed. Tags and embedded/external artwork are read
-without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
+FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
+indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and
+embedded or external artwork are read without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
 cover cache use the platform-standard application directories. A warm start
 loads the index immediately while scans and ReplayGain analysis continue in
 the background.

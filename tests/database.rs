@@ -51,11 +51,11 @@ fn an_unplugged_source_and_its_tracks_agree_about_availability() {
 
     let mut db = Database::open(&fixture.paths().database_file()).expect("opening the database");
     let roots = vec![fixture.source()];
-    muscli::library::scan_to_database(&mut db, fixture.paths(), &roots, Default::default())
+    muscli::library::scan_to_database(&mut db, fixture.paths(), &roots, &Default::default())
         .expect("first scan");
 
     std::fs::remove_dir_all(fixture.source()).expect("unplugging the source");
-    muscli::library::scan_to_database(&mut db, fixture.paths(), &roots, Default::default())
+    muscli::library::scan_to_database(&mut db, fixture.paths(), &roots, &Default::default())
         .expect("rescan after unplug");
 
     let health = db.library_health().expect("reading library health");
