@@ -249,13 +249,7 @@ fn main() -> Result<()> {
                 let name = match (track, artist, title) {
                     (Some(id), _, _) => {
                         let db = Database::open(&paths.database_file())?;
-                        let stored_id = db
-                            .load_tracks()?
-                            .into_iter()
-                            .find(|candidate| candidate.id == id)
-                            .map(|candidate| candidate.id)
-                            .with_context(|| format!("unknown track id: {id}"))?;
-                        format!("{stored_id}.lrc")
+                        lyrics_name_for_track(&db, &id)?
                     }
                     (None, Some(artist), Some(title)) => {
                         lyrics::descriptive_name(artist.as_str(), title.as_str())
@@ -362,6 +356,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn lyrics_name_for_track(db: &Database, id: &str) -> Result<String> {
+    let stored_id = db
+        .load_tracks()?
+        .into_iter()
+        .find(|candidate| candidate.id == id)
+        .map(|candidate| candidate.id)
+        .with_context(|| format!("unknown track id: {id}"))?;
+    Ok(format!("{stored_id}.lrc"))
+}
+
 /// Pick the interface language.
 ///
 /// An unrecognised name is not an error worth refusing to start over; it falls
@@ -376,6 +380,14 @@ fn resolve_language(flag: Option<&str>, configured: &str) -> Language {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lyrics_import_rejects_an_unknown_track_id() {
+        let db = Database::open_memory().expect("opening an in-memory database");
+        let error = lyrics_name_for_track(&db, "../escape")
+            .expect_err("an unknown track id must not become a file name");
+        assert!(format!("{error:#}").contains("unknown track id"));
+    }
 
     #[test]
     fn the_flag_wins_over_the_configuration() {
