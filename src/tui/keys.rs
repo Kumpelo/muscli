@@ -507,8 +507,16 @@ fn action_name(action: Action) -> &'static str {
 /// shifted one everywhere else in this module.
 fn parse_binding(text: &str) -> Option<(KeyCode, KeyModifiers)> {
     let mut mods = KeyModifiers::NONE;
-    let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
-    let key = parts.pop()?;
+    let trimmed = text.trim();
+    let (parts, key): (Vec<&str>, &str) = if trimmed == "+" {
+        (Vec::new(), "+")
+    } else if let Some(modifiers) = trimmed.strip_suffix("++") {
+        (modifiers.split('+').map(str::trim).collect(), "+")
+    } else {
+        let mut parts: Vec<&str> = trimmed.split('+').map(str::trim).collect();
+        let key = parts.pop()?;
+        (parts, key)
+    };
     for part in parts {
         match part.to_ascii_lowercase().as_str() {
             "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
@@ -1060,6 +1068,33 @@ mod tests {
             ),
             None,
             "the old key must stop quitting"
+        );
+    }
+
+    #[test]
+    fn plus_can_be_rebound_with_or_without_modifiers() {
+        let plain = overrides_from("volume_up = [\"+\"]\n");
+        let plain_bindings = effective_bindings(&plain);
+        assert_eq!(
+            resolve_with(
+                &plain_bindings,
+                &press(KeyCode::Char('+')),
+                View::Home,
+                Focus::Content
+            ),
+            Some(Action::Remote(RemoteCommand::VolumeUp))
+        );
+
+        let control = overrides_from("volume_up = [\"ctrl++\"]\n");
+        let control_bindings = effective_bindings(&control);
+        assert_eq!(
+            resolve_with(
+                &control_bindings,
+                &with(KeyCode::Char('+'), KeyModifiers::CONTROL),
+                View::Home,
+                Focus::Content
+            ),
+            Some(Action::Remote(RemoteCommand::VolumeUp))
         );
     }
 
