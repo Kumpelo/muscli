@@ -18,6 +18,7 @@ pub mod decode;
 pub mod dsp;
 pub mod measure;
 pub mod mpv;
+pub mod native;
 
 pub use mpv::MpvPlayer;
 

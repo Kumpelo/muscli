@@ -7,7 +7,10 @@
 //! the rest of the path exact — see the round-trip test, which decodes a
 //! generated 16-bit stream and gets every sample back unchanged.
 
-use std::{fs::File, path::Path};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, anyhow};
 use symphonia::core::{
@@ -43,6 +46,8 @@ pub struct Decoder {
     /// enough to make "carry on from here" read the wrong ones.
     time_base: (u64, u64),
     block: Vec<f32>,
+    duration_ms: Option<u64>,
+    path: PathBuf,
     /// Where the last seek landed, in frames from the start of the track.
     base_frames: u64,
     frames_since_seek: u64,
@@ -74,6 +79,16 @@ impl Decoder {
         Self::from_reader(reader, path)
     }
 
+    /// The file this decoder was opened on.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// How long the track is, when the container says.
+    pub fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
     fn from_reader(reader: Box<dyn FormatReader>, path: &Path) -> Result<Self> {
         let track = reader
             .first_track_known_codec(TrackType::Audio)
@@ -90,6 +105,11 @@ impl Decoder {
             .and_then(|parameters| parameters.audio())
             .ok_or_else(|| anyhow!("{} has no codec parameters", path.display()))?
             .clone();
+
+        let duration_ms = track
+            .duration
+            .map(|duration| duration.get() as u128 * u128::from(time_base.0) * 1_000)
+            .map(|scaled| (scaled / u128::from(time_base.1)) as u64);
 
         let spec = StreamSpec {
             sample_rate: parameters
@@ -113,6 +133,8 @@ impl Decoder {
             track_id,
             spec,
             time_base,
+            duration_ms,
+            path: path.to_path_buf(),
             block: Vec::new(),
             base_frames: 0,
             frames_since_seek: 0,
