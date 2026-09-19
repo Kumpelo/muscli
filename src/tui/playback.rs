@@ -49,6 +49,33 @@ impl HistoryTally {
     }
 }
 
+/// Which queue position plays after `current`.
+///
+/// Walks forward, skipping entries whose file is missing, and wraps only when
+/// the queue repeats. Separate from `App` so the rule the prefetch depends on
+/// can be tested without a database, an mpv process or a terminal.
+fn next_playable(
+    len: usize,
+    current: usize,
+    repeat: RepeatMode,
+    playable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    for offset in 1..=len {
+        let raw = current + offset;
+        if raw >= len && repeat != RepeatMode::Queue {
+            break;
+        }
+        let index = raw % len;
+        if playable(index) {
+            return Some(index);
+        }
+    }
+    None
+}
+
 impl App {
     pub(super) fn load_current(&mut self, position_ms: u64) -> Result<()> {
         self.flush_history(false)?;
@@ -62,17 +89,10 @@ impl App {
             self.dirty = true;
             return Ok(());
         }
-        let gain = if self.config.replaygain_enabled {
-            self.db.track_gain(
-                &track.id,
-                self.config.replaygain_mode == ReplayGainMode::Album,
-            )?
-        } else {
-            None
-        };
-        let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
-        self.mpv.set_replay_gain(gain)?;
+        self.apply_replay_gain(&track)?;
         self.mpv.load(&track.path, position_ms)?;
+        // A replace wipes mpv's playlist, so whatever was queued behind is gone.
+        self.prefetched = None;
         self.mpv.pause(false)?;
         self.playback.status = PlaybackStatus::Playing;
         self.playback.position_ms = position_ms;
@@ -87,21 +107,107 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn next(&mut self) -> Result<()> {
-        if self.queue.is_empty() {
+    fn apply_replay_gain(&mut self, track: &Track) -> Result<()> {
+        let gain = if self.config.replaygain_enabled {
+            self.db.track_gain(
+                &track.id,
+                self.config.replaygain_mode == ReplayGainMode::Album,
+            )?
+        } else {
+            None
+        };
+        let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
+        self.mpv.set_replay_gain(gain)
+    }
+
+    /// The queue index `next` would move to, without moving there.
+    ///
+    /// Shuffle reorders the queue itself, so what plays next is a pure function
+    /// of the queue, the current index and the repeat mode - which is what lets
+    /// it be prefetched.
+    fn next_index(&self) -> Option<usize> {
+        next_playable(
+            self.queue.len(),
+            self.queue_index.unwrap_or(0),
+            self.repeat,
+            |index| self.queue_track_is_playable(index),
+        )
+    }
+
+    fn queue_track_path(&self, index: usize) -> Option<PathBuf> {
+        let id = self.queue.get(index)?;
+        let track_index = *self.track_index.get(id)?;
+        Some(self.tracks.get(track_index)?.path.clone())
+    }
+
+    /// Keep mpv's queued entry in step with whatever would play next.
+    ///
+    /// Driven from the event loop rather than from each mutation, because the
+    /// queue changes from a dozen places - reorder, remove, clear, enqueue,
+    /// load a saved queue, toggle shuffle or repeat - and missing one would
+    /// either lose the gapless transition or play the wrong track. Comparing
+    /// against what is already armed means no IPC when nothing moved.
+    pub(super) fn sync_prefetch(&mut self) -> Result<()> {
+        let wanted = if self.config.gapless
+            && self.repeat != RepeatMode::Track
+            && self.playback.status != PlaybackStatus::Stopped
+        {
+            self.next_index()
+        } else {
+            None
+        };
+        if wanted == self.prefetched {
             return Ok(());
         }
-        let current = self.queue_index.unwrap_or(0);
-        for offset in 1..=self.queue.len() {
-            let raw = current + offset;
-            if raw >= self.queue.len() && self.repeat != RepeatMode::Queue {
-                break;
+        match wanted.and_then(|index| self.queue_track_path(index)) {
+            Some(path) => {
+                self.mpv.set_prefetch(&path)?;
+                self.prefetched = wanted;
             }
-            let index = raw % self.queue.len();
-            if self.queue_track_is_playable(index) {
-                self.queue_index = Some(index);
-                return self.load_current(0);
+            None => {
+                self.mpv.clear_prefetch()?;
+                self.prefetched = None;
             }
+        }
+        Ok(())
+    }
+
+    /// Adopt the track mpv started on its own.
+    ///
+    /// The audio is already playing, so this only catches the application up:
+    /// reloading here would undo the very gap this avoids.
+    fn adopt_prefetched(&mut self) -> Result<()> {
+        let Some(index) = self.prefetched.take() else {
+            return Ok(());
+        };
+        self.flush_history(true)?;
+        self.queue_index = Some(index);
+        let Some(track) = self.current_track().cloned() else {
+            return Ok(());
+        };
+        // The filter is applied a few tens of milliseconds into the track,
+        // which is the accepted cost of not reloading.
+        self.apply_replay_gain(&track)?;
+        self.playback.status = PlaybackStatus::Playing;
+        self.playback.position_ms = 0;
+        self.playback.duration_ms = track.duration_ms;
+        if self.config.history_enabled {
+            let entry = self.db.start_history(&track.id)?;
+            self.tally.restart(entry, track.id.clone());
+        }
+        // Make the playing file entry 0 again, so the next one can be queued
+        // behind it and the playlist never grows.
+        self.mpv.drop_finished_entry()?;
+        self.status.clear();
+        self.dirty = true;
+        self.persist_playback()?;
+        Ok(())
+    }
+
+    pub(super) fn next(&mut self) -> Result<()> {
+        if let Some(index) = self.next_index() {
+            self.queue_index = Some(index);
+            return self.load_current(0);
         }
         self.playback.status = PlaybackStatus::Stopped;
         self.status = "No quedan pistas disponibles en la cola".into();
@@ -381,10 +487,21 @@ impl App {
             }
             PlayerEvent::Paused(false) => {}
             PlayerEvent::Volume(value) => self.playback.volume = value,
+            PlayerEvent::PlaylistPosition(position) => {
+                // Anything past the first entry means mpv rolled into the track
+                // queued behind this one.
+                if position >= 1 {
+                    self.adopt_prefetched()?;
+                }
+            }
             PlayerEvent::EndOfFile if self.repeat == RepeatMode::Track => {
                 self.flush_history(true)?;
                 self.load_current(0)?
             }
+            // mpv is already starting the queued track; the playlist-pos change
+            // does the bookkeeping. Advancing here would reload it and
+            // reintroduce the gap this exists to remove.
+            PlayerEvent::EndOfFile if self.prefetched.is_some() => {}
             PlayerEvent::EndOfFile => {
                 self.flush_history(true)?;
                 self.next()?
@@ -480,5 +597,63 @@ impl App {
         self.queue_dirty = false;
         self.last_playback_save = Instant::now();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL: fn(usize) -> bool = |_| true;
+
+    #[test]
+    fn an_empty_queue_has_no_next_track() {
+        assert_eq!(next_playable(0, 0, RepeatMode::Off, ALL), None);
+        assert_eq!(next_playable(0, 0, RepeatMode::Queue, ALL), None);
+    }
+
+    #[test]
+    fn the_next_track_is_the_one_after_the_current() {
+        assert_eq!(next_playable(5, 0, RepeatMode::Off, ALL), Some(1));
+        assert_eq!(next_playable(5, 3, RepeatMode::Off, ALL), Some(4));
+    }
+
+    #[test]
+    fn the_end_of_the_queue_only_wraps_when_it_repeats() {
+        assert_eq!(
+            next_playable(3, 2, RepeatMode::Off, ALL),
+            None,
+            "without repeat the queue simply ends"
+        );
+        assert_eq!(next_playable(3, 2, RepeatMode::Queue, ALL), Some(0));
+        // Repeating one track is handled by reloading it, not by moving on, so
+        // this rule is the same as Off here.
+        assert_eq!(next_playable(3, 2, RepeatMode::Track, ALL), None);
+    }
+
+    #[test]
+    fn missing_files_are_skipped_over() {
+        // Index 1 and 2 are gone, for instance because a drive was unplugged.
+        let playable = |index: usize| index != 1 && index != 2;
+        assert_eq!(next_playable(5, 0, RepeatMode::Off, playable), Some(3));
+    }
+
+    #[test]
+    fn a_queue_with_nothing_playable_has_no_next_track() {
+        assert_eq!(next_playable(4, 0, RepeatMode::Queue, |_| false), None);
+    }
+
+    #[test]
+    fn a_repeating_queue_comes_back_to_the_only_playable_track_last() {
+        // Every other entry is gone, so repeat-queue loops the survivor - and
+        // the prefetch queues it again, which is what makes that loop seamless.
+        // It is reached only after the others have been ruled out.
+        let playable = |index: usize| index == 2;
+        assert_eq!(next_playable(4, 2, RepeatMode::Queue, playable), Some(2));
+        assert_eq!(
+            next_playable(4, 2, RepeatMode::Off, playable),
+            None,
+            "without repeat there is nothing after it"
+        );
     }
 }

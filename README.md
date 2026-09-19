@@ -4,7 +4,8 @@
 
 muscli is a fast, local-first FLAC player with a Spotify-like terminal UI. It
 indexes removable drives and local folders, keeps playlists usable while a
-drive is offline, and delegates gapless audio playback to mpv. It has no
+drive is offline, and delegates gapless audio playback to mpv, which opens the
+next track before the current one ends. It has no
 account, streaming service, telemetry, or resident daemon.
 
 ## Platforms
