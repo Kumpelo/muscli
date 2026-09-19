@@ -584,6 +584,7 @@ impl KeyOverrides {
                 overrides.problems.push(format!("unknown action: {action}"));
                 continue;
             }
+            let explicitly_unbound = keys.is_empty();
             let mut parsed_keys = Vec::new();
             for key in keys {
                 match parse_binding(&key) {
@@ -593,7 +594,9 @@ impl KeyOverrides {
                         .push(format!("unrecognised key for {action}: {key}")),
                 }
             }
-            overrides.bindings.insert(action, parsed_keys);
+            if explicitly_unbound || !parsed_keys.is_empty() {
+                overrides.bindings.insert(action, parsed_keys);
+            }
         }
         overrides
     }
@@ -1102,8 +1105,18 @@ mod tests {
                 .iter()
                 .any(|p| p.contains("not_an_action"))
         );
-        // And the rest of the bindings still work.
+        // Invalid replacements keep that action's defaults as well as the rest
+        // of the binding table.
         let bindings = effective_bindings(&overrides);
+        assert_eq!(
+            resolve_with(
+                &bindings,
+                &press(KeyCode::Char('q')),
+                View::Home,
+                Focus::Content
+            ),
+            Some(Action::Quit)
+        );
         assert_eq!(
             resolve_with(
                 &bindings,
