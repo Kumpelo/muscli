@@ -161,8 +161,8 @@ fn a_time_window_does_not_pull_lifetime_counts_into_the_period() {
     let now = chrono::Utc::now().timestamp();
     let since = now - 7 * 86_400;
     let old = since - 86_400;
-    let conn = Connection::open(fixture.paths().database_file())
-        .expect("opening the database directly");
+    let conn =
+        Connection::open(fixture.paths().database_file()).expect("opening the database directly");
     conn.execute(
         "UPDATE history SET started_at=?1 WHERE track_id=?2",
         rusqlite::params![old, one],
