@@ -17,6 +17,7 @@ use muscli::{
     omarchy,
     paths::AppPaths,
     replaygain,
+    tui::keys,
 };
 
 fn main() -> Result<()> {
@@ -114,6 +115,16 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Some(Command::Keys) => {
+            let overrides = keys::KeyOverrides::load(&paths.keybindings_file());
+            for problem in &overrides.problems {
+                eprintln!("warning: keybindings.toml: {problem}");
+            }
+            println!("{}", t!("cli.keys_header"));
+            for (action, bound) in keys::binding_listing(&keys::effective_bindings(&overrides)) {
+                println!("{action:<24}  {bound}");
+            }
+        }
         Some(Command::Doctor) => {
             for check in doctor::run(&paths, &config)? {
                 println!(

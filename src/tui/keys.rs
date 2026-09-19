@@ -10,6 +10,8 @@
 //! album, or moves within the album grid, or focuses the sidebar, depending on
 //! where you are.
 
+use std::collections::HashMap;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Focus, View};
@@ -94,7 +96,7 @@ pub(super) enum Action {
     Setting(SettingInput),
 }
 
-pub(super) struct Binding {
+pub struct Binding {
     pub(super) code: KeyCode,
     pub(super) mods: KeyModifiers,
     pub(super) scope: Scope,
@@ -232,16 +234,6 @@ fn effective_modifiers(key: &KeyEvent) -> KeyModifiers {
         mods.remove(KeyModifiers::SHIFT);
     }
     mods
-}
-
-pub(super) fn resolve(key: &KeyEvent, view: View, focus: Focus) -> Option<Action> {
-    let mods = effective_modifiers(key);
-    BINDINGS
-        .iter()
-        .find(|binding| {
-            binding.code == key.code && binding.mods == mods && binding.scope.matches(view, focus)
-        })
-        .map(|binding| binding.action)
 }
 
 /// Where a binding appears on the help screen.
@@ -417,12 +409,12 @@ pub(super) struct HelpEntry {
 /// undocumented, and the smart-playlist editor hints listed two keys fewer than
 /// the editor implements. Deriving it means a binding cannot be added without
 /// appearing here.
-pub(super) fn help_sections() -> Vec<(&'static str, Vec<HelpEntry>)> {
+pub(super) fn help_sections(bindings: &[Binding]) -> Vec<(&'static str, Vec<HelpEntry>)> {
     Category::ORDER
         .into_iter()
         .map(|category| {
             let mut entries: Vec<HelpEntry> = Vec::new();
-            for binding in BINDINGS {
+            for binding in bindings {
                 if binding.action.category() != category {
                     continue;
                 }
@@ -451,9 +443,247 @@ pub(super) fn help_sections() -> Vec<(&'static str, Vec<HelpEntry>)> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// User configuration
+// ---------------------------------------------------------------------------
+
+/// Names an action in `keybindings.toml`.
+///
+/// Stable text rather than the enum's Debug output, so renaming a variant
+/// cannot silently invalidate everyone's configuration.
+fn action_name(action: Action) -> &'static str {
+    match action {
+        Action::Quit => "quit",
+        Action::Back => "back",
+        Action::OpenView(View::Help) => "help",
+        Action::OpenView(View::Settings) => "settings",
+        Action::OpenView(_) => "open_view",
+        Action::ToggleCompact => "compact",
+        Action::OpenSearch => "search",
+        Action::NewPlaylist => "new_playlist",
+        Action::AddSelectedToPlaylist => "add_to_playlist",
+        Action::NextGenreTab => "genre_tab",
+        Action::ToggleFocus => "toggle_focus",
+        Action::FocusSidebar => "focus_sidebar",
+        Action::FocusContent => "focus_content",
+        Action::MoveSelection(amount) if amount < 0 => "up",
+        Action::MoveSelection(_) => "down",
+        Action::AlbumStep(amount) if amount < 0 => "album_previous",
+        Action::AlbumStep(_) => "album_next",
+        Action::AlbumRow(amount) if amount < 0 => "row_previous",
+        Action::AlbumRow(_) => "row_next",
+        Action::SelectFirst => "first",
+        Action::SelectLast => "last",
+        Action::Activate => "activate",
+        Action::OpenContextMenu => "context_menu",
+        Action::QueueMove(amount) if amount < 0 => "queue_up",
+        Action::QueueMove(_) => "queue_down",
+        Action::QueueRemove => "queue_remove",
+        Action::QueueClear => "queue_clear",
+        Action::QueueSave => "queue_save",
+        Action::QueueLoad => "queue_load",
+        Action::EditSmartPlaylist => "edit_smart_playlist",
+        Action::Player(PlayerAction::Toggle) => "play_pause",
+        Action::Player(PlayerAction::Next) => "next_track",
+        Action::Player(PlayerAction::Previous) => "previous_track",
+        Action::Player(_) => "playback",
+        Action::ToggleShuffle => "shuffle",
+        Action::CycleRepeat => "repeat",
+        Action::EnqueueSelected => "enqueue",
+        Action::ToggleFavorite => "favorite",
+        Action::Remote(RemoteCommand::VolumeUp) => "volume_up",
+        Action::Remote(RemoteCommand::VolumeDown) => "volume_down",
+        Action::Remote(_) => "volume",
+        Action::Setting(SettingInput::Decrease) => "setting_decrease",
+        Action::Setting(SettingInput::Increase) => "setting_increase",
+        Action::Setting(SettingInput::Toggle) => "setting_toggle",
+    }
+}
+
+/// Parse a binding written as `ctrl+s`, `shift+j`, `space` or `Home`.
+///
+/// Case is ignored for named keys but kept for characters, because an
+/// uppercase letter is how an unshifted binding is distinguished from a
+/// shifted one everywhere else in this module.
+fn parse_binding(text: &str) -> Option<(KeyCode, KeyModifiers)> {
+    let mut mods = KeyModifiers::NONE;
+    let mut parts: Vec<&str> = text.split('+').map(str::trim).collect();
+    let key = parts.pop()?;
+    for part in parts {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
+            "alt" => mods |= KeyModifiers::ALT,
+            "shift" => mods |= KeyModifiers::SHIFT,
+            _ => return None,
+        }
+    }
+    let code = match key.to_ascii_lowercase().as_str() {
+        "space" => KeyCode::Char(' '),
+        "enter" | "return" => KeyCode::Enter,
+        "esc" | "escape" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "delete" | "del" => KeyCode::Delete,
+        "backspace" => KeyCode::Backspace,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "pageup" => KeyCode::PageUp,
+        "pagedown" => KeyCode::PageDown,
+        other if other.len() == 1 => {
+            let character = key.chars().next()?;
+            // A shift written out for a letter is folded into its case, which
+            // is what resolve() compares against.
+            if mods.contains(KeyModifiers::SHIFT) && character.is_alphabetic() {
+                mods.remove(KeyModifiers::SHIFT);
+                KeyCode::Char(character.to_ascii_uppercase())
+            } else {
+                KeyCode::Char(character)
+            }
+        }
+        function if function.starts_with('f') => KeyCode::F(function[1..].parse::<u8>().ok()?),
+        _ => return None,
+    };
+    Some((code, mods))
+}
+
+/// A user's overrides, applied on top of the built-in bindings.
+#[derive(Debug, Default)]
+pub struct KeyOverrides {
+    /// Replacement keys per action name; an action listed here loses its
+    /// defaults entirely, so a rebind does not leave the old key working.
+    bindings: HashMap<String, Vec<(KeyCode, KeyModifiers)>>,
+    /// Entries that could not be understood, reported once at start-up.
+    pub problems: Vec<String>,
+}
+
+impl KeyOverrides {
+    /// Read `keybindings.toml`, if there is one.
+    ///
+    /// A broken file is never fatal: muscli is a music player, and refusing to
+    /// start over a typo in an optional file would be the wrong trade. Problems
+    /// are collected and surfaced instead.
+    pub fn load(path: &std::path::Path) -> Self {
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        let parsed: Result<HashMap<String, Vec<String>>, _> = toml::from_str(&raw);
+        let mut overrides = Self::default();
+        let entries = match parsed {
+            Ok(entries) => entries,
+            Err(error) => {
+                overrides.problems.push(format!("{error}"));
+                return overrides;
+            }
+        };
+        let known: Vec<&str> = BINDINGS.iter().map(|b| action_name(b.action)).collect();
+        for (action, keys) in entries {
+            if !known.contains(&action.as_str()) {
+                overrides.problems.push(format!("unknown action: {action}"));
+                continue;
+            }
+            let mut parsed_keys = Vec::new();
+            for key in keys {
+                match parse_binding(&key) {
+                    Some(binding) => parsed_keys.push(binding),
+                    None => overrides
+                        .problems
+                        .push(format!("unrecognised key for {action}: {key}")),
+                }
+            }
+            overrides.bindings.insert(action, parsed_keys);
+        }
+        overrides
+    }
+
+    fn replacement(&self, action: Action) -> Option<&[(KeyCode, KeyModifiers)]> {
+        self.bindings.get(action_name(action)).map(Vec::as_slice)
+    }
+}
+
+/// The bindings in effect, defaults with any overrides applied.
+///
+/// Scope is not configurable: it is what makes `Left` mean three different
+/// things, and letting it be redefined would turn a typo into an unusable
+/// interface.
+pub fn effective_bindings(overrides: &KeyOverrides) -> Vec<Binding> {
+    BINDINGS
+        .iter()
+        .flat_map(|binding| match overrides.replacement(binding.action) {
+            Some(keys) => keys
+                .iter()
+                .map(|(code, mods)| Binding {
+                    code: *code,
+                    mods: *mods,
+                    scope: binding.scope,
+                    action: binding.action,
+                })
+                .collect::<Vec<_>>(),
+            None => vec![Binding {
+                code: binding.code,
+                mods: binding.mods,
+                scope: binding.scope,
+                action: binding.action,
+            }],
+        })
+        // An action with several default keys would otherwise get its
+        // replacement list repeated once per default.
+        .fold(Vec::new(), |mut kept, binding| {
+            if !kept.iter().any(|existing: &Binding| {
+                existing.code == binding.code
+                    && existing.mods == binding.mods
+                    && existing.scope == binding.scope
+            }) {
+                kept.push(binding);
+            }
+            kept
+        })
+}
+
+/// Resolve against a specific set of bindings.
+pub(super) fn resolve_with(
+    bindings: &[Binding],
+    key: &KeyEvent,
+    view: View,
+    focus: Focus,
+) -> Option<Action> {
+    let mods = effective_modifiers(key);
+    bindings
+        .iter()
+        .find(|binding| {
+            binding.code == key.code && binding.mods == mods && binding.scope.matches(view, focus)
+        })
+        .map(|binding| binding.action)
+}
+
+/// Every action that can be rebound, with the keys currently bound to it.
+pub fn binding_listing(bindings: &[Binding]) -> Vec<(&'static str, String)> {
+    let mut listing: Vec<(&'static str, String)> = Vec::new();
+    for binding in bindings {
+        let name = action_name(binding.action);
+        let label = key_label(binding.code, binding.mods);
+        match listing.iter_mut().find(|(existing, _)| *existing == name) {
+            Some((_, keys)) => {
+                keys.push(' ');
+                keys.push_str(&label);
+            }
+            None => listing.push((name, label)),
+        }
+    }
+    listing.sort_by_key(|(name, _)| *name);
+    listing
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The built-in bindings, as the application sees them with no overrides.
+    fn defaults() -> Vec<Binding> {
+        effective_bindings(&KeyOverrides::default())
+    }
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -466,11 +696,21 @@ mod tests {
     #[test]
     fn plain_keys_resolve_anywhere() {
         assert_eq!(
-            resolve(&press(KeyCode::Char('q')), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('q')),
+                View::Home,
+                Focus::Content
+            ),
             Some(Action::Quit)
         );
         assert_eq!(
-            resolve(&press(KeyCode::Char('n')), View::Queue, Focus::Sidebar),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('n')),
+                View::Queue,
+                Focus::Sidebar
+            ),
             Some(Action::Player(PlayerAction::Next))
         );
     }
@@ -480,7 +720,8 @@ mod tests {
         // Ctrl+j used to fall through to the bare `j` arm and move the
         // selection, because handle_key only ever matched on the key code.
         assert_eq!(
-            resolve(
+            resolve_with(
+                &defaults(),
                 &with(KeyCode::Char('j'), KeyModifiers::CONTROL),
                 View::Home,
                 Focus::Content
@@ -488,7 +729,12 @@ mod tests {
             None
         );
         assert_eq!(
-            resolve(&press(KeyCode::Char('j')), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('j')),
+                View::Home,
+                Focus::Content
+            ),
             Some(Action::MoveSelection(1))
         );
     }
@@ -496,7 +742,8 @@ mod tests {
     #[test]
     fn control_c_quits_but_plain_c_starts_a_playlist() {
         assert_eq!(
-            resolve(
+            resolve_with(
+                &defaults(),
                 &with(KeyCode::Char('c'), KeyModifiers::CONTROL),
                 View::Home,
                 Focus::Content
@@ -504,7 +751,12 @@ mod tests {
             Some(Action::Quit)
         );
         assert_eq!(
-            resolve(&press(KeyCode::Char('c')), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('c')),
+                View::Home,
+                Focus::Content
+            ),
             Some(Action::NewPlaylist)
         );
     }
@@ -514,7 +766,12 @@ mod tests {
         // Terminals disagree about reporting shift alongside an uppercase char.
         for mods in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
             assert_eq!(
-                resolve(&with(KeyCode::Char('J'), mods), View::Queue, Focus::Content),
+                resolve_with(
+                    &defaults(),
+                    &with(KeyCode::Char('J'), mods),
+                    View::Queue,
+                    Focus::Content
+                ),
                 Some(Action::QueueMove(1)),
                 "Shift handling must not depend on how the terminal reports it"
             );
@@ -524,20 +781,40 @@ mod tests {
     #[test]
     fn the_left_key_cascades_by_specificity() {
         assert_eq!(
-            resolve(&press(KeyCode::Left), View::AlbumDetail, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Left),
+                View::AlbumDetail,
+                Focus::Content
+            ),
             Some(Action::Back)
         );
         assert_eq!(
-            resolve(&press(KeyCode::Left), View::Albums, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Left),
+                View::Albums,
+                Focus::Content
+            ),
             Some(Action::AlbumStep(-1))
         );
         assert_eq!(
-            resolve(&press(KeyCode::Left), View::Albums, Focus::Sidebar),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Left),
+                View::Albums,
+                Focus::Sidebar
+            ),
             Some(Action::FocusSidebar),
             "without the content pane focused there is no grid to move in"
         );
         assert_eq!(
-            resolve(&press(KeyCode::Left), View::Tracks, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Left),
+                View::Tracks,
+                Focus::Content
+            ),
             Some(Action::FocusSidebar)
         );
     }
@@ -545,11 +822,21 @@ mod tests {
     #[test]
     fn vertical_movement_switches_between_rows_and_items() {
         assert_eq!(
-            resolve(&press(KeyCode::Down), View::Albums, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Down),
+                View::Albums,
+                Focus::Content
+            ),
             Some(Action::AlbumRow(1))
         );
         assert_eq!(
-            resolve(&press(KeyCode::Down), View::Tracks, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Down),
+                View::Tracks,
+                Focus::Content
+            ),
             Some(Action::MoveSelection(1))
         );
     }
@@ -557,28 +844,58 @@ mod tests {
     #[test]
     fn the_settings_view_claims_the_keys_it_needs() {
         assert_eq!(
-            resolve(&press(KeyCode::Char(' ')), View::Settings, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char(' ')),
+                View::Settings,
+                Focus::Content
+            ),
             Some(Action::Setting(SettingInput::Toggle))
         );
         assert_eq!(
-            resolve(&press(KeyCode::Enter), View::Settings, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Enter),
+                View::Settings,
+                Focus::Content
+            ),
             Some(Action::Setting(SettingInput::Toggle))
         );
         assert_eq!(
-            resolve(&press(KeyCode::Left), View::Settings, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Left),
+                View::Settings,
+                Focus::Content
+            ),
             Some(Action::Setting(SettingInput::Decrease))
         );
         assert_eq!(
-            resolve(&press(KeyCode::Right), View::Settings, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Right),
+                View::Settings,
+                Focus::Content
+            ),
             Some(Action::Setting(SettingInput::Increase))
         );
         // Elsewhere those keys keep their normal meaning.
         assert_eq!(
-            resolve(&press(KeyCode::Char(' ')), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char(' ')),
+                View::Home,
+                Focus::Content
+            ),
             Some(Action::Player(PlayerAction::Toggle))
         );
         assert_eq!(
-            resolve(&press(KeyCode::Enter), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Enter),
+                View::Home,
+                Focus::Content
+            ),
             Some(Action::Activate)
         );
     }
@@ -592,18 +909,31 @@ mod tests {
             (KeyCode::Delete, Action::QueueRemove),
         ] {
             assert_eq!(
-                resolve(&press(code), View::Queue, Focus::Content),
+                resolve_with(&defaults(), &press(code), View::Queue, Focus::Content),
                 Some(action)
             );
-            assert_eq!(resolve(&press(code), View::Home, Focus::Content), None);
+            assert_eq!(
+                resolve_with(&defaults(), &press(code), View::Home, Focus::Content),
+                None
+            );
         }
         // `d` is the one queue binding that shares a key with nothing else.
         assert_eq!(
-            resolve(&press(KeyCode::Char('d')), View::Queue, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('d')),
+                View::Queue,
+                Focus::Content
+            ),
             Some(Action::QueueRemove)
         );
         assert_eq!(
-            resolve(&press(KeyCode::Char('d')), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('d')),
+                View::Home,
+                Focus::Content
+            ),
             None
         );
     }
@@ -611,11 +941,21 @@ mod tests {
     #[test]
     fn tab_prefers_the_genre_tabs_over_switching_panes() {
         assert_eq!(
-            resolve(&press(KeyCode::Tab), View::GenreDetail, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Tab),
+                View::GenreDetail,
+                Focus::Content
+            ),
             Some(Action::NextGenreTab)
         );
         assert_eq!(
-            resolve(&press(KeyCode::Tab), View::Genres, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Tab),
+                View::Genres,
+                Focus::Content
+            ),
             Some(Action::ToggleFocus)
         );
     }
@@ -625,7 +965,7 @@ mod tests {
         // The anti-drift guarantee. Adding a binding without giving it a
         // category and a description fails here rather than quietly leaving the
         // help screen wrong, which is how it got out of date before.
-        let listed: usize = help_sections()
+        let listed: usize = help_sections(&defaults())
             .iter()
             .flat_map(|(_, entries)| entries)
             .map(|entry| entry.keys.split(" / ").count())
@@ -639,7 +979,7 @@ mod tests {
 
     #[test]
     fn keys_the_old_help_forgot_are_documented_now() {
-        let text: String = help_sections()
+        let text: String = help_sections(&defaults())
             .iter()
             .flat_map(|(_, entries)| entries)
             .map(|entry| entry.keys.clone())
@@ -658,7 +998,7 @@ mod tests {
 
     #[test]
     fn aliases_share_one_help_row() {
-        let sections = help_sections();
+        let sections = help_sections(&defaults());
         // Matched on the translation key rather than the rendered text, so the
         // test says nothing about which language is active.
         let row = sections
@@ -669,14 +1009,152 @@ mod tests {
         assert_eq!(row.keys, "↓ / j", "arrow and vim keys belong on one row");
     }
 
+    fn overrides_from(toml: &str) -> KeyOverrides {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("keybindings.toml");
+        std::fs::write(&path, toml).expect("writing the overrides");
+        KeyOverrides::load(&path)
+    }
+
+    #[test]
+    fn without_a_file_the_defaults_stand() {
+        let bindings = effective_bindings(&KeyOverrides::default());
+        assert_eq!(bindings.len(), BINDINGS.len());
+        assert_eq!(
+            resolve_with(
+                &bindings,
+                &press(KeyCode::Char('q')),
+                View::Home,
+                Focus::Content
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn rebinding_replaces_the_default_rather_than_adding_to_it() {
+        // A rebind that left the old key working would be a trap: the user
+        // thinks they freed the key and it still does the old thing.
+        let overrides = overrides_from("quit = [\"ctrl+q\"]\n");
+        assert!(overrides.problems.is_empty(), "{:?}", overrides.problems);
+        let bindings = effective_bindings(&overrides);
+
+        assert_eq!(
+            resolve_with(
+                &bindings,
+                &with(KeyCode::Char('q'), KeyModifiers::CONTROL),
+                View::Home,
+                Focus::Content
+            ),
+            Some(Action::Quit)
+        );
+        assert_eq!(
+            resolve_with(
+                &bindings,
+                &press(KeyCode::Char('q')),
+                View::Home,
+                Focus::Content
+            ),
+            None,
+            "the old key must stop quitting"
+        );
+    }
+
+    #[test]
+    fn several_keys_can_drive_one_action() {
+        let overrides = overrides_from("play_pause = [\"space\", \"p\"]\n");
+        let bindings = effective_bindings(&overrides);
+        for code in [KeyCode::Char(' '), KeyCode::Char('p')] {
+            assert_eq!(
+                resolve_with(&bindings, &press(code), View::Home, Focus::Content),
+                Some(Action::Player(PlayerAction::Toggle))
+            );
+        }
+    }
+
+    #[test]
+    fn a_shifted_letter_is_written_either_way() {
+        for written in ["shift+j", "J"] {
+            let overrides = overrides_from(&format!("queue_up = [\"{written}\"]\n"));
+            let bindings = effective_bindings(&overrides);
+            assert_eq!(
+                resolve_with(
+                    &bindings,
+                    &press(KeyCode::Char('J')),
+                    View::Queue,
+                    Focus::Content
+                ),
+                Some(Action::QueueMove(1)),
+                "{written}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_broken_file_is_reported_rather_than_fatal() {
+        // Refusing to start a music player over a typo in an optional file
+        // would be the wrong trade.
+        let overrides = overrides_from("quit = [\"ctrl+\"]\nnot_an_action = [\"z\"]\n");
+        assert_eq!(overrides.problems.len(), 2, "{:?}", overrides.problems);
+        assert!(
+            overrides
+                .problems
+                .iter()
+                .any(|p| p.contains("not_an_action"))
+        );
+        // And the rest of the bindings still work.
+        let bindings = effective_bindings(&overrides);
+        assert_eq!(
+            resolve_with(
+                &bindings,
+                &press(KeyCode::Char('n')),
+                View::Home,
+                Focus::Content
+            ),
+            Some(Action::Player(PlayerAction::Next))
+        );
+    }
+
+    #[test]
+    fn malformed_toml_does_not_lose_the_defaults() {
+        let overrides = overrides_from("this is not toml");
+        assert_eq!(overrides.problems.len(), 1);
+        assert_eq!(effective_bindings(&overrides).len(), BINDINGS.len());
+    }
+
+    #[test]
+    fn every_bindable_action_has_a_stable_name() {
+        // Names go in a user's configuration file, so two actions sharing one
+        // would make a binding ambiguous.
+        let mut seen: Vec<(&str, Action)> = Vec::new();
+        for binding in BINDINGS {
+            let name = action_name(binding.action);
+            if let Some((_, other)) = seen.iter().find(|(existing, _)| *existing == name) {
+                assert_eq!(*other, binding.action, "{name} names two different actions");
+            } else {
+                seen.push((name, binding.action));
+            }
+        }
+    }
+
     #[test]
     fn unbound_keys_resolve_to_nothing() {
         assert_eq!(
-            resolve(&press(KeyCode::F(5)), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::F(5)),
+                View::Home,
+                Focus::Content
+            ),
             None
         );
         assert_eq!(
-            resolve(&press(KeyCode::Char('Z')), View::Home, Focus::Content),
+            resolve_with(
+                &defaults(),
+                &press(KeyCode::Char('Z')),
+                View::Home,
+                Focus::Content
+            ),
             None
         );
     }

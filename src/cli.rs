@@ -33,6 +33,8 @@ pub enum Command {
         #[command(subcommand)]
         command: SetupCommand,
     },
+    /// List the key bindings in effect
+    Keys,
     /// Control the running muscli instance
     Remote {
         #[command(subcommand)]
