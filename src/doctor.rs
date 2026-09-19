@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::{
-    config::{Config, all_sources},
+    audio::native::device::CpalOutput,
+    config::{AudioBackendChoice, Config, all_sources},
     db::Database,
     discord::MUSCLI_DISCORD_APPLICATION_ID,
     paths::AppPaths,
@@ -18,6 +19,49 @@ pub struct Check {
     pub ok: bool,
     pub name: &'static str,
     pub detail: String,
+}
+
+/// What will actually make the sound, and whether it can.
+///
+/// The native path needs a device it can open; if it cannot, muscli falls
+/// back to mpv at startup with a note in the status bar, and this is where a
+/// listener can find out why before it happens.
+fn audio_backend(config: &Config) -> Check {
+    if config.audio_backend == AudioBackendChoice::Mpv {
+        return Check {
+            ok: true,
+            name: "audio backend",
+            detail: "mpv".into(),
+        };
+    }
+
+    let wanted = config.audio_device.trim();
+    match CpalOutput::devices() {
+        Ok(devices) if devices.is_empty() => Check {
+            ok: false,
+            name: "audio backend",
+            detail: "native, but no output device was found".into(),
+        },
+        Ok(devices) if !wanted.is_empty() && !devices.iter().any(|name| name == wanted) => Check {
+            ok: false,
+            name: "audio backend",
+            detail: format!("native, but there is no device called {wanted}"),
+        },
+        Ok(_) => Check {
+            ok: true,
+            name: "audio backend",
+            detail: if wanted.is_empty() {
+                "native, on the default device".into()
+            } else {
+                format!("native, on {wanted}")
+            },
+        },
+        Err(error) => Check {
+            ok: false,
+            name: "audio backend",
+            detail: format!("native, but the devices could not be listed: {error}"),
+        },
+    }
 }
 
 pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
@@ -41,6 +85,7 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
         name: "database",
         detail: paths.database_file().display().to_string(),
     });
+    checks.push(audio_backend(config));
     let discord_socket = find_discord_ipc();
     checks.push(Check {
         ok: !config.discord_enabled || discord_socket.is_some(),
