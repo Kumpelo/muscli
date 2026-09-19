@@ -4,6 +4,7 @@ All notable user-visible changes are documented here.
 
 ## Unreleased
 
+- Discord Rich Presence now uses MusCLI's built-in Discord application ID; users no longer need to create or configure their own Discord application.
 - Added a selectable colour theme on Linux and Windows alike: `light` (the new
   default, on a white background), `dark`, `high-contrast`, `nord`, `gruvbox`,
   `solarized-light`, and `system` to follow the Omarchy palette on Linux. It is
