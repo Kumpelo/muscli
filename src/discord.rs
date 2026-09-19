@@ -28,18 +28,20 @@ enum Command {
     Shutdown,
 }
 
+pub const MUSCLI_DISCORD_APPLICATION_ID: &str = "1550289541544546394";
+
 pub struct DiscordPresence {
     tx: Sender<Command>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl DiscordPresence {
-    pub fn start(application_id: String, large_image: String) -> Self {
+    pub fn start(large_image: String) -> Self {
         let (tx, rx) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("muscli-discord".into())
             .spawn(move || {
-                let mut client = DiscordIpcClient::new(application_id);
+                let mut client = DiscordIpcClient::new(MUSCLI_DISCORD_APPLICATION_ID.to_owned());
                 let mut connected = false;
                 while let Ok(command) = rx.recv() {
                     match command {

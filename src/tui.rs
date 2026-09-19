@@ -387,9 +387,7 @@ async fn run_inner(
     let (gain_tx, gain_rx) = tokio_mpsc::unbounded_channel();
     start_watchers(&config, watch_tx);
     let discord = if config.discord_enabled {
-        config.discord_application_id.clone().map(|application_id| {
-            DiscordPresence::start(application_id, config.discord_large_image.clone())
-        })
+        Some(DiscordPresence::start(config.discord_large_image.clone()))
     } else {
         None
     };

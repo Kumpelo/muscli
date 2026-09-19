@@ -309,21 +309,11 @@ impl App {
                 };
             }
             SettingId::Discord => {
-                if self.config.discord_application_id.is_none() {
-                    self.status = t!("status.discord_setup").into();
-                    return Ok(());
-                }
                 self.config.discord_enabled = !self.config.discord_enabled;
                 self.discord = if self.config.discord_enabled {
-                    self.config
-                        .discord_application_id
-                        .clone()
-                        .map(|application_id| {
-                            DiscordPresence::start(
-                                application_id,
-                                self.config.discord_large_image.clone(),
-                            )
-                        })
+                    Some(DiscordPresence::start(
+                        self.config.discord_large_image.clone(),
+                    ))
                 } else {
                     None
                 };
