@@ -21,6 +21,7 @@ use crate::{
         native::player::NativePlayer,
     },
     model::PlayerEvent,
+    t,
 };
 
 pub struct HybridPlayer {
@@ -81,9 +82,9 @@ impl HybridPlayer {
         Ok(self.mpv.as_mut().expect("just started"))
     }
 
-    /// Move to the backend that can play `path`, carrying the settings over.
-    fn choose(&mut self, path: &Path) -> Result<()> {
-        let wants_mpv = !Self::native_can_play(path);
+    /// Move to the backend that will play the next file, carrying the
+    /// settings over.
+    fn choose(&mut self, wants_mpv: bool) -> Result<()> {
         if wants_mpv == self.on_mpv {
             return Ok(());
         }
@@ -100,9 +101,9 @@ impl HybridPlayer {
         }
         self.on_mpv = wants_mpv;
         if wants_mpv && self.bit_perfect {
-            let _ = self.events.send(PlayerEvent::Notice(
-                "bit-perfect is off for this track: only mpv can read it".to_string(),
-            ));
+            let _ = self
+                .events
+                .send(PlayerEvent::Notice(t!("status.bit_perfect_mpv").into()));
         }
 
         let volume = self.volume;
@@ -144,12 +145,15 @@ impl AudioBackend for HybridPlayer {
     }
 
     fn load(&mut self, path: &Path, position_ms: u64) -> Result<()> {
-        if !Self::native_can_play(path) {
+        // Asked once. Opening the file to find out costs about a millisecond,
+        // and there is no reason to spend it twice on the same track.
+        let wants_mpv = !Self::native_can_play(path);
+        if wants_mpv {
             // Starting mpv can fail on a machine that does not have it, and
             // the message for that has to arrive before the load does.
             self.mpv()?;
         }
-        self.choose(path)?;
+        self.choose(wants_mpv)?;
         self.active().load(path, position_ms)
     }
 

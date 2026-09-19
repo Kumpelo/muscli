@@ -145,8 +145,11 @@ impl CpalOutput {
                         *out = T::from_sample(*sample);
                     }
                 },
+                // A notice, not an error: the application answers an error by
+                // skipping the track, and a device that hiccups has not said
+                // anything about the file being played.
                 move |error| {
-                    let _ = complaints.send(PlayerEvent::Error(error.to_string()));
+                    let _ = complaints.send(PlayerEvent::Notice(error.to_string()));
                 },
                 None,
             )
@@ -166,7 +169,7 @@ impl CpalOutput {
                 config,
                 move |buffer: &mut [f32], _| fill(buffer, &mut frames, &state, channels),
                 move |error| {
-                    let _ = complaints.send(PlayerEvent::Error(error.to_string()));
+                    let _ = complaints.send(PlayerEvent::Notice(error.to_string()));
                 },
                 None,
             )

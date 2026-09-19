@@ -473,3 +473,161 @@ fn a_queued_track_of_another_shape_is_not_forced_to_join() {
     assert_eq!(handovers, 0, "a file at another rate was joined anyway");
     assert_eq!(ends, 1, "the end of the first track was not announced");
 }
+
+#[test]
+fn the_device_is_not_started_before_there_is_anything_to_play() {
+    // The device begins asking for samples the moment it is opened. If the
+    // ring is still empty then, the first thing every track produces is a
+    // dropout -- on every play, and again on every seek.
+    let mut harness = harness(500, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // No step: this is the device asking first, which is what really happens.
+    let first = harness.capture.pull(BLOCK);
+    assert_eq!(
+        harness.engine.starved_frames(),
+        0,
+        "the device was left with nothing to play"
+    );
+    assert!(
+        first.iter().any(|sample| *sample != 0.0),
+        "the track began with silence"
+    );
+}
+
+#[test]
+fn a_track_queued_late_still_joins() {
+    // The buffer holds half a second, so a short track is decoded to its end
+    // long before it is played. Latching "finished" at that moment would lose
+    // the join to whatever the application queued a moment later.
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 150)),
+    )
+    .expect("write the first fixture");
+    fs::write(
+        &second,
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 150)),
+    )
+    .expect("write the second fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(AtomicU64::new(0));
+    let mut engine = Engine::new(Box::new(output), Settings::default(), sender, position);
+
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    // By now the whole of the first track is decoded and waiting.
+    engine.step();
+    engine.handle(Command::Prefetch(Some(second.clone())));
+
+    let expected: Vec<f32> = decoded(&first)
+        .into_iter()
+        .chain(decoded(&second))
+        .collect();
+    let mut captured = Vec::new();
+    while captured.len() < expected.len() {
+        engine.step();
+        captured.extend(capture.pull(BLOCK));
+    }
+
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = expected.len() - latency;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+
+    let mut ends = 0;
+    while let Ok(event) = events.try_recv() {
+        if matches!(event, PlayerEvent::EndOfFile) {
+            ends += 1;
+        }
+    }
+    assert_eq!(ends, 0, "the first track ended instead of joining");
+}
+
+#[test]
+fn running_dry_in_the_middle_of_a_track_is_reported() {
+    // A dropout is audible, and a listener who hears one deserves to be told
+    // why rather than left wondering whether the file is damaged.
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // Drain far past what the buffer holds without letting the engine refill.
+    for _ in 0..40 {
+        harness.capture.pull(BLOCK);
+    }
+    harness.engine.step();
+
+    let mut notices = Vec::new();
+    while let Ok(event) = harness.events.try_recv() {
+        if let PlayerEvent::Notice(message) = event {
+            notices.push(message);
+        }
+    }
+    assert_eq!(notices.len(), 1, "expected one complaint, got {notices:?}");
+    assert!(harness.engine.starved_frames() > 0);
+}
+
+#[test]
+fn running_dry_after_the_last_note_is_not_reported() {
+    // The ring empties at the end of every track while the application loads
+    // the next one. Calling that a fault would cry wolf once per track.
+    let mut harness = harness(100, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    for _ in 0..60 {
+        harness.engine.step();
+        harness.capture.pull(BLOCK);
+    }
+
+    let notices: Vec<String> = std::iter::from_fn(|| harness.events.try_recv().ok())
+        .filter_map(|event| match event {
+            PlayerEvent::Notice(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices.is_empty(),
+        "the end of a track complained: {notices:?}"
+    );
+}
+
+#[test]
+fn an_idle_engine_asks_to_be_left_alone() {
+    let mut harness = harness(500, &[RATE]);
+    assert_eq!(
+        harness.engine.idle_timeout(),
+        None,
+        "an engine with nothing to play still wanted waking"
+    );
+
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    assert!(harness.engine.idle_timeout().is_some());
+
+    harness.engine.handle(Command::Pause(true));
+    let resting = harness.engine.idle_timeout().expect("still has a stream");
+    assert!(
+        resting >= std::time::Duration::from_millis(50),
+        "a paused engine still wanted waking every {resting:?}"
+    );
+}

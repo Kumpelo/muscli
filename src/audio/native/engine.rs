@@ -16,6 +16,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
@@ -29,6 +30,7 @@ use crate::{
         native::sink::{Output, SinkState, choose_channels, choose_rate},
     },
     model::PlayerEvent,
+    t,
 };
 
 /// How much audio the ring holds.
@@ -40,6 +42,18 @@ const BUFFER_MS: u64 = 500;
 
 /// Silence fed to a converter at the end of a track to walk its filter out.
 const TAIL_FRAMES: usize = 2_048;
+
+/// How often the engine looks at the ring while audio is playing.
+const BUSY: Duration = Duration::from_millis(5);
+
+/// The same while paused. The device is not consuming, so the ring stays as
+/// it is and there is nothing to wake up for except a command.
+const RESTING: Duration = Duration::from_millis(100);
+
+/// How often a device that keeps running short is allowed to say so. One that
+/// is struggling struggles continuously, and a message per dropout would bury
+/// everything else in the status bar.
+const STARVE_NOTICE_EVERY: Duration = Duration::from_secs(5);
 
 /// What the application asks the engine to do.
 #[derive(Debug)]
@@ -88,8 +102,14 @@ struct Stream {
     pushed: u64,
     /// Output frames at which a following track begins, in order.
     handovers: VecDeque<u64>,
-    /// Set once the last file has been read to the end.
-    source_done: bool,
+    /// Set when the decoder has no more to give. Not final: a track queued
+    /// after this point can still join, because nothing has been announced
+    /// and the audio would still be continuous.
+    exhausted: bool,
+    /// Whether a converter still has a tail to walk out. Deferred until the
+    /// end is certain, because that tail is silence and silence in the middle
+    /// of a join is the gap this is all here to avoid.
+    needs_flush: bool,
     /// Output frame the audio runs out at, once everything has been staged.
     ends_at: Option<u64>,
     announced_end: bool,
@@ -126,6 +146,9 @@ pub struct Engine {
     /// costs no file opening at the moment it has to be seamless.
     prefetch: Option<Decoder>,
     paused: bool,
+    /// Frames already announced as missed, so a shortfall is reported once.
+    reported_starved: u64,
+    last_starve_notice: Option<Instant>,
 }
 
 impl Engine {
@@ -143,12 +166,27 @@ impl Engine {
             stream: None,
             prefetch: None,
             paused: false,
+            reported_starved: 0,
+            last_starve_notice: None,
         }
     }
 
     /// The device this engine is playing to.
     pub fn output_name(&self) -> String {
         self.output.name()
+    }
+
+    /// How long the thread may wait before looking at the ring again.
+    ///
+    /// `None` means there is nothing to top up at all, so it can block until
+    /// a command arrives rather than waking two hundred times a second to
+    /// find the same nothing.
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        match (&self.stream, self.paused) {
+            (None, _) => None,
+            (Some(_), true) => Some(RESTING),
+            (Some(_), false) => Some(BUSY),
+        }
     }
 
     /// Frames the device asked for and did not get, since the stream started.
@@ -262,9 +300,10 @@ impl Engine {
         let untouched = !self.settings.bit_perfect
             || (sample_rate == spec.sample_rate && channels == source_channels);
         if !untouched {
-            let _ = self.events.send(PlayerEvent::Notice(format!(
-                "bit-perfect is off for this track: the output will not take {} Hz in {} channels",
-                spec.sample_rate, source_channels
+            let _ = self.events.send(PlayerEvent::Notice(t!(
+                "status.bit_perfect_rate",
+                rate = spec.sample_rate,
+                channels = source_channels
             )));
         }
 
@@ -285,32 +324,42 @@ impl Engine {
         chain.set_bit_perfect(self.settings.bit_perfect && untouched);
         chain.settle();
 
-        self.output
-            .start(sample_rate, channels, consumer, Arc::clone(&state))?;
-        self.output.set_paused(self.paused)?;
-
         if let Some(duration) = decoder.duration_ms() {
             let _ = self.events.send(PlayerEvent::Duration(duration));
         }
         self.position_ms.store(position_ms, Ordering::Relaxed);
 
+        self.reported_starved = 0;
         self.stream = Some(Stream {
             decoder,
             chain,
             resampler,
             duplicate,
             producer,
-            state,
+            state: Arc::clone(&state),
             channels,
             sample_rate,
             staging: Vec::new(),
             marks: VecDeque::new(),
             handovers: VecDeque::new(),
             pushed: 0,
-            source_done: false,
+            exhausted: false,
+            needs_flush: false,
             ends_at: None,
             announced_end: false,
         });
+
+        // Decode into the ring before the device is told about it. A device
+        // starts asking for samples the instant it is opened, and a ring that
+        // is still empty then makes the first thing every track produces a
+        // dropout -- on every play, and again on every seek.
+        self.fill();
+
+        if let Err(error) = self.output.start(sample_rate, channels, consumer, state) {
+            self.stream = None;
+            return Err(error);
+        }
+        self.output.set_paused(self.paused)?;
         Ok(())
     }
 
@@ -362,7 +411,50 @@ impl Engine {
                 }
             }
 
-            if stream.source_done {
+            if stream.exhausted {
+                // A track queued late can still join. Nothing has been
+                // announced, so appending it keeps the audio continuous
+                // however long the application took to arm it.
+                if !stream.announced_end
+                    && let Some(next) = self
+                        .prefetch
+                        .take_if(|next| next.spec() == stream.decoder.spec())
+                {
+                    if let Some(duration) = next.duration_ms() {
+                        let _ = self.events.send(PlayerEvent::Duration(duration));
+                    }
+                    stream.decoder = next;
+                    stream.exhausted = false;
+                    stream.needs_flush = false;
+                    stream.ends_at = None;
+                    // Plus the chain's own delay: the samples staged from
+                    // here on are the next track's, but what the device is
+                    // playing at that frame is still the limiter's hold of
+                    // the last one.
+                    stream.handovers.push_back(
+                        stream.pushed
+                            + stream.staging.len() as u64 / u64::from(stream.channels)
+                            + stream.chain.latency_frames() as u64,
+                    );
+                    worked = true;
+                    continue;
+                }
+
+                if stream.needs_flush {
+                    stream.needs_flush = false;
+                    let source_ms = stream.decoder.position_ms();
+                    if let Some(resampler) = &mut stream.resampler {
+                        let channels =
+                            usize::from(stream.channels) / if stream.duplicate { 2 } else { 1 };
+                        let tail = vec![0.0; TAIL_FRAMES * channels];
+                        let mut flushed = Vec::new();
+                        if resampler.process(&tail, &mut flushed).is_ok() {
+                            stream.stage(flushed, source_ms);
+                        }
+                    }
+                    continue;
+                }
+
                 if stream.ends_at.is_none() {
                     stream.ends_at = Some(stream.pushed);
                 }
@@ -379,49 +471,13 @@ impl Engine {
             let mut block = match stream.decoder.next_block() {
                 Ok(Some(block)) => block.to_vec(),
                 Ok(None) => {
-                    // A following track can join this stream only if it is
-                    // the same shape: the device is already open at this
-                    // rate, and the converter, if there is one, is halfway
-                    // through a filter that only means anything for this
-                    // rate. Anything else has to start a new stream, which
-                    // is a gap, and there is no way around that.
-                    if let Some(next) = self
-                        .prefetch
-                        .take_if(|next| next.spec() == stream.decoder.spec())
-                    {
-                        if let Some(duration) = next.duration_ms() {
-                            let _ = self.events.send(PlayerEvent::Duration(duration));
-                        }
-                        stream.decoder = next;
-                        // Plus the chain's own delay: the samples staged from
-                        // here on are the next track's, but what the device
-                        // is playing at that frame is still the limiter's
-                        // hold of the last one.
-                        stream.handovers.push_back(
-                            stream.pushed
-                                + stream.staging.len() as u64 / u64::from(stream.channels)
-                                + stream.chain.latency_frames() as u64,
-                        );
-                        continue;
-                    }
-                    stream.source_done = true;
-                    // A converter holds most of its filter length; feeding it
-                    // silence walks the last of the music out of it, which
-                    // would otherwise simply be missing.
-                    if let Some(resampler) = &mut stream.resampler {
-                        let channels =
-                            usize::from(stream.channels) / if stream.duplicate { 2 } else { 1 };
-                        let tail = vec![0.0; TAIL_FRAMES * channels];
-                        let mut flushed = Vec::new();
-                        if resampler.process(&tail, &mut flushed).is_ok() {
-                            stream.stage(flushed, source_ms);
-                        }
-                    }
+                    stream.exhausted = true;
+                    stream.needs_flush = stream.resampler.is_some();
                     continue;
                 }
                 Err(error) => {
                     let _ = self.events.send(PlayerEvent::Error(error.to_string()));
-                    stream.source_done = true;
+                    stream.exhausted = true;
                     continue;
                 }
             };
@@ -430,7 +486,7 @@ impl Engine {
                 let mut converted = Vec::new();
                 if let Err(error) = resampler.process(&block, &mut converted) {
                     let _ = self.events.send(PlayerEvent::Error(error.to_string()));
-                    stream.source_done = true;
+                    stream.exhausted = true;
                     continue;
                 }
                 block = converted;
@@ -474,6 +530,27 @@ impl Engine {
             // The same signal mpv gives when it rolls into the next playlist
             // entry, so the application's bookkeeping is the same either way.
             let _ = self.events.send(PlayerEvent::PlaylistPosition(1));
+        }
+
+        // Running dry at the very end is not a fault: the track finished and
+        // the application has not loaded another yet. Anywhere else it means
+        // the decoder could not keep up, and the listener heard it.
+        let inside_the_track = stream.ends_at.is_none_or(|ends_at| played < ends_at);
+        let starved = stream.state.starved.load(Ordering::Relaxed);
+        if inside_the_track && starved > self.reported_starved {
+            let missed = starved - self.reported_starved;
+            let due = self
+                .last_starve_notice
+                .is_none_or(|at| at.elapsed() >= STARVE_NOTICE_EVERY);
+            if due {
+                let milliseconds = missed * 1_000 / u64::from(stream.sample_rate.max(1));
+                let _ = self.events.send(PlayerEvent::Notice(t!(
+                    "status.audio_underrun",
+                    ms = milliseconds.max(1)
+                )));
+                self.last_starve_notice = Some(Instant::now());
+            }
+            self.reported_starved = starved;
         }
 
         if let Some(ends_at) = stream.ends_at

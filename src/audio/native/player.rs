@@ -8,7 +8,6 @@ use std::{
         mpsc::{self, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
@@ -26,13 +25,6 @@ use crate::{
     },
     model::PlayerEvent,
 };
-
-/// How long the engine waits for a command before topping the ring up anyway.
-///
-/// The ring holds half a second, so this could be far longer; it is short
-/// because a command that arrives just after a wait began should not sit for
-/// the rest of it.
-const IDLE: Duration = Duration::from_millis(5);
 
 pub struct NativePlayer {
     commands: Sender<Command>,
@@ -94,7 +86,16 @@ impl NativePlayer {
                 drop(opened);
 
                 loop {
-                    match inbox.recv_timeout(IDLE) {
+                    // The engine says how long it can be left alone: a few
+                    // milliseconds while audio is draining out of the ring,
+                    // and not at all when there is nothing playing, so an
+                    // idle muscli is an idle thread rather than one waking
+                    // two hundred times a second to find the same nothing.
+                    let waited = match engine.idle_timeout() {
+                        Some(timeout) => inbox.recv_timeout(timeout),
+                        None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                    };
+                    match waited {
                         Ok(command) => {
                             engine.handle(command);
                             while let Ok(next) = inbox.try_recv() {
