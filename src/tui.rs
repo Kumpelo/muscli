@@ -670,15 +670,20 @@ async fn run_inner(
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;
                 if app.covers.pending_signature != app.covers.drawn_signature {
-                    // The covers moved. A partial repaint would leave the old
-                    // and the new mixed together, so clear and redraw.
                     app.covers.drawn_signature = app.covers.pending_signature;
-                    // Terminal::clear queries the cursor first and can stall
-                    // for two seconds on Kitty in some sessions. Resizing the
-                    // current viewport clears both buffers without that query.
-                    let area = terminal.size()?;
-                    terminal.resize(area.into())?;
-                    terminal.draw(|frame| draw(frame, &mut app))?;
+                    // Kitty's unicode-placeholder placements disappear with
+                    // their cells, and halfblocks are ordinary terminal cells.
+                    // Forcing a terminal resize for either protocol causes a
+                    // visible flash while scrolling the album grid. Sixel and
+                    // iTerm2 graphics still need the stronger full repaint.
+                    if cover_layout_requires_full_repaint(app.covers.picker.protocol_type()) {
+                        // Terminal::clear queries the cursor first and can
+                        // stall on some terminals. Resizing the current
+                        // viewport clears both buffers without that query.
+                        let area = terminal.size()?;
+                        terminal.resize(area.into())?;
+                        terminal.draw(|frame| draw(frame, &mut app))?;
+                    }
                 }
                 app.sync_mpris().await;
                 app.sync_discord();
@@ -1294,6 +1299,15 @@ impl App {
     }
 }
 
+fn cover_layout_requires_full_repaint(
+    protocol: ratatui_image::picker::ProtocolType,
+) -> bool {
+    matches!(
+        protocol,
+        ratatui_image::picker::ProtocolType::Sixel | ratatui_image::picker::ProtocolType::Iterm2
+    )
+}
+
 fn resize_terminal_for_mode(compact: bool) -> Result<()> {
     // This, not the Hyprland rule, is what decides the real window size:
     // asking for N cells makes the terminal resize. On a 1920x1080 screen with
@@ -1364,6 +1378,16 @@ mod tests {
         assert_eq!(track_viewport(100, 99, 10), 91..100);
         assert_eq!(track_viewport(3, 2, 10), 0..3);
         assert_eq!(track_viewport(3, 2, 1), 0..0);
+    }
+
+    #[test]
+    fn cover_layout_repaint_skips_cell_based_protocols() {
+        use ratatui_image::picker::ProtocolType;
+
+        assert!(!cover_layout_requires_full_repaint(ProtocolType::Kitty));
+        assert!(!cover_layout_requires_full_repaint(ProtocolType::Halfblocks));
+        assert!(cover_layout_requires_full_repaint(ProtocolType::Sixel));
+        assert!(cover_layout_requires_full_repaint(ProtocolType::Iterm2));
     }
 
     #[test]
