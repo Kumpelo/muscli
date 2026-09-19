@@ -758,3 +758,44 @@ fn the_extension_list_can_be_narrowed() {
     assert_eq!(report.tracks, 1);
     assert_eq!(titles(&db), ["Keep"]);
 }
+
+#[test]
+fn lyrics_beside_the_audio_are_never_absorbed_by_the_scan() {
+    // Lyrics are imported on purpose, into their own directory. An .lrc file
+    // sitting next to a track belongs to whoever put it there, and pulling it
+    // in silently would make the library depend on material muscli never
+    // indexed.
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("song.flac"), &TrackSpec::new("Song"));
+    fs::write(
+        fixture.source().join("song.lrc"),
+        "[00:01.00]a line beside the audio\n",
+    )
+    .expect("writing the stray lyrics file");
+
+    let mut db = open_db(&fixture);
+    let report = scan(&fixture, &mut db);
+
+    assert_eq!(report.tracks, 1);
+    assert_eq!(report.skipped, 0, "the .lrc is ignored, not skipped");
+    assert!(
+        !fixture.paths().lyrics_dir().join("song.lrc").exists(),
+        "nothing may be copied into the lyrics directory by a scan"
+    );
+
+    let track = &db.load_tracks().expect("loading tracks")[0];
+    assert!(
+        muscli::lyrics::load(fixture.paths(), track).is_none(),
+        "a file the user did not import must not be found"
+    );
+
+    // Importing it explicitly is what makes it available.
+    muscli::lyrics::import(
+        fixture.paths(),
+        &fixture.source().join("song.lrc"),
+        &format!("{}.lrc", track.id),
+    )
+    .expect("importing the lyrics");
+    let lyrics = muscli::lyrics::load(fixture.paths(), track).expect("the imported lyrics");
+    assert_eq!(lyrics.lines.len(), 1);
+}

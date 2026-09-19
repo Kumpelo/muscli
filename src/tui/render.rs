@@ -258,6 +258,7 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         View::SmartPlaylists => draw_smart_playlists(frame, inner, app),
         View::Settings => draw_settings(frame, inner, app),
         View::Help => draw_help(frame, inner, app),
+        View::Lyrics => draw_lyrics(frame, inner, app),
         View::AlbumDetail
         | View::Tracks
         | View::Favorites
@@ -465,6 +466,46 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         &mut state,
     );
+}
+
+fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(lyrics) = app.lyrics.as_ref().filter(|lyrics| !lyrics.is_empty()) else {
+        frame.render_widget(
+            Paragraph::new(t!("empty.lyrics"))
+                .style(Style::default().fg(app.theme.muted))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    };
+
+    let current = lyrics.line_at(app.playback.position_ms);
+    let lines: Vec<Line> = lyrics
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let style = if Some(index) == current {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.foreground)
+            };
+            Line::from(Span::styled(format!("  {}", line.text), style))
+        })
+        .collect();
+
+    // Keep the current line roughly in the middle rather than letting it run
+    // off the bottom of a long song.
+    let height = area.height as usize;
+    let anchor = current.unwrap_or(0);
+    let start = anchor
+        .saturating_sub(height / 2)
+        .min(lines.len().saturating_sub(height.max(1)));
+    let window: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    frame.render_widget(Paragraph::new(window).wrap(Wrap { trim: false }), area);
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {

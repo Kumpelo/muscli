@@ -35,6 +35,11 @@ pub enum Command {
     },
     /// List the key bindings in effect
     Keys,
+    /// Manage lyrics, which are never imported automatically
+    Lyrics {
+        #[command(subcommand)]
+        command: LyricsCommand,
+    },
     /// Control the running muscli instance
     Remote {
         #[command(subcommand)]
@@ -99,4 +104,23 @@ pub enum SetupCommand {
         #[arg(long, default_value = "peter")]
         large_image: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LyricsCommand {
+    /// Copy an .lrc file into the lyrics directory
+    Import {
+        path: PathBuf,
+        /// Attach to this track id instead of naming the file by its tags
+        #[arg(long)]
+        track: Option<String>,
+        /// Artist to name the file after, when no track id is given
+        #[arg(long)]
+        artist: Option<String>,
+        /// Title to name the file after, when no track id is given
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Show where lyrics are stored
+    Where,
 }

@@ -65,6 +65,14 @@ impl AppPaths {
         self.data_dir.join("library.db")
     }
 
+    /// Where imported lyrics live.
+    ///
+    /// Deliberately away from the music: the scanner never reads `.lrc` files
+    /// beside the audio, so nothing ends up here by accident.
+    pub fn lyrics_dir(&self) -> PathBuf {
+        self.data_dir.join("lyrics")
+    }
+
     pub fn cover_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("covers")
     }
