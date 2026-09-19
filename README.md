@@ -148,6 +148,13 @@ commands exit silently and never change the system volume.
 
 ## Development
 
+Building on Linux needs the ALSA headers, which is what the native audio
+backend links against:
+
+```bash
+omarchy pkg add alsa-lib      # Debian and Ubuntu: apt install libasound2-dev
+```
+
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
