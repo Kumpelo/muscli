@@ -333,26 +333,15 @@ fn main() -> Result<()> {
                     }
                 );
             }
-            SetupCommand::Discord {
-                application_id,
-                large_image,
-            } => {
-                if application_id.is_empty()
-                    || !application_id
-                        .chars()
-                        .all(|character| character.is_ascii_digit())
-                {
-                    anyhow::bail!("{}", t!("cli.discord_digits"));
-                }
+            SetupCommand::Discord { large_image } => {
                 config.discord_enabled = true;
-                config.discord_application_id = Some(application_id.clone());
                 config.discord_large_image = large_image.clone();
                 config.save(&paths)?;
                 println!(
                     "{}",
                     t!(
                         "cli.discord_enabled",
-                        application = application_id,
+                        application = muscli::discord::MUSCLI_DISCORD_APPLICATION_ID,
                         asset = large_image
                     )
                 );

@@ -122,10 +122,8 @@ pub enum SetupCommand {
         #[arg(long)]
         undo: bool,
     },
-    /// Configure local Discord/Vesktop Rich Presence
+    /// Enable local Discord/Vesktop Rich Presence
     Discord {
-        /// Discord Developer Portal application ID
-        application_id: String,
         /// Uploaded Rich Presence asset key used as cover fallback
         #[arg(long, default_value = "peter")]
         large_image: String,
