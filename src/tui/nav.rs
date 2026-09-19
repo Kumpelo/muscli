@@ -41,6 +41,13 @@ fn innermost<'a, T>(nav: &'a [NavFrame], pick: impl Fn(&'a NavTarget) -> Option<
     nav.iter().rev().find_map(|frame| pick(&frame.target))
 }
 
+fn first_invalid_frame(
+    nav: &[NavFrame],
+    mut alive: impl FnMut(&NavTarget) -> bool,
+) -> Option<usize> {
+    nav.iter().position(|frame| !alive(&frame.target))
+}
+
 impl App {
     /// Open `view` showing `target`, remembering how to get back.
     pub(super) fn push_nav(&mut self, target: NavTarget, view: View) {
@@ -122,20 +129,21 @@ impl App {
     /// top means a deep path collapses only as far as it has to: an album that
     /// vanished closes back to its artist, not all the way home.
     pub(super) fn prune_nav(&mut self) {
-        while let Some(frame) = self.nav.last() {
-            let alive = match &frame.target {
-                NavTarget::Album(key) => self.album_index.contains_key(key),
-                NavTarget::Artist(name) => self.artist_index.contains_key(name),
-                NavTarget::Genre(name) => self.genres.iter().any(|genre| &genre.name == name),
-                NavTarget::SmartPlaylist(id) => {
-                    self.smart_playlists.iter().any(|list| list.id == *id)
-                }
-            };
-            if alive {
-                break;
-            }
-            let Some(frame) = self.pop_nav() else { break };
+        let invalid = first_invalid_frame(&self.nav, |target| match target {
+            NavTarget::Album(key) => self.album_index.contains_key(key),
+            NavTarget::Artist(name) => self.artist_index.contains_key(name),
+            NavTarget::Genre(name) => self.genres.iter().any(|genre| &genre.name == name),
+            NavTarget::SmartPlaylist(id) => self.smart_playlists.iter().any(|list| list.id == *id),
+        });
+
+        if let Some(index) = invalid {
+            // If an ancestor vanished, every level opened from it is stale even
+            // when those descendant targets still happen to exist elsewhere.
+            let frame = self.nav[index].clone();
+            self.nav.truncate(index);
+            self.view = frame.parent;
             self.selected = frame.selection;
+            self.dirty = true;
         }
         self.refresh_artist_releases();
     }
@@ -214,6 +222,24 @@ mod tests {
         assert_eq!(nav[1].selection, 2);
         assert_eq!(nav[0].parent, View::Albums);
         assert_eq!(nav[0].selection, 7, "the outermost return index survives");
+    }
+
+    #[test]
+    fn an_invalid_ancestor_is_found_below_live_descendants() {
+        let nav = [
+            frame(View::Genres, 4, NavTarget::Genre("Jazz".into())),
+            frame(View::GenreDetail, 2, artist("Mingus")),
+            frame(View::ArtistDetail, 0, album("ah-um")),
+        ];
+
+        let invalid = first_invalid_frame(&nav, |target| {
+            !matches!(target, NavTarget::Genre(name) if name == "Jazz")
+        });
+        assert_eq!(
+            invalid,
+            Some(0),
+            "a live album must not hide a stale genre ancestor"
+        );
     }
 
     #[test]
