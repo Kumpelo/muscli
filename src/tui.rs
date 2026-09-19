@@ -366,6 +366,7 @@ async fn run_inner(
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     let saved_volume = saved.volume.clamp(0.0, 1.0);
     mpv.set_volume(saved_volume)?;
+    mpv.set_equalizer(&config.equalizer_bands())?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),

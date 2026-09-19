@@ -109,6 +109,23 @@ pub struct LibraryState {
     pub added_at: HashMap<String, i64>,
 }
 
+/// One line of a listening summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryRow {
+    pub id: String,
+    pub label: String,
+    pub count: u64,
+}
+
+/// What has been listened to over some period.
+#[derive(Debug, Clone, Default)]
+pub struct ListeningSummary {
+    pub plays: u64,
+    pub listened_ms: u64,
+    pub top_tracks: Vec<SummaryRow>,
+    pub top_artists: Vec<SummaryRow>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LibraryHealth {
     pub tracks: usize,
@@ -1055,6 +1072,66 @@ impl Database {
         Self::save_playback_tx(&tx, state, queue)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// What has actually been listened to, in a window ending now.
+    ///
+    /// Counted from `track_stats` rather than the history log, so a track
+    /// played before the log was trimmed still counts. Everything stays local;
+    /// nothing about this leaves the machine.
+    pub fn listening_summary(&self, since: Option<i64>) -> Result<ListeningSummary> {
+        let (played, total_ms): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(play_count),0), COALESCE(SUM(total_listen_ms),0)
+             FROM track_stats WHERE ?1 IS NULL OR last_played_at >= ?1",
+            [since],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.title, t.artist, s.play_count
+             FROM track_stats s JOIN tracks t ON t.id=s.track_id
+             WHERE s.play_count > 0 AND (?1 IS NULL OR s.last_played_at >= ?1)
+             ORDER BY s.play_count DESC, t.title COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_tracks = stmt
+            .query_map([since], |row| {
+                Ok(SummaryRow {
+                    id: row.get(0)?,
+                    label: format!(
+                        "{} — {}",
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(1)?
+                    ),
+                    count: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT t.artist, SUM(s.play_count) AS plays
+             FROM track_stats s JOIN tracks t ON t.id=s.track_id
+             WHERE s.play_count > 0 AND (?1 IS NULL OR s.last_played_at >= ?1)
+             GROUP BY lower(t.artist)
+             ORDER BY plays DESC, t.artist COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_artists = stmt
+            .query_map([since], |row| {
+                Ok(SummaryRow {
+                    id: String::new(),
+                    label: row.get::<_, String>(0)?,
+                    count: row.get::<_, i64>(1)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(ListeningSummary {
+            plays: played.max(0) as u64,
+            listened_ms: total_ms.max(0) as u64,
+            top_tracks,
+            top_artists,
+        })
     }
 
     pub fn load_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {

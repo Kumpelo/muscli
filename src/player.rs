@@ -210,6 +210,33 @@ impl MpvPlayer {
         Ok(())
     }
 
+    /// Apply a graphic equaliser.
+    ///
+    /// Uses the same labelled-filter mechanism as the ReplayGain filter, so the
+    /// two stack without either disturbing the other. An empty set removes the
+    /// filter rather than installing a flat one, which keeps the audio path
+    /// untouched when the equaliser is off.
+    pub fn set_equalizer(&self, bands: &[(u32, f32)]) -> Result<()> {
+        let _ = self.command(json!(["af", "remove", "@muscli_eq"]));
+        let active: Vec<String> = bands
+            .iter()
+            .filter(|(_, gain)| gain.abs() >= 0.1)
+            .map(|(frequency, gain)| {
+                // width_type=o means the width is in octaves, which is what
+                // makes a fixed set of bands sound even across the spectrum.
+                format!("equalizer=f={frequency}:width_type=o:width=1:gain={gain:.1}")
+            })
+            .collect();
+        if active.is_empty() {
+            return Ok(());
+        }
+        self.command(json!([
+            "af",
+            "add",
+            format!("@muscli_eq:lavfi=[{}]", active.join(","))
+        ]))
+    }
+
     pub fn stop(&self) -> Result<()> {
         self.position_ms.store(0, Ordering::Relaxed);
         self.command(json!(["stop"]))
