@@ -22,6 +22,16 @@ use crate::{
     model::PlayerEvent,
 };
 
+/// The rates worth asking a device about.
+///
+/// A device advertises ranges, not a list, and a range says nothing about
+/// what is actually useful. These are the rates music is distributed at,
+/// which is the only list that matters here.
+const KNOWN_RATES: [u32; 12] = [
+    8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
+    384_000,
+];
+
 /// Scratch space for formats that are not `f32`, in frames.
 ///
 /// Sized once, when the stream opens, because the callback may not allocate.
@@ -171,6 +181,25 @@ impl Output for CpalOutput {
 
     fn supports(&self, sample_rate: u32, channels: u16) -> bool {
         self.pick(sample_rate, channels).is_some()
+    }
+
+    fn rates(&self, channels: u16) -> Vec<u32> {
+        KNOWN_RATES
+            .iter()
+            .copied()
+            .filter(|rate| self.pick(*rate, channels).is_some())
+            .collect()
+    }
+
+    fn channel_counts(&self) -> Vec<u16> {
+        let mut counts: Vec<u16> = self
+            .configs
+            .iter()
+            .map(|config| config.channels())
+            .collect();
+        counts.sort_unstable();
+        counts.dedup();
+        counts
     }
 
     fn start(

@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{fsutil::atomic_replace, paths::AppPaths};
 
+/// Which player actually makes the sound.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioBackendChoice {
+    /// mpv, driven over its IPC socket. Plays everything, including the
+    /// formats the native path has no decoder for.
+    #[default]
+    Mpv,
+    /// The built-in path: decode, process and write to the device here, so
+    /// the equaliser, the gain and the conversion are this program's own
+    /// arithmetic rather than somebody else's.
+    Native,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayGainMode {
@@ -49,6 +63,17 @@ pub struct Config {
     /// Equaliser gains in decibels, one per band of `EQUALIZER_BANDS`. Empty
     /// or all zero means no equaliser at all.
     pub equalizer: Vec<f32>,
+    /// Which player makes the sound.
+    pub audio_backend: AudioBackendChoice,
+    /// Output device for the native backend, by the name `muscli devices`
+    /// prints. Empty means the system default.
+    pub audio_device: String,
+    /// Hand the decoder's samples to the device untouched.
+    ///
+    /// Nothing is applied on the way: no volume, no ReplayGain, no equaliser.
+    /// That is the whole point of it, and the interface says so rather than
+    /// leaving the controls looking as though they still work.
+    pub bit_perfect: bool,
 }
 
 /// Centre frequencies of the equaliser bands, an octave apart.
@@ -76,6 +101,9 @@ impl Default for Config {
             theme: "light".into(),
             audio_extensions: Vec::new(),
             equalizer: Vec::new(),
+            audio_backend: AudioBackendChoice::default(),
+            audio_device: String::new(),
+            bit_perfect: false,
         }
     }
 }

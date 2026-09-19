@@ -153,6 +153,20 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Some(Command::Devices) => {
+            let devices = muscli::audio::native::device::CpalOutput::devices()?;
+            if devices.is_empty() {
+                println!("{}", t!("devices.none"));
+            } else {
+                let chosen = config.audio_device.trim();
+                for name in devices {
+                    let marker = if name == chosen { "*" } else { " " };
+                    println!("{marker} {name}");
+                }
+                println!();
+                println!("{}", t!("devices.hint"));
+            }
+        }
         Some(Command::Keys) => {
             let overrides = keys::KeyOverrides::load(&paths.keybindings_file());
             for problem in &overrides.problems {

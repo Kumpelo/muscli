@@ -302,6 +302,45 @@ pub fn band_level(signal: &[f32], sample_rate: u32, low: f64, high: f64) -> f64 
     db(power.sqrt())
 }
 
+/// Amplitude in a frequency band, measured through a window.
+///
+/// [`spectrum`] needs a coherently sampled signal; anything that has been
+/// through a sample-rate converter is not one, and analysing it unwindowed
+/// spreads the tone across every bin. A four-term Blackman-Harris window
+/// confines it again, at the cost of a floor around -92 dB where its
+/// sidelobes sit.
+///
+/// The number carries the window's gain, so it is not a level. What it is for
+/// is comparing two measurements made the same way -- the same tone before
+/// and after a converter, or a tone against the alias beside it.
+pub fn windowed_amplitude(signal: &[f32], sample_rate: u32, low: f64, high: f64) -> f64 {
+    const BLACKMAN_HARRIS: [f64; 4] = [0.35875, -0.48829, 0.14128, -0.01168];
+
+    let frames = signal.len();
+    let windowed: Vec<f32> = signal
+        .iter()
+        .enumerate()
+        .map(|(n, sample)| {
+            let phase = TAU * n as f64 / frames as f64;
+            let weight: f64 = BLACKMAN_HARRIS
+                .iter()
+                .enumerate()
+                .map(|(term, coefficient)| coefficient * (term as f64 * phase).cos())
+                .sum();
+            (*sample as f64 * weight) as f32
+        })
+        .collect();
+
+    let spectrum = spectrum(&windowed, sample_rate);
+    let first = spectrum.bin_for(low).max(1);
+    let last = spectrum.bin_for(high);
+    let power: f64 = spectrum.magnitudes()[first..=last]
+        .iter()
+        .map(|magnitude| magnitude * magnitude)
+        .sum();
+    power.sqrt()
+}
+
 /// Measure what `process` does to a single frequency, in decibels.
 ///
 /// Twice `frames` samples go in and only the second half is analysed, so a

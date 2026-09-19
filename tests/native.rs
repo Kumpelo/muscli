@@ -113,22 +113,65 @@ fn what_reaches_the_device_is_what_was_in_the_file() {
 }
 
 #[test]
-fn a_device_that_cannot_play_the_file_says_so() {
-    // Better a clear refusal than the same file played eight per cent fast,
-    // which is what happens when a rate mismatch goes unnoticed.
-    let mut harness = harness(100, &[48_000]);
+fn a_device_at_another_rate_gets_the_file_converted_to_it() {
+    // The device is opened at the file's rate wherever it can be; when it
+    // cannot, the conversion happens here rather than being left to whatever
+    // sound server would otherwise do it out of sight.
+    let mut harness = harness(1_000, &[48_000]);
     harness.engine.handle(Command::Load {
         path: harness.path.clone(),
         position_ms: 0,
     });
+    assert!(errors(&mut harness.events).is_empty());
 
-    let reported = errors(&mut harness.events);
-    assert_eq!(
-        reported.len(),
-        1,
-        "expected one complaint, got {reported:?}"
+    let mut captured = Vec::new();
+    while captured.len() < 3 * 32_768 {
+        harness.engine.step();
+        captured.extend(harness.capture.pull(BLOCK));
+    }
+
+    // A 440 Hz tone is still a 440 Hz tone at the other rate. Getting this
+    // wrong is the failure that sounds like the record being played fast.
+    let window = &captured[32_768..2 * 32_768];
+    let spectrum = muscli::audio::measure::spectrum(window, 48_000);
+    let found = spectrum.frequency(spectrum.peak_bin());
+    assert!(
+        (found - 440.0).abs() < 2.0,
+        "a 440 Hz tone came out at {found:.1} Hz"
     );
-    assert!(reported[0].contains("44100"), "{}", reported[0]);
+}
+
+#[test]
+fn a_mono_file_reaches_both_channels_of_a_stereo_device() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 500)),
+    )
+    .expect("write the fixture");
+
+    let (output, capture) = CaptureOutput::with_channels(&[RATE], &[2]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(AtomicU64::new(0));
+    let mut engine = Engine::new(Box::new(output), Settings::default(), sender, position);
+
+    engine.handle(Command::Load {
+        path: path.clone(),
+        position_ms: 0,
+    });
+    assert!(errors(&mut events).is_empty());
+    engine.step();
+
+    let captured = capture.pull(BLOCK);
+    assert_eq!(captured.len(), BLOCK * 2, "the device was not given stereo");
+
+    let source = decoded(&path);
+    let latency = (RATE as usize * 2) / 1_000;
+    for (frame, pair) in captured.chunks_exact(2).enumerate().skip(latency).take(256) {
+        assert_eq!(pair[0], pair[1], "the two channels differ at frame {frame}");
+        assert_eq!(pair[0], source[frame - latency]);
+    }
 }
 
 #[test]

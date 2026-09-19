@@ -47,6 +47,8 @@ pub enum Command {
     },
     /// List the key bindings in effect
     Keys,
+    /// List the audio output devices the native backend can use
+    Devices,
     /// Import and export M3U playlists
     Playlist {
         #[command(subcommand)]

@@ -60,14 +60,40 @@ muscli doctor
 muscli playlist export NAME playlist.m3u8
 muscli playlist import playlist.m3u8
 muscli summary --days 30
+muscli devices
 ```
 
 `muscli summary` reports what you have been listening to from the local index.
 Like everything else here, it sends nothing anywhere.
 
+## Audio backends
+
+Playback goes through mpv by default. Setting `audio_backend = "native"` in
+`config.toml` uses the built-in path instead: the file is decoded to floating
+point here, processed here, and written straight to the device, with
+`muscli devices` listing what is available and `audio_device` choosing one.
+
+The native path opens the device at the file's own sample rate whenever the
+device will take it, so nothing is converted that did not need converting.
+When it will not, the conversion is done here with a 256-tap sinc filter
+rather than left to a sound server: measured against a tone, 15 kHz survives
+44.1 to 48 kHz within 0.1 dB and the conversion's own images stay below
+-80 dB.
+
+What it does, in order, is ReplayGain, then the equaliser, then the volume,
+then a look-ahead limiter that keeps an equaliser boost from clipping. With
+all of them neutral the samples that reach the device are the samples that
+were in the file, bit for bit; with all of them working the arithmetic adds
+distortion at -144.8 dB, which is below what a 24-bit recording can hold.
+`bit_perfect = true` hands the decoder's output over untouched, which means
+giving up the volume control, ReplayGain and the equaliser to do it.
+
+mpv remains the default, and the one to use for Opus, WavPack and Monkey's
+Audio, which the native decoder does not read.
+
 An eight-band equaliser is configured with `equalizer` in `config.toml`, as
 gains in decibels from low to high; all zero means the filter is not installed
-at all.
+at all. It works on both backends and is designed to sound the same on each.
 
 FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
 indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and

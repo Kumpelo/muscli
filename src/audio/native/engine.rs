@@ -25,8 +25,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     audio::{
         decode::Decoder,
-        dsp::{Chain, Settings},
-        native::sink::{Output, SinkState},
+        dsp::{Chain, Settings, resample::Resampler},
+        native::sink::{Output, SinkState, choose_channels, choose_rate},
     },
     model::PlayerEvent,
 };
@@ -37,6 +37,9 @@ use crate::{
 /// lock, the scheduler looking elsewhere -- passes unnoticed, and short enough
 /// that a seek does not have to throw much away.
 const BUFFER_MS: u64 = 500;
+
+/// Silence fed to a converter at the end of a track to walk its filter out.
+const TAIL_FRAMES: usize = 2_048;
 
 /// What the application asks the engine to do.
 #[derive(Debug)]
@@ -55,28 +58,57 @@ pub enum Command {
 
 /// Ties a frame the device has played to the place in the track it came from.
 ///
-/// One mark per block, kept until the device is past it. With a single track
-/// this is bookkeeping; it earns its keep when two tracks share a ring and the
-/// position has to jump at exactly the frame the second one begins.
+/// One mark per block, kept until the device is past it. The position is held
+/// in milliseconds of the source rather than in source frames, so that a
+/// stream being converted to another rate needs no arithmetic to undo: a
+/// second of playing is a second of the track whatever rate it came at.
 #[derive(Debug, Clone, Copy)]
 struct Mark {
     output_frame: u64,
-    source_frame: u64,
-    sample_rate: u32,
+    source_ms: u64,
 }
 
 struct Stream {
     decoder: Decoder,
     chain: Chain,
+    /// Present only when the device would not take the file's own rate.
+    resampler: Option<Resampler>,
+    /// Set when a mono file is going to a device that only does stereo.
+    duplicate: bool,
     producer: Producer<f32>,
     state: Arc<SinkState>,
     channels: u16,
     sample_rate: u32,
+    /// Processed audio waiting for room in the ring. Converting changes the
+    /// length of a block, so how much comes out cannot be known before the
+    /// work is done; holding it here is what lets the ring fill exactly.
+    staging: Vec<f32>,
     marks: VecDeque<Mark>,
     pushed: u64,
-    /// Output frame the source ran out at, once it has.
+    /// Set once the file has been read to the end.
+    source_done: bool,
+    /// Output frame the audio runs out at, once everything has been staged.
     ends_at: Option<u64>,
     announced_end: bool,
+}
+
+impl Stream {
+    /// Put processed audio in the queue for the ring, with a mark saying
+    /// where in the track it came from.
+    fn stage(&mut self, block: Vec<f32>, source_ms: u64) {
+        let mut block = block;
+        if self.duplicate {
+            block = block.iter().flat_map(|sample| [*sample, *sample]).collect();
+        }
+        self.chain.process(&mut block);
+
+        let ahead = self.staging.len() as u64 / u64::from(self.channels);
+        self.marks.push_back(Mark {
+            output_frame: self.pushed + ahead,
+            source_ms,
+        });
+        self.staging.extend_from_slice(&block);
+    }
 }
 
 pub struct Engine {
@@ -185,31 +217,35 @@ impl Engine {
 
         let mut decoder = Decoder::open(path)?;
         let spec = decoder.spec();
-        if !self.output.supports(spec.sample_rate, spec.channels) {
-            // Phase four teaches the device to follow the file, and gives the
-            // chain a resampler for when it cannot. Until then, saying so is
-            // better than quietly playing it at the wrong speed.
-            return Err(anyhow!(
-                "the output cannot play {} Hz in {} channels",
-                spec.sample_rate,
-                spec.channels
-            ));
-        }
+        let source_channels = spec.channels.max(1);
+
+        // The device follows the file wherever it can. Only when it will not
+        // is anything converted, and then the conversion happens here rather
+        // than being left to whatever sound server would otherwise do it, out
+        // of sight and with a filter chosen for latency.
+        let channels = choose_channels(source_channels, &self.output.channel_counts())
+            .ok_or_else(|| anyhow!("the output cannot play {source_channels} channels"))?;
+        let duplicate = channels == 2 && source_channels == 1;
+        let sample_rate = choose_rate(spec.sample_rate, &self.output.rates(channels))
+            .ok_or_else(|| anyhow!("the output offers no sample rate at all"))?;
+        let resampler = (sample_rate != spec.sample_rate)
+            .then(|| Resampler::new(spec.sample_rate, sample_rate, usize::from(source_channels)))
+            .transpose()?;
+
         if position_ms > 0 {
             decoder.seek_ms(position_ms)?;
         }
 
-        let channels = spec.channels.max(1);
         let capacity =
-            (u64::from(spec.sample_rate) * BUFFER_MS / 1_000) as usize * usize::from(channels);
+            (u64::from(sample_rate) * BUFFER_MS / 1_000) as usize * usize::from(channels);
         let (producer, consumer) = RingBuffer::new(capacity);
         let state = Arc::new(SinkState::default());
 
-        let mut chain = Chain::new(spec.sample_rate, usize::from(channels), &self.settings);
+        let mut chain = Chain::new(sample_rate, usize::from(channels), &self.settings);
         chain.settle();
 
         self.output
-            .start(spec.sample_rate, channels, consumer, Arc::clone(&state))?;
+            .start(sample_rate, channels, consumer, Arc::clone(&state))?;
         self.output.set_paused(self.paused)?;
 
         if let Some(duration) = decoder.duration_ms() {
@@ -220,12 +256,16 @@ impl Engine {
         self.stream = Some(Stream {
             decoder,
             chain,
+            resampler,
+            duplicate,
             producer,
             state,
             channels,
-            sample_rate: spec.sample_rate,
+            sample_rate,
+            staging: Vec::new(),
             marks: VecDeque::new(),
             pushed: 0,
+            source_done: false,
             ends_at: None,
             announced_end: false,
         });
@@ -265,51 +305,74 @@ impl Engine {
         let Some(stream) = &mut self.stream else {
             return false;
         };
-        if stream.ends_at.is_some() {
-            return false;
-        }
-
         let mut worked = false;
+
         loop {
-            // A block is only worth decoding if all of it fits: a partial push
-            // would split a block across two marks for no gain.
-            let room = stream.producer.slots();
-            if room < usize::from(stream.channels) * 1024 {
+            if !stream.staging.is_empty() {
+                let (_, left) = stream.producer.push_partial_slice(&stream.staging);
+                let taken = stream.staging.len() - left.len();
+                stream.staging.drain(..taken);
+                stream.pushed += taken as u64 / u64::from(stream.channels);
+                worked |= taken > 0;
+                if !stream.staging.is_empty() {
+                    // The ring is full. Everything left keeps its place.
+                    break;
+                }
+            }
+
+            if stream.source_done {
+                if stream.ends_at.is_none() {
+                    stream.ends_at = Some(stream.pushed);
+                }
+                break;
+            }
+            if stream.producer.slots() == 0 {
                 break;
             }
 
-            let latency = stream.chain.latency_frames() as u64;
-            let source_frame = stream.decoder.position_frames();
-            let block = match stream.decoder.next_block() {
-                Ok(Some(block)) => block,
+            let latency_ms =
+                stream.chain.latency_frames() as u64 * 1_000 / u64::from(stream.sample_rate.max(1));
+            let source_ms = stream.decoder.position_ms().saturating_sub(latency_ms);
+
+            let mut block = match stream.decoder.next_block() {
+                Ok(Some(block)) => block.to_vec(),
                 Ok(None) => {
-                    stream.ends_at = Some(stream.pushed);
-                    break;
+                    stream.source_done = true;
+                    // A converter holds most of its filter length; feeding it
+                    // silence walks the last of the music out of it, which
+                    // would otherwise simply be missing.
+                    if let Some(resampler) = &mut stream.resampler {
+                        let channels =
+                            usize::from(stream.channels) / if stream.duplicate { 2 } else { 1 };
+                        let tail = vec![0.0; TAIL_FRAMES * channels];
+                        let mut flushed = Vec::new();
+                        if resampler.process(&tail, &mut flushed).is_ok() {
+                            stream.stage(flushed, source_ms);
+                        }
+                    }
+                    continue;
                 }
                 Err(error) => {
                     let _ = self.events.send(PlayerEvent::Error(error.to_string()));
-                    stream.ends_at = Some(stream.pushed);
-                    break;
+                    stream.source_done = true;
+                    continue;
                 }
             };
-            if block.len() > room {
-                // A block larger than the ring's free space: wait for the
-                // device to drain rather than tear it in half. The decoder
-                // keeps it, so nothing is lost.
-                break;
+
+            if let Some(resampler) = &mut stream.resampler {
+                let mut converted = Vec::new();
+                if let Err(error) = resampler.process(&block, &mut converted) {
+                    let _ = self.events.send(PlayerEvent::Error(error.to_string()));
+                    stream.source_done = true;
+                    continue;
+                }
+                block = converted;
+                if block.is_empty() {
+                    // The converter is still filling; nothing to stage yet.
+                    continue;
+                }
             }
-
-            let mut processed = block.to_vec();
-            stream.chain.process(&mut processed);
-
-            stream.marks.push_back(Mark {
-                output_frame: stream.pushed,
-                source_frame: source_frame.saturating_sub(latency),
-                sample_rate: stream.sample_rate,
-            });
-            let (_, left) = stream.producer.push_partial_slice(&processed);
-            debug_assert!(left.is_empty(), "the room was checked before pushing");
-            stream.pushed += processed.len() as u64 / u64::from(stream.channels);
+            stream.stage(block, source_ms);
             worked = true;
         }
         worked
@@ -330,11 +393,9 @@ impl Engine {
         if let Some(mark) = stream.marks.front()
             && mark.output_frame <= played
         {
-            let frames = mark.source_frame + (played - mark.output_frame);
-            self.position_ms.store(
-                frames * 1_000 / u64::from(mark.sample_rate),
-                Ordering::Relaxed,
-            );
+            let elapsed = (played - mark.output_frame) * 1_000 / u64::from(stream.sample_rate);
+            self.position_ms
+                .store(mark.source_ms + elapsed, Ordering::Relaxed);
         }
 
         if let Some(ends_at) = stream.ends_at

@@ -22,6 +22,7 @@ pub mod dither;
 pub mod equalizer;
 pub mod gain;
 pub mod limiter;
+pub mod resample;
 
 use dither::Dither;
 use equalizer::Equalizer;

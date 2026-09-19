@@ -47,8 +47,8 @@ use workers::{
 };
 
 use crate::{
-    audio::{AudioBackend, MpvPlayer},
-    config::{Config, ReplayGainMode, all_sources},
+    audio::{AudioBackend, MpvPlayer, dsp::Settings as DspSettings, native::player::NativePlayer},
+    config::{AudioBackendChoice, Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
     db::{Database, HistoryUpdate, group_albums, group_artists},
     discord::DiscordPresence,
@@ -363,6 +363,43 @@ pub async fn run(
     result
 }
 
+/// Build the backend the configuration asks for.
+///
+/// A native backend that will not start falls back to mpv with the reason in
+/// the status bar. The alternative is refusing to run at all because a sound
+/// card is busy, which is not a trade anyone would choose.
+fn start_player(
+    paths: &AppPaths,
+    config: &Config,
+    volume: f64,
+    events: tokio_mpsc::UnboundedSender<PlayerEvent>,
+) -> Result<(Box<dyn AudioBackend>, Option<String>)> {
+    if config.audio_backend == AudioBackendChoice::Native {
+        let settings = DspSettings {
+            volume,
+            equalizer: config.equalizer_bands(),
+            bit_perfect: config.bit_perfect,
+            ..DspSettings::default()
+        };
+        let device = Some(config.audio_device.trim())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        match NativePlayer::start(device, settings, events.clone()) {
+            Ok(player) => return Ok((Box::new(player), None)),
+            Err(error) => {
+                return Ok((
+                    Box::new(MpvPlayer::start(&paths.mpv_socket(), events)?),
+                    Some(t!("status.native_unavailable", error = error)),
+                ));
+            }
+        }
+    }
+    Ok((
+        Box::new(MpvPlayer::start(&paths.mpv_socket(), events)?),
+        None,
+    ))
+}
+
 async fn run_inner(
     terminal: &mut ratatui::DefaultTerminal,
     paths: AppPaths,
@@ -374,11 +411,12 @@ async fn run_inner(
     let db = Database::open(&paths.database_file())?;
     let saved = db.load_playback()?;
     let (player_events_tx, player_events) = tokio_mpsc::unbounded_channel();
-    let mpv = MpvPlayer::start(&paths.mpv_socket(), player_events_tx)?;
-    let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     let saved_volume = saved.volume.clamp(0.0, 1.0);
-    mpv.set_volume(saved_volume)?;
-    mpv.set_equalizer(&config.equalizer_bands())?;
+    let (mut player, backend_warning) =
+        start_player(&paths, &config, saved_volume, player_events_tx)?;
+    let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
+    player.set_volume(saved_volume)?;
+    player.set_equalizer(&config.equalizer_bands())?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
@@ -463,7 +501,7 @@ async fn run_inner(
         muted_volume: (saved_volume == 0.0)
             .then_some(saved.last_nonzero_volume.unwrap_or(1.0).clamp(0.01, 1.0)),
         compact,
-        player: Box::new(mpv),
+        player,
         player_events,
         mpris,
         discord,
@@ -487,6 +525,7 @@ async fn run_inner(
         status: binding_problems
             .first()
             .map(|problem| t!("status.keybindings_problem", problem = problem))
+            .or(backend_warning)
             .or(mpris_warning)
             .unwrap_or_else(|| t!("status.loading_library").into()),
         should_quit: false,

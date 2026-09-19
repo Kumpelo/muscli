@@ -1,5 +1,4 @@
 # English is the base catalogue and the fallback for every other language.
-
 "action.activate" = "Open or play"
 "action.add_to_playlist" = "Add to a playlist"
 "action.album_next" = "Next album"
@@ -73,6 +72,8 @@
 "context.play_now" = "Play now"
 "context.show_album" = "Show album"
 "context.show_artist" = "Show artist"
+"devices.hint" = "set audio_device in config.toml to one of these names, and audio_backend = \"native\" to use it"
+"devices.none" = "no audio output devices were found"
 "doctor.protocol_unknown" = "not recorded yet; open muscli once"
 "doctor.terminal_graphics" = "TERM={term}; protocol chosen: {protocol}"
 "empty.artist" = "No albums or singles found for this artist."
@@ -201,6 +202,7 @@
 "status.library_unchanged" = "{tracks} songs · {albums} albums · unchanged"
 "status.loading_library" = "Loading library…"
 "status.mpris_unavailable" = "MPRIS unavailable: {error}"
+"status.native_unavailable" = "the native backend could not start ({error}); playing through mpv"
 "status.nothing_playable" = "No playable tracks in this selection"
 "status.pick_release" = "Pick an album or single · Esc to go back"
 "status.pick_track" = "Pick a song · Esc to go back"

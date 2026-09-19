@@ -1,5 +1,4 @@
 # Spanish translations. Keys and placeholders must match en.toml.
-
 "action.activate" = "Abrir o reproducir"
 "action.add_to_playlist" = "Añadir a una playlist"
 "action.album_next" = "Álbum siguiente"
@@ -73,6 +72,8 @@
 "context.play_now" = "Reproducir ahora"
 "context.show_album" = "Mostrar álbum"
 "context.show_artist" = "Mostrar artista"
+"devices.hint" = "pon audio_device en config.toml con uno de estos nombres, y audio_backend = \"native\" para usarlo"
+"devices.none" = "no se encontró ningún dispositivo de salida"
 "doctor.protocol_unknown" = "sin registrar; abre muscli una vez"
 "doctor.terminal_graphics" = "TERM={term}; protocolo elegido: {protocol}"
 "empty.artist" = "No encontré álbumes ni singles para este artista."
@@ -201,6 +202,7 @@
 "status.library_unchanged" = "{tracks} canciones · {albums} álbumes · sin cambios"
 "status.loading_library" = "Cargando biblioteca…"
 "status.mpris_unavailable" = "MPRIS no disponible: {error}"
+"status.native_unavailable" = "no se pudo arrancar el backend nativo ({error}); reproduciendo con mpv"
 "status.nothing_playable" = "No hay pistas disponibles en esta selección"
 "status.pick_release" = "Selecciona un álbum o single · Esc para volver"
 "status.pick_track" = "Selecciona una canción · Esc para volver"

@@ -43,6 +43,12 @@ pub trait Output {
     /// Whether this stream can be played without converting it.
     fn supports(&self, sample_rate: u32, channels: u16) -> bool;
 
+    /// Rates this device will take, for a given channel count.
+    fn rates(&self, channels: u16) -> Vec<u32>;
+
+    /// Channel counts this device will take.
+    fn channel_counts(&self) -> Vec<u16>;
+
     /// Start the output on a stream, pulling from `frames`.
     ///
     /// Starting again replaces whatever was playing.
@@ -86,6 +92,7 @@ pub fn fill(buffer: &mut [f32], frames: &mut Consumer<f32>, state: &SinkState, c
 pub struct CaptureOutput {
     shared: Arc<Mutex<Capture>>,
     rates: Vec<u32>,
+    channels: Vec<u16>,
 }
 
 #[derive(Default)]
@@ -108,11 +115,17 @@ impl CaptureOutput {
     /// Listing the rates rather than accepting everything is what lets a test
     /// ask what happens when a device cannot play a file.
     pub fn new(rates: &[u32]) -> (Self, CaptureHandle) {
+        Self::with_channels(rates, &[1, 2])
+    }
+
+    /// The same, for a device that only offers certain channel counts.
+    pub fn with_channels(rates: &[u32], channels: &[u16]) -> (Self, CaptureHandle) {
         let shared = Arc::new(Mutex::new(Capture::default()));
         (
             Self {
                 shared: Arc::clone(&shared),
                 rates: rates.to_vec(),
+                channels: channels.to_vec(),
             },
             CaptureHandle { shared },
         )
@@ -124,8 +137,16 @@ impl Output for CaptureOutput {
         "capture".to_string()
     }
 
-    fn supports(&self, sample_rate: u32, _channels: u16) -> bool {
-        self.rates.contains(&sample_rate)
+    fn supports(&self, sample_rate: u32, channels: u16) -> bool {
+        self.rates.contains(&sample_rate) && self.channels.contains(&channels)
+    }
+
+    fn rates(&self, _channels: u16) -> Vec<u32> {
+        self.rates.clone()
+    }
+
+    fn channel_counts(&self) -> Vec<u16> {
+        self.channels.clone()
     }
 
     fn start(
@@ -203,5 +224,87 @@ impl CaptureHandle {
             .expect("the capture lock is never poisoned")
             .channels
             .max(1)
+    }
+}
+
+/// Pick the rate to play a file at on a device offering `available`.
+///
+/// The file's own rate first, always: converting a stream that did not need
+/// converting is the one avoidable loss in the whole path. Failing that, a
+/// whole multiple of it, which a converter handles with the least work and
+/// the least error. Failing that, the highest rate above the file's, because
+/// converting downwards throws away the top of the band for nothing. Only if
+/// there is nothing higher does a lower rate get used.
+pub fn choose_rate(wanted: u32, available: &[u32]) -> Option<u32> {
+    if available.contains(&wanted) {
+        return Some(wanted);
+    }
+    if let Some(multiple) = available
+        .iter()
+        .filter(|rate| **rate > wanted && (*rate % wanted) == 0)
+        .min()
+    {
+        return Some(*multiple);
+    }
+    available
+        .iter()
+        .filter(|rate| **rate > wanted)
+        .min()
+        .or_else(|| available.iter().max())
+        .copied()
+}
+
+/// Pick the channel count to play a file in.
+///
+/// A mono file on a stereo-only device is played to both channels; anything
+/// else is refused rather than folded, because a fold is a mix, and mixing
+/// somebody's recording without being asked is not this player's business.
+pub fn choose_channels(wanted: u16, available: &[u16]) -> Option<u16> {
+    if available.contains(&wanted) {
+        return Some(wanted);
+    }
+    if wanted == 1 && available.contains(&2) {
+        return Some(2);
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_the_device_has_is_used_as_it_is() {
+        assert_eq!(choose_rate(44_100, &[44_100, 48_000]), Some(44_100));
+        assert_eq!(choose_rate(192_000, &[48_000, 192_000]), Some(192_000));
+    }
+
+    #[test]
+    fn a_whole_multiple_beats_a_nearer_rate() {
+        // 88.2 is two times 44.1, so the converter has only to interpolate
+        // between samples that already line up. 96 is closer in ratio and
+        // much harder to get right.
+        assert_eq!(choose_rate(44_100, &[48_000, 88_200, 96_000]), Some(88_200));
+    }
+
+    #[test]
+    fn converting_downwards_is_the_last_resort() {
+        assert_eq!(
+            choose_rate(96_000, &[44_100, 48_000, 192_000]),
+            Some(192_000)
+        );
+        assert_eq!(choose_rate(96_000, &[44_100, 48_000]), Some(48_000));
+    }
+
+    #[test]
+    fn a_mono_file_may_be_played_to_both_channels() {
+        assert_eq!(choose_channels(1, &[2]), Some(2));
+        assert_eq!(choose_channels(2, &[2]), Some(2));
+    }
+
+    #[test]
+    fn nothing_is_folded_without_being_asked() {
+        assert_eq!(choose_channels(6, &[2]), None);
+        assert_eq!(choose_channels(2, &[1]), None);
     }
 }
