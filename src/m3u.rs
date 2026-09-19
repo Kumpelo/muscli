@@ -15,6 +15,14 @@ pub struct Entry {
     pub label: Option<String>,
 }
 
+fn windows_drive_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'/'
+}
+
 /// Parse a playlist.
 ///
 /// Relative entries are resolved against `base`, which is the directory the
@@ -42,7 +50,7 @@ pub fn parse(source: &str, base: &Path) -> Vec<Entry> {
         // A Windows-style playlist read on Unix, or the reverse.
         let normalised = line.replace('\\', "/");
         let candidate = Path::new(&normalised);
-        let path = if candidate.is_absolute() {
+        let path = if candidate.is_absolute() || windows_drive_absolute(&normalised) {
             candidate.to_path_buf()
         } else {
             base.join(candidate)
@@ -105,6 +113,12 @@ mod tests {
     fn absolute_entries_are_left_alone() {
         let entries = parse("/elsewhere/track.flac\n", &base());
         assert_eq!(entries[0].path, PathBuf::from("/elsewhere/track.flac"));
+    }
+
+    #[test]
+    fn windows_drive_paths_are_absolute_even_on_unix() {
+        let entries = parse("C:\\Music\\song.flac\n", &base());
+        assert_eq!(entries[0].path, PathBuf::from("C:/Music/song.flac"));
     }
 
     #[test]
