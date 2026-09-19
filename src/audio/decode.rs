@@ -7,10 +7,7 @@
 //! the rest of the path exact — see the round-trip test, which decodes a
 //! generated 16-bit stream and gets every sample back unchanged.
 
-use std::{
-    fs::File,
-    path::{Path, PathBuf},
-};
+use std::{fs::File, path::Path};
 
 use anyhow::{Context, Result, anyhow};
 use symphonia::core::{
@@ -47,7 +44,6 @@ pub struct Decoder {
     time_base: (u64, u64),
     block: Vec<f32>,
     duration_ms: Option<u64>,
-    path: PathBuf,
     /// Where the last seek landed, in frames from the start of the track.
     base_frames: u64,
     frames_since_seek: u64,
@@ -77,11 +73,6 @@ impl Decoder {
             .with_context(|| format!("no decoder for {}", path.display()))?;
 
         Self::from_reader(reader, path)
-    }
-
-    /// The file this decoder was opened on.
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// How long the track is, when the container says.
@@ -134,7 +125,6 @@ impl Decoder {
             spec,
             time_base,
             duration_ms,
-            path: path.to_path_buf(),
             block: Vec::new(),
             base_frames: 0,
             frames_since_seek: 0,

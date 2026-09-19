@@ -29,6 +29,18 @@ pub struct SinkState {
     /// Non-zero means the decoder could not keep up and the listener heard a
     /// gap. It is counted rather than logged because the callback cannot log.
     pub starved: AtomicU64,
+    /// Bumped by the engine when what is still in the ring belongs to
+    /// somewhere else in the track and must not be played.
+    ///
+    /// A single-producer ring gives the side that fills it no way to take
+    /// anything back, and the side that can is the one that must never wait.
+    /// So the engine asks, the output does it on its way through, and says
+    /// where it happened.
+    pub flush: AtomicU64,
+    /// The request the output has carried out.
+    pub flushed: AtomicU64,
+    /// The frame the first sample after the flush will be played at.
+    pub flushed_at: AtomicU64,
 }
 
 /// An output device.
@@ -73,18 +85,41 @@ pub trait Output {
 /// waiting, allocating, locking -- would be a glitch rather than a gap.
 pub fn fill(buffer: &mut [f32], frames: &mut Consumer<f32>, state: &SinkState, channels: u16) {
     let wanted = buffer.len();
+    let channel_count = u64::from(channels.max(1));
+
+    // A flush is a few index updates, so it is safe here; refilling is not,
+    // which is why this buffer comes out silent and the engine takes over
+    // from the frame reported below.
+    let requested = state.flush.load(Ordering::Acquire);
+    let flushed_now = requested != state.flushed.load(Ordering::Relaxed);
+    if flushed_now {
+        let stale = frames.slots();
+        if stale > 0
+            && let Ok(chunk) = frames.read_chunk(stale)
+        {
+            chunk.commit_all();
+        }
+        let played = state.played.load(Ordering::Relaxed);
+        state
+            .flushed_at
+            .store(played + wanted as u64 / channel_count, Ordering::Relaxed);
+        state.flushed.store(requested, Ordering::Release);
+    }
+
     let (_, missing) = frames.pop_partial_slice(buffer);
     let short = missing.len();
     missing.fill(0.0);
 
-    let channels = u64::from(channels.max(1));
     state
         .played
-        .fetch_add(wanted as u64 / channels, Ordering::Relaxed);
-    if short > 0 {
+        .fetch_add(wanted as u64 / channel_count, Ordering::Relaxed);
+    // Silence in the buffer that carried out a flush is the seek landing,
+    // not the decoder falling behind, and counting it would accuse the wrong
+    // thing.
+    if short > 0 && !flushed_now {
         state
             .starved
-            .fetch_add(short as u64 / channels, Ordering::Relaxed);
+            .fetch_add(short as u64 / channel_count, Ordering::Relaxed);
     }
 }
 
@@ -97,6 +132,9 @@ pub struct CaptureOutput {
 
 #[derive(Default)]
 struct Capture {
+    /// How many times a stream has been opened on this output, so a test can
+    /// tell a seek that reuses the device from one that reopens it.
+    starts: usize,
     frames: Option<Consumer<f32>>,
     state: Option<Arc<SinkState>>,
     channels: u16,
@@ -164,6 +202,7 @@ impl Output for CaptureOutput {
         capture.state = Some(state);
         capture.channels = channels;
         capture.paused = false;
+        capture.starts += 1;
         Ok(())
     }
 
@@ -216,6 +255,14 @@ impl CaptureHandle {
             collected.extend(self.pull(block));
         }
         collected
+    }
+
+    /// How many times the output has been opened.
+    pub fn starts(&self) -> usize {
+        self.shared
+            .lock()
+            .expect("the capture lock is never poisoned")
+            .starts
     }
 
     fn channels(&self) -> u16 {

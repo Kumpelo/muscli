@@ -204,34 +204,48 @@ fn the_position_follows_the_device_and_not_the_decoder() {
 }
 
 #[test]
-fn a_seek_moves_both_the_position_and_the_audio() {
+fn a_seek_keeps_the_device_and_costs_one_buffer() {
+    // The ring holds half a second belonging to where the track used to be.
+    // Rebuilding it would mean asking the driver for the device again, which
+    // is milliseconds at best and a refusal at worst. Instead the output
+    // throws away what it holds, which costs the one buffer it was filling.
     let mut harness = harness(3_000, &[RATE]);
     harness.engine.handle(Command::Load {
         path: harness.path.clone(),
         position_ms: 0,
     });
+    assert_eq!(harness.capture.starts(), 1);
+
     harness.engine.handle(Command::SeekAbsolute(1_500));
+    harness.engine.step();
+    assert_eq!(
+        harness.capture.starts(),
+        1,
+        "the seek reopened the device instead of flushing it"
+    );
     assert!(errors(&mut harness.events).is_empty());
 
+    // The buffer that carries out the flush comes out silent, and only that
+    // one: the engine decoded ahead while it waited.
+    let landing = harness.capture.pull(BLOCK);
+    assert!(
+        landing.iter().all(|sample| *sample == 0.0),
+        "the old position was played after the seek"
+    );
     harness.engine.step();
+
     let mut captured = Vec::new();
     for _ in 0..8 {
         captured.extend(harness.capture.pull(BLOCK));
         harness.engine.step();
     }
-
-    // Eight blocks have been played since the seek, so that is where the
-    // position should be -- the seek lands on the container's nearest frame
-    // boundary, which is why this is a window rather than an equality.
-    let played = 8 * BLOCK as u64 * 1_000 / u64::from(RATE);
-    let position = harness.position.load(Ordering::Relaxed);
     assert!(
-        position.abs_diff(1_500 + played) < 100,
-        "after seeking to 1500 ms and playing {played} ms the position reads {position} ms"
+        captured[..BLOCK].iter().any(|sample| *sample != 0.0),
+        "the seek cost more than the one buffer"
     );
 
-    // And the samples have to be the ones that live there, not merely a
-    // plausible number of them.
+    // And the samples are the ones that live there, not merely a plausible
+    // number of them.
     let mut decoder = Decoder::open(&harness.path).expect("open the fixture");
     decoder.seek_ms(1_500).expect("seek");
     let mut expected = Vec::new();
@@ -245,6 +259,49 @@ fn a_seek_moves_both_the_position_and_the_audio() {
     assert_eq!(
         &captured[latency..latency + compared],
         &expected[..compared]
+    );
+
+    // A seek is not the decoder falling behind, so it is not reported as one.
+    let notices: Vec<String> = std::iter::from_fn(|| harness.events.try_recv().ok())
+        .filter_map(|event| match event {
+            PlayerEvent::Notice(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert!(notices.is_empty(), "the seek complained: {notices:?}");
+}
+
+#[test]
+fn a_seek_moves_the_reported_position() {
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+
+    // Reported straight away, before a single frame has been played: the
+    // interface should not show the old position while the seek lands.
+    let landed = harness.position.load(Ordering::Relaxed);
+    assert!(
+        landed.abs_diff(1_500) < 100,
+        "a seek to 1500 ms reported {landed} ms"
+    );
+
+    harness.engine.step();
+    let mut played = 0u64;
+    for _ in 0..8 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+        played += BLOCK as u64;
+    }
+
+    // One buffer of that went on the flush itself.
+    let elapsed = (played - BLOCK as u64) * 1_000 / u64::from(RATE);
+    let position = harness.position.load(Ordering::Relaxed);
+    assert!(
+        position.abs_diff(1_500 + elapsed) < 60,
+        "after seeking to 1500 ms and playing {elapsed} ms the position reads {position} ms"
     );
 }
 
@@ -630,4 +687,81 @@ fn an_idle_engine_asks_to_be_left_alone() {
         resting >= std::time::Duration::from_millis(50),
         "a paused engine still wanted waking every {resting:?}"
     );
+}
+
+#[test]
+fn the_position_does_not_lurch_while_a_seek_lands() {
+    // Between asking for the flush and the output carrying it out, the marks
+    // are counted from a frame the device has not reached. Measuring against
+    // them there would put the position wherever the track happened to be.
+    let mut harness = harness(5_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // Play a while, so the device's frame counter is well past zero.
+    for _ in 0..40 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+    }
+
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+    harness.engine.step();
+
+    let position = harness.position.load(Ordering::Relaxed);
+    assert!(
+        position.abs_diff(1_500) < 60,
+        "while the seek was landing the position read {position} ms"
+    );
+}
+
+#[test]
+fn a_seek_while_paused_lands_when_playing_resumes() {
+    // Nothing carries out the flush while the device is stopped, so the
+    // engine waits rather than pushing audio that would be thrown away. The
+    // seek has to take effect the moment playing resumes.
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    harness.engine.handle(Command::Pause(true));
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+    for _ in 0..4 {
+        harness.engine.step();
+    }
+
+    // A paused device is asked for nothing, so nothing comes out.
+    assert!(harness.capture.pull(BLOCK).iter().all(|s| *s == 0.0));
+
+    harness.engine.handle(Command::Pause(false));
+    let landing = harness.capture.pull(BLOCK);
+    assert!(
+        landing.iter().all(|sample| *sample == 0.0),
+        "the old position was played after the seek"
+    );
+    harness.engine.step();
+
+    let mut captured = Vec::new();
+    for _ in 0..4 {
+        captured.extend(harness.capture.pull(BLOCK));
+        harness.engine.step();
+    }
+
+    let mut decoder = Decoder::open(&harness.path).expect("open the fixture");
+    decoder.seek_ms(1_500).expect("seek");
+    let mut expected = Vec::new();
+    while expected.len() < captured.len() {
+        let block = decoder.next_block().expect("decode").expect("more audio");
+        expected.extend_from_slice(block);
+    }
+
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = captured.len() - latency - BLOCK;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+    assert_eq!(harness.capture.starts(), 1, "the device was reopened");
 }

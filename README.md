@@ -96,6 +96,11 @@ samples of the second follow the samples of the first with nothing between
 them. A track at a different sample rate cannot be joined that way and gets
 its own stream, which is a gap — there is no way around that.
 
+Seeking keeps the device open. The half second of audio already buffered is
+discarded by the output on its way through rather than by rebuilding the
+stream around it, so a seek costs the one buffer the device was filling
+instead of asking the driver for the card again.
+
 The native decoder does not read Opus, WavPack or Monkey's Audio, so files it
 cannot read are handed to mpv automatically, chosen by opening the file
 rather than by trusting its extension. mpv is started only if some file needs

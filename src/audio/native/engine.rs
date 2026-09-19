@@ -100,8 +100,15 @@ struct Stream {
     staging: Vec<f32>,
     marks: VecDeque<Mark>,
     pushed: u64,
+    /// Samples the ring holds, so the staging area knows when to stop.
+    capacity: usize,
     /// Output frames at which a following track begins, in order.
     handovers: VecDeque<u64>,
+    /// The flush the output has been asked for and has not yet carried out.
+    ///
+    /// While this is set the engine decodes but does not push: anything it
+    /// wrote now would be thrown away with the audio it is replacing.
+    awaiting_flush: Option<u64>,
     /// Set when the decoder has no more to give. Not final: a track queued
     /// after this point can still join, because nothing has been announced
     /// and the audio would still be continuous.
@@ -340,8 +347,10 @@ impl Engine {
             channels,
             sample_rate,
             staging: Vec::new(),
+            capacity,
             marks: VecDeque::new(),
             handovers: VecDeque::new(),
+            awaiting_flush: None,
             pushed: 0,
             exhausted: false,
             needs_flush: false,
@@ -370,19 +379,44 @@ impl Engine {
         Ok(())
     }
 
-    /// Seek by starting the stream again from the new position.
+    /// Seek without disturbing the device.
     ///
-    /// The ring holds half a second of audio that is now wrong, and a
-    /// single-producer ring has no way to take it back, so the ring and the
-    /// device stream are rebuilt. That costs a device open -- a few
-    /// milliseconds -- which is cheaper than the machinery it would take to
-    /// let the callback discard what it is holding without ever waiting.
+    /// The ring holds up to half a second of audio belonging to where the
+    /// track used to be. Rebuilding the ring would mean rebuilding the output
+    /// stream around it, which means asking the driver for the device again --
+    /// a few milliseconds at best, a refusal at worst if something else took
+    /// it in between. Instead the output is asked to throw away what it is
+    /// holding, and says which frame the music resumes at.
     fn seek(&mut self, position_ms: u64) -> Result<()> {
-        let Some(stream) = &self.stream else {
+        let Some(stream) = &mut self.stream else {
             return Ok(());
         };
-        let path = stream.decoder.path().to_path_buf();
-        self.load(&path, position_ms)
+
+        stream.decoder.seek_ms(position_ms)?;
+        stream.chain.reset();
+        if let Some(resampler) = &mut stream.resampler {
+            resampler.reset();
+        }
+
+        // Everything measured from the old position goes, including the
+        // counters the marks are relative to: they are rebased on the frame
+        // the output reports once it has done its part.
+        stream.staging.clear();
+        stream.marks.clear();
+        stream.handovers.clear();
+        stream.pushed = 0;
+        stream.exhausted = false;
+        stream.needs_flush = false;
+        stream.ends_at = None;
+        stream.announced_end = false;
+
+        let generation = stream.state.flush.load(Ordering::Relaxed) + 1;
+        stream.awaiting_flush = Some(generation);
+        stream.state.flush.store(generation, Ordering::Release);
+
+        self.position_ms
+            .store(stream.decoder.position_ms(), Ordering::Relaxed);
+        Ok(())
     }
 
     fn stop(&mut self) {
@@ -398,8 +432,38 @@ impl Engine {
         };
         let mut worked = false;
 
+        if let Some(generation) = stream.awaiting_flush
+            && stream.state.flushed.load(Ordering::Acquire) == generation
+        {
+            // The output has thrown away the old audio and said which frame
+            // the new begins at. Everything counted from the seek is rebased
+            // on it, and what was decoded meanwhile can now go out.
+            let resumes_at = stream.state.flushed_at.load(Ordering::Relaxed);
+            stream.pushed += resumes_at;
+            for mark in &mut stream.marks {
+                mark.output_frame += resumes_at;
+            }
+            for handover in &mut stream.handovers {
+                *handover += resumes_at;
+            }
+            // Whatever silence the seek itself cost is the seek, not the
+            // decoder falling behind.
+            self.reported_starved = stream.state.starved.load(Ordering::Relaxed);
+            stream.awaiting_flush = None;
+            worked = true;
+        }
+
+        // Nothing may be pushed until then: anything written now would be
+        // thrown away along with the audio it is replacing. Decoding carries
+        // on regardless, so the music is ready the instant it may go out.
+        let holding = stream.awaiting_flush.is_some();
+
         loop {
-            if !stream.staging.is_empty() {
+            if holding {
+                if stream.staging.len() >= stream.capacity {
+                    break;
+                }
+            } else if !stream.staging.is_empty() {
                 let (_, left) = stream.producer.push_partial_slice(&stream.staging);
                 let taken = stream.staging.len() - left.len();
                 stream.staging.drain(..taken);
@@ -455,12 +519,14 @@ impl Engine {
                     continue;
                 }
 
-                if stream.ends_at.is_none() {
+                // Where the audio ends is a frame of the output, and while a
+                // flush is pending there is no such frame yet.
+                if !holding && stream.ends_at.is_none() {
                     stream.ends_at = Some(stream.pushed);
                 }
                 break;
             }
-            if stream.producer.slots() == 0 {
+            if !holding && stream.producer.slots() == 0 {
                 break;
             }
 
@@ -506,6 +572,13 @@ impl Engine {
         let Some(stream) = &mut self.stream else {
             return false;
         };
+        if stream.awaiting_flush.is_some() {
+            // Everything here is measured in frames of the output, and until
+            // the flush lands there is no frame to measure against: the marks
+            // are counted from zero while the device is somewhere else
+            // entirely. The position the seek set already stands.
+            return false;
+        }
         let played = stream.state.played.load(Ordering::Relaxed);
 
         // Marks the device is past are no longer needed, except the newest of
