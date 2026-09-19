@@ -41,6 +41,10 @@ pub struct Config {
     /// Interface language: "auto", "en" or "es". Auto follows the system
     /// locale and falls back to English.
     pub language: String,
+    /// Colour theme: "light" (the default), "dark", "high-contrast", "nord",
+    /// "gruvbox", "solarized-light", or "system" to follow the desktop — the
+    /// current Omarchy palette on Linux, light everywhere else.
+    pub theme: String,
     /// File extensions to index. Empty means the built-in list.
     pub audio_extensions: Vec<String>,
     /// Equaliser gains in decibels, one per band of `EQUALIZER_BANDS`. Empty
@@ -71,6 +75,7 @@ impl Default for Config {
             scan_threads: 0,
             gapless: true,
             language: "auto".into(),
+            theme: "light".into(),
             audio_extensions: Vec::new(),
             equalizer: Vec::new(),
         }
@@ -111,6 +116,30 @@ impl Config {
         self.sources.push(canonical);
         self.sources.sort();
         Ok(true)
+    }
+
+    /// Set one equaliser band's gain, in decibels.
+    ///
+    /// The stored list is grown to the full set of bands first: a
+    /// hand-written configuration may carry fewer gains than there are bands,
+    /// and writing to band six of a two-entry list would otherwise be lost.
+    pub fn set_equalizer_gain(&mut self, band: usize, gain: f32) {
+        if band >= EQUALIZER_BANDS.len() {
+            return;
+        }
+        if self.equalizer.len() < EQUALIZER_BANDS.len() {
+            self.equalizer.resize(EQUALIZER_BANDS.len(), 0.0);
+        }
+        self.equalizer[band] = gain.clamp(-12.0, 12.0);
+    }
+
+    /// One equaliser band's configured gain, treating an absent entry as flat.
+    pub fn equalizer_gain(&self, band: usize) -> f32 {
+        self.equalizer
+            .get(band)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(-12.0, 12.0)
     }
 
     pub fn remove_source(&mut self, path: &Path) -> bool {
@@ -232,6 +261,31 @@ mod tests {
         assert_eq!(bands[0], (EQUALIZER_BANDS[0], 3.0));
         assert_eq!(bands[1], (EQUALIZER_BANDS[1], -2.0));
         assert!(bands[2..].iter().all(|(_, gain)| *gain == 0.0));
+    }
+
+    #[test]
+    fn setting_a_band_grows_a_short_list_instead_of_losing_the_change() {
+        let mut config = Config {
+            equalizer: vec![3.0],
+            ..Config::default()
+        };
+        config.set_equalizer_gain(5, -4.0);
+        assert_eq!(config.equalizer.len(), EQUALIZER_BANDS.len());
+        assert_eq!(config.equalizer_gain(0), 3.0);
+        assert_eq!(config.equalizer_gain(5), -4.0);
+        assert_eq!(config.equalizer_gain(7), 0.0);
+    }
+
+    #[test]
+    fn a_band_outside_the_set_is_ignored() {
+        let mut config = Config::default();
+        config.set_equalizer_gain(EQUALIZER_BANDS.len(), 6.0);
+        assert!(config.equalizer.is_empty());
+    }
+
+    #[test]
+    fn the_default_theme_is_light() {
+        assert_eq!(Config::default().theme, "light");
     }
 
     #[test]

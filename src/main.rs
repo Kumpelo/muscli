@@ -15,9 +15,7 @@ use muscli::{
     config::{Config, all_sources},
     control::{self, RemoteCommand},
     db::Database,
-    doctor,
-    i18n::{self, Language},
-    library,
+    doctor, i18n, library,
     library::{prune_cover_cache, prune_unreferenced_covers},
     lyrics, m3u, omarchy,
     paths::AppPaths,
@@ -28,12 +26,16 @@ use muscli::{
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let compact = cli.compact;
+    let theme = cli.theme.clone();
     let paths = AppPaths::discover()?;
     paths.ensure()?;
     let mut config = Config::load(&paths)?;
     // Settled before anything can produce output. The flag wins over the
     // config file, which wins over the system locale.
-    i18n::set_language(resolve_language(cli.lang.as_deref(), &config.language));
+    i18n::set_language(i18n::resolve_language(
+        cli.lang.as_deref(),
+        &config.language,
+    ));
 
     match cli.command {
         Some(Command::Library { command }) => match command {
@@ -372,7 +374,7 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()?;
             let local = tokio::task::LocalSet::new();
-            local.block_on(&runtime, muscli::tui::run(paths, config, compact))?;
+            local.block_on(&runtime, muscli::tui::run(paths, config, compact, theme))?;
         }
     }
     Ok(())
@@ -397,17 +399,6 @@ fn lyrics_name_for_track(db: &Database, id: &str) -> Result<String> {
     Ok(format!("{stored_id}.lrc"))
 }
 
-/// Pick the interface language.
-///
-/// An unrecognised name is not an error worth refusing to start over; it falls
-/// through to detection, and then to English.
-fn resolve_language(flag: Option<&str>, configured: &str) -> Language {
-    flag.and_then(Language::from_tag)
-        .or_else(|| Language::from_tag(configured))
-        .or_else(i18n::detect_language)
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,29 +421,5 @@ mod tests {
         let error = lyrics_name_for_track(&db, "../escape")
             .expect_err("an unknown track id must not become a file name");
         assert!(format!("{error:#}").contains("unknown track id"));
-    }
-
-    #[test]
-    fn the_flag_wins_over_the_configuration() {
-        assert_eq!(resolve_language(Some("es"), "en"), Language::Spanish);
-        assert_eq!(resolve_language(Some("en"), "es"), Language::English);
-    }
-
-    #[test]
-    fn the_configuration_is_used_when_no_flag_is_given() {
-        assert_eq!(resolve_language(None, "es"), Language::Spanish);
-    }
-
-    #[test]
-    fn auto_and_nonsense_fall_through_to_detection() {
-        // "auto" is the default setting, and a typo should not be fatal; both
-        // land on detection, which ends at English when nothing matches.
-        for configured in ["auto", "klingon", ""] {
-            let resolved = resolve_language(None, configured);
-            assert!(
-                matches!(resolved, Language::English | Language::Spanish),
-                "{configured}"
-            );
-        }
     }
 }

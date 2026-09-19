@@ -15,6 +15,10 @@ pub struct Cli {
     /// Interface language: auto, en or es
     #[arg(long, global = true)]
     pub lang: Option<String>,
+    /// Colour theme for this run, without changing the configured one:
+    /// system, light, dark, high-contrast, nord, gruvbox or solarized-light
+    #[arg(long, global = true)]
+    pub theme: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }

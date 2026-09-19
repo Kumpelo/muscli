@@ -80,6 +80,42 @@ Nunca sube las portadas locales.
 | `C`, `S`, `L` | Limpiar, guardar o cargar cola |
 | `q` | Guardar estado y salir |
 
+## Temas
+
+La interfaz trae una paleta clara, y es la predeterminada tanto en Linux como
+en Windows. Se cambia desde Ajustes (`,`), con las flechas izquierda y derecha
+sobre la fila **Tema**, o con `theme` en `config.toml`:
+
+| `theme` | |
+|---|---|
+| `light` | fondo blanco, el predeterminado |
+| `dark` | la paleta del propio terminal |
+| `high-contrast` | negro sobre blanco, para salas iluminadas y proyectores |
+| `nord`, `gruvbox`, `solarized-light` | paletas fijas, iguales en todas partes |
+| `system` | seguir al escritorio: el tema actual de Omarchy en Linux, claro en el resto |
+
+Con `system` en Linux la paleta sigue a Omarchy en vivo: cambiar de tema allí
+repinta muscli sin reiniciarlo. `muscli --theme dark` prueba una paleta durante
+una ejecución sin tocar la configurada.
+
+## Idioma
+
+La interfaz sigue el idioma del sistema cuando lo reconoce, y usa inglés en
+caso contrario. Se cambia desde Ajustes, con `language = "en"` o
+`language = "es"` en `config.toml`, o con `muscli --lang es` para una sola
+ejecución. Al cambiarlo en Ajustes se aplica al instante, sin reiniciar.
+
+## Ajustes
+
+`,` abre la vista de Ajustes. Izquierda y derecha ajustan un valor; Space y
+Enter lo alternan o ejecutan la fila. Cubre tema e idioma, modo compacto,
+portadas, paso de volumen, reproducción sin huecos, ReplayGain con su modo y
+objetivo, cada banda del ecualizador, continuación e historial, autodetección
+de unidades extraíbles, hilos de escaneo, el tamaño de la caché de portadas y
+Discord Rich Presence, y puede lanzar un reescaneo o un análisis de ReplayGain.
+Cada cambio se escribe en `config.toml` al momento; ese archivo se sigue
+pudiendo editar a mano.
+
 ## Desarrollo
 
 ```bash
