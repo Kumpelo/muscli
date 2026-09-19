@@ -115,7 +115,10 @@ mod tests {
     fn a_utf8_bom_is_ignored_before_a_headerless_first_track() {
         let entries = parse("\u{feff}a.flac\nb.flac\n", &base());
         assert_eq!(
-            entries.iter().map(|entry| entry.path.clone()).collect::<Vec<_>>(),
+            entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>(),
             [base().join("a.flac"), base().join("b.flac")]
         );
     }

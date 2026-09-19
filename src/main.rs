@@ -213,7 +213,8 @@ fn main() -> Result<()> {
                 // Build the lookup once. Canonicalizing every library path for
                 // every playlist entry turns a large import into O(n*m)
                 // filesystem work.
-                let mut tracks_by_path = HashMap::<PathBuf, String>::with_capacity(tracks.len() * 2);
+                let mut tracks_by_path =
+                    HashMap::<PathBuf, String>::with_capacity(tracks.len() * 2);
                 for track in &tracks {
                     tracks_by_path
                         .entry(track.path.clone())
