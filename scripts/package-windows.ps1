@@ -20,7 +20,7 @@ function Get-VerifiedArchive([string]$Url, [string]$Sha, [string]$Name) {
     $archive = Join-Path $downloads $Name
     Invoke-WebRequest -Uri $Url -OutFile $archive
     $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-    if ($actual -ne $Sha) { throw "SHA-256 mismatch for $Name: $actual" }
+    if ($actual -ne $Sha) { throw "SHA-256 mismatch for ${Name}: $actual" }
     return $archive
 }
 
