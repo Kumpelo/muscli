@@ -34,6 +34,7 @@ use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use tokio::sync::mpsc as tokio_mpsc;
 
 use input::{display_rule_value, handle_terminal_event};
+use nav::{NavFrame, NavTarget};
 use render::draw;
 use theme::UiTheme;
 use workers::{
@@ -265,17 +266,11 @@ struct App {
     view: View,
     focus: Focus,
     selected: usize,
-    opened_album_key: Option<String>,
-    album_return_selection: usize,
-    album_parent_view: View,
-    opened_artist_name: Option<String>,
+    /// Open detail views, outermost first. Empty means a top-level view.
+    nav: Vec<NavFrame>,
+    /// Albums and singles of the innermost open artist; derived from `nav`.
     artist_release_keys: Vec<String>,
-    artist_return_selection: usize,
-    artist_parent_view: View,
-    opened_genre_name: Option<String>,
-    genre_return_selection: usize,
     genre_tab: usize,
-    opened_smart_playlist: Option<i64>,
     query: String,
     search_index: SearchIndex,
     search_matches: Vec<usize>,
@@ -436,17 +431,9 @@ async fn run_inner(
         view: View::Home,
         focus: Focus::Content,
         selected: 0,
-        opened_album_key: None,
-        album_return_selection: 0,
-        album_parent_view: View::Albums,
-        opened_artist_name: None,
+        nav: Vec::new(),
         artist_release_keys: Vec::new(),
-        artist_return_selection: 0,
-        artist_parent_view: View::Artists,
-        opened_genre_name: None,
-        genre_return_selection: 0,
         genre_tab: 0,
-        opened_smart_playlist: None,
         query: String::new(),
         search_index: SearchIndex::default(),
         search_matches: Vec::new(),
@@ -920,7 +907,7 @@ impl App {
     }
 
     fn opened_genre(&self) -> Option<&Genre> {
-        let name = self.opened_genre_name.as_deref()?;
+        let name = self.opened_genre_name()?;
         self.genres.iter().find(|genre| genre.name == name)
     }
 
@@ -977,16 +964,14 @@ impl App {
     }
 
     fn genre_album_indices(&self) -> &[usize] {
-        self.opened_genre_name
-            .as_deref()
+        self.opened_genre_name()
             .and_then(|name| self.genre_album_cache.get(name))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
     fn genre_artist_indices(&self) -> &[usize] {
-        self.opened_genre_name
-            .as_deref()
+        self.opened_genre_name()
             .and_then(|name| self.genre_artist_cache.get(name))
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -1022,7 +1007,7 @@ impl App {
     }
 
     fn smart_track_ids(&self) -> &[String] {
-        self.opened_smart_playlist
+        self.opened_smart_playlist()
             .and_then(|id| self.smart_matches.get(&id))
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -1043,15 +1028,9 @@ impl App {
     }
 
     fn opened_album(&self) -> Option<&Album> {
-        let key = self.opened_album_key.as_deref()?;
+        let key = self.opened_album_key()?;
         let index = self.album_index.get(key).copied()?;
         self.albums.get(index)
-    }
-
-    fn opened_artist(&self) -> Option<&Artist> {
-        let name = self.opened_artist_name.as_deref()?;
-        let index = self.artist_index.get(name).copied()?;
-        self.artists.get(index)
     }
 
     fn visible_album_len(&self) -> usize {
@@ -1083,13 +1062,13 @@ impl App {
     }
 
     fn refresh_artist_releases(&mut self) {
-        let Some(name) = self.opened_artist_name.as_deref() else {
+        let Some(name) = self.opened_artist_name().map(str::to_owned) else {
             self.artist_release_keys.clear();
             return;
         };
         let Some(artist) = self
             .artist_index
-            .get(name)
+            .get(name.as_str())
             .and_then(|index| self.artists.get(*index))
         else {
             self.artist_release_keys.clear();
@@ -1108,82 +1087,70 @@ impl App {
         let Some(artist) = self.artists.get(self.selected) else {
             return;
         };
-        self.artist_return_selection = self.selected;
-        self.artist_parent_view = self.view;
-        self.opened_artist_name = Some(artist.name.clone());
+        let name = artist.name.clone();
+        self.push_nav(NavTarget::Artist(name), View::ArtistDetail);
         self.refresh_artist_releases();
-        self.view = View::ArtistDetail;
-        self.selected = 0;
-        self.focus = Focus::Content;
         self.status = "Selecciona un álbum o single · Esc para volver".into();
-        self.dirty = true;
     }
 
     fn close_artist_detail(&mut self) {
         if self.view != View::ArtistDetail {
             return;
         }
-        self.view = self.artist_parent_view;
-        self.selected = self
-            .opened_artist_name
-            .as_deref()
-            .and_then(|name| {
-                if self.artist_parent_view == View::GenreDetail {
-                    self.genre_artist_indices()
-                        .iter()
-                        .position(|index| self.artists[*index].name == name)
-                } else {
-                    self.artist_index.get(name).copied()
-                }
-            })
-            .unwrap_or(self.artist_return_selection)
-            .min(self.artists.len().saturating_sub(1));
-        self.opened_artist_name = None;
-        self.artist_release_keys.clear();
+        let Some(frame) = self.pop_nav() else {
+            return;
+        };
+        let NavTarget::Artist(name) = frame.target else {
+            return;
+        };
+        // Prefer re-finding the artist over the remembered index: a rescan may
+        // have shifted the list while the detail view was open.
+        self.selected = if frame.parent == View::GenreDetail {
+            self.genre_artist_indices()
+                .iter()
+                .position(|index| self.artists[*index].name == name)
+        } else {
+            self.artist_index.get(name.as_str()).copied()
+        }
+        .unwrap_or(frame.selection)
+        .min(self.artists.len().saturating_sub(1));
+        // An artist may still be open below this one.
+        self.refresh_artist_releases();
         self.status.clear();
-        self.dirty = true;
     }
 
     fn open_selected_album(&mut self) {
         let Some(album_key) = self.selected_album().map(|album| album.key.clone()) else {
             return;
         };
-        self.album_return_selection = self.selected;
-        self.album_parent_view = self.view;
-        self.opened_album_key = Some(album_key);
-        self.view = View::AlbumDetail;
-        self.selected = 0;
-        self.focus = Focus::Content;
+        self.push_nav(NavTarget::Album(album_key), View::AlbumDetail);
         self.status = "Selecciona una canción · Esc para volver".into();
-        self.dirty = true;
     }
 
     fn close_album_detail(&mut self) {
         if self.view != View::AlbumDetail {
             return;
         }
-        self.view = self.album_parent_view;
-        self.selected = self
-            .opened_album_key
-            .as_deref()
-            .and_then(|key| {
-                if self.album_parent_view == View::ArtistDetail {
-                    self.artist_release_keys
-                        .iter()
-                        .position(|album_key| album_key == key)
-                } else if self.album_parent_view == View::GenreDetail {
-                    self.genre_album_indices()
-                        .iter()
-                        .position(|index| self.albums[*index].key == key)
-                } else {
-                    self.albums.iter().position(|album| album.key == key)
-                }
-            })
-            .unwrap_or(self.album_return_selection)
-            .min(self.item_count().saturating_sub(1));
-        self.opened_album_key = None;
+        let Some(frame) = self.pop_nav() else {
+            return;
+        };
+        let NavTarget::Album(key) = frame.target else {
+            return;
+        };
+        self.selected = match frame.parent {
+            View::ArtistDetail => self
+                .artist_release_keys
+                .iter()
+                .position(|album_key| album_key == &key),
+            View::GenreDetail => self
+                .genre_album_indices()
+                .iter()
+                .position(|index| self.albums[*index].key == key),
+            _ => self.albums.iter().position(|album| album.key == key),
+        }
+        .unwrap_or(frame.selection)
+        .min(self.item_count().saturating_sub(1));
         self.status.clear();
-        self.dirty = true;
     }
 
     fn activate_or_open(&mut self) -> Result<()> {
@@ -1194,38 +1161,31 @@ impl App {
             self.open_selected_album();
             Ok(())
         } else if self.view == View::Genres {
-            if let Some(genre) = self.genres.get(self.selected) {
-                self.genre_return_selection = self.selected;
-                self.opened_genre_name = Some(genre.name.clone());
+            if let Some(name) = self
+                .genres
+                .get(self.selected)
+                .map(|genre| genre.name.clone())
+            {
+                self.push_nav(NavTarget::Genre(name), View::GenreDetail);
                 self.genre_tab = 0;
-                self.selected = 0;
-                self.view = View::GenreDetail;
             }
             Ok(())
         } else if self.view == View::GenreDetail && self.genre_tab == 0 {
             if let Some(index) = self.genre_album_indices().get(self.selected).copied() {
-                self.album_return_selection = self.selected;
-                self.album_parent_view = View::GenreDetail;
-                self.opened_album_key = Some(self.albums[index].key.clone());
-                self.view = View::AlbumDetail;
-                self.selected = 0;
+                let key = self.albums[index].key.clone();
+                self.push_nav(NavTarget::Album(key), View::AlbumDetail);
             }
             Ok(())
         } else if self.view == View::GenreDetail && self.genre_tab == 1 {
             if let Some(index) = self.genre_artist_indices().get(self.selected).copied() {
-                self.artist_return_selection = self.selected;
-                self.artist_parent_view = View::GenreDetail;
-                self.opened_artist_name = Some(self.artists[index].name.clone());
+                let name = self.artists[index].name.clone();
+                self.push_nav(NavTarget::Artist(name), View::ArtistDetail);
                 self.refresh_artist_releases();
-                self.view = View::ArtistDetail;
-                self.selected = 0;
             }
             Ok(())
         } else if self.view == View::SmartPlaylists {
-            if let Some(playlist) = self.smart_playlists.get(self.selected) {
-                self.opened_smart_playlist = Some(playlist.id);
-                self.view = View::SmartPlaylistDetail;
-                self.selected = 0;
+            if let Some(id) = self.smart_playlists.get(self.selected).map(|list| list.id) {
+                self.push_nav(NavTarget::SmartPlaylist(id), View::SmartPlaylistDetail);
             }
             Ok(())
         } else {
@@ -1239,16 +1199,14 @@ impl App {
                 View::ArtistDetail => View::Artists,
                 View::GenreDetail => View::Genres,
                 View::SmartPlaylistDetail => View::SmartPlaylists,
-                View::AlbumDetail if self.album_parent_view == View::ArtistDetail => View::Artists,
+                View::AlbumDetail if self.nav_parent() == Some(View::ArtistDetail) => View::Artists,
                 View::AlbumDetail => View::Albums,
                 view => view,
             };
             let current = VIEWS.iter().position(|v| *v == sidebar_view).unwrap_or(0);
             let next = (current as isize + amount).clamp(0, VIEWS.len() as isize - 1) as usize;
             self.view = VIEWS[next];
-            self.opened_album_key = None;
-            self.opened_artist_name = None;
-            self.artist_release_keys.clear();
+            self.clear_nav();
             self.selected = 0;
         } else {
             self.selected = (self.selected as isize + amount)
@@ -1309,6 +1267,7 @@ mod covers;
 mod input;
 mod keys;
 mod library;
+mod nav;
 mod playback;
 mod render;
 mod theme;

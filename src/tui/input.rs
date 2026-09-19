@@ -27,21 +27,7 @@ impl App {
     fn apply(&mut self, action: Action) -> Result<()> {
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Back => match self.view {
-                View::AlbumDetail => self.close_album_detail(),
-                View::ArtistDetail => self.close_artist_detail(),
-                View::GenreDetail => {
-                    self.view = View::Genres;
-                    self.selected = self.genre_return_selection;
-                    self.opened_genre_name = None;
-                }
-                View::SmartPlaylistDetail => {
-                    self.view = View::SmartPlaylists;
-                    self.opened_smart_playlist = None;
-                    self.selected = 0;
-                }
-                _ => {}
-            },
+            Action::Back => self.close_detail(),
             Action::OpenView(view) => {
                 self.view = view;
                 self.selected = 0;
@@ -409,9 +395,7 @@ impl App {
                 let index = (mouse.row - 4) as usize;
                 if let Some(view) = VIEWS.get(index) {
                     self.view = *view;
-                    self.opened_album_key = None;
-                    self.opened_artist_name = None;
-                    self.artist_release_keys.clear();
+                    self.clear_nav();
                     self.selected = 0;
                     self.focus = Focus::Content;
                     self.dirty = true;
@@ -469,14 +453,14 @@ impl App {
                             && album.artist.eq_ignore_ascii_case(&track.album_artist)
                     })
                 {
-                    self.opened_album_key = Some(album.key.clone());
-                    self.album_parent_view = self.view;
-                    self.view = View::AlbumDetail;
-                    self.selected = album
+                    let key = album.key.clone();
+                    let position = album
                         .track_ids
                         .iter()
                         .position(|id| id == &track_id)
                         .unwrap_or(0);
+                    self.push_nav(NavTarget::Album(key), View::AlbumDetail);
+                    self.selected = position;
                 }
             }
             6 => {
@@ -485,11 +469,9 @@ impl App {
                     .get(&track_id)
                     .and_then(|index| self.tracks.get(*index))
                 {
-                    self.artist_parent_view = self.view;
-                    self.opened_artist_name = Some(track.artist.clone());
+                    let name = track.artist.clone();
+                    self.push_nav(NavTarget::Artist(name), View::ArtistDetail);
                     self.refresh_artist_releases();
-                    self.view = View::ArtistDetail;
-                    self.selected = 0;
                 }
             }
             _ => {}

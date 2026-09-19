@@ -182,7 +182,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         View::ArtistDetail => View::Artists,
         View::GenreDetail => View::Genres,
         View::SmartPlaylistDetail => View::SmartPlaylists,
-        View::AlbumDetail if app.album_parent_view == View::ArtistDetail => View::Artists,
+        View::AlbumDetail if app.nav_parent() == Some(View::ArtistDetail) => View::Artists,
         View::AlbumDetail => View::Albums,
         view => view,
     };
@@ -219,17 +219,15 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             .map(|album| format!(" {} · Esc para volver ", album.title))
             .unwrap_or_else(|| " Álbum ".into()),
         View::ArtistDetail => app
-            .opened_artist_name
-            .as_deref()
+            .opened_artist_name()
             .map(|artist| format!(" {} · álbumes y singles · Esc para volver ", artist))
             .unwrap_or_else(|| " Artista ".into()),
         View::GenreDetail => app
-            .opened_genre_name
-            .as_deref()
+            .opened_genre_name()
             .map(|genre| format!(" {genre} · Tab cambia sección · Esc para volver "))
             .unwrap_or_else(|| " Género ".into()),
         View::SmartPlaylistDetail => app
-            .opened_smart_playlist
+            .opened_smart_playlist()
             .and_then(|id| {
                 app.smart_playlists
                     .iter()
