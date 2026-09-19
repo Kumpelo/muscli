@@ -59,11 +59,12 @@ Settings, ayuda de atajos y modo compacto.
 ## Discord
 
 ```text
-muscli setup discord APPLICATION_ID --large-image peter
+muscli setup discord --large-image peter
 ```
 
-No utiliza bot, token ni OAuth. Publica canción, artista, álbum y progreso por
-IPC local. Puede elegir los assets `peter_metal`, `peter_dj` y `daft_punk`.
+MusCLI incluye su propio ID de aplicación de Discord, así que el usuario no
+tiene que crear ni configurar una aplicación. No utiliza bot, token ni OAuth.
+Publica canción, artista, álbum y progreso por IPC local. Puede elegir los assets `peter_metal`, `peter_dj` y `daft_punk`.
 Nunca sube las portadas locales.
 
 ## Controles principales
