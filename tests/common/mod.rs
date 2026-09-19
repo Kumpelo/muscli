@@ -171,6 +171,29 @@ pub fn sine(sample_rate: u32, frequency: f64, millis: u32) -> Vec<i16> {
         .collect()
 }
 
+/// Photo-like artwork: smooth gradients with fine detail.
+///
+/// Flat colour is misleading when encoding cost is being measured - PNG
+/// compresses it almost for free, which real album art never is.
+pub fn photo_bytes(width: u32, height: u32, tint: u8) -> Vec<u8> {
+    let mut image = image::RgbImage::new(width, height);
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let fx = x as f32 / width as f32;
+        let fy = y as f32 / height as f32;
+        let detail = ((x * 7 + y * 13) % 17) as f32 / 17.0 * 30.0;
+        *pixel = image::Rgb([
+            (fx * 200.0 + detail) as u8,
+            (fy * 180.0 + detail * 0.5).min(255.0) as u8,
+            ((1.0 - fx) * 160.0 + f32::from(tint)).min(255.0) as u8,
+        ]);
+    }
+    let mut buffer = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut buffer, image::ImageFormat::Png)
+        .expect("encoding generated artwork cannot fail");
+    buffer.into_inner()
+}
+
 /// A solid-colour PNG, used as embedded or external album art.
 pub fn png_bytes(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
     let mut image = image::RgbImage::new(width, height);

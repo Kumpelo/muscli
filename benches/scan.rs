@@ -21,7 +21,7 @@ use muscli::{
     library::{ScanOptions, scan_to_database},
 };
 
-use common::{Fixture, TrackSpec, png_bytes, write_track};
+use common::{Fixture, TrackSpec, photo_bytes, write_track};
 
 const CACHE_LIMIT: u64 = 64 * 1024 * 1024;
 const TRACKS: usize = 300;
@@ -46,10 +46,11 @@ fn populate(fixture: &Fixture, tracks: usize, with_art: bool) {
             // either way because it does not depend on stream length.
             .millis(64);
         if with_art {
-            // One distinct cover per album, so the artwork cache is exercised
-            // with both hits and misses the way a real library would.
-            let shade = (index % 60) as u8;
-            spec = spec.cover(png_bytes(160, 160, [shade, 90, 200 - shade]));
+            // One distinct cover per album, so the artwork cache sees both hits
+            // and misses the way a real library would. Photo-like and at a
+            // realistic size: flat colour compresses so cheaply that it hides
+            // what encoding actually costs.
+            spec = spec.cover(photo_bytes(600, 600, (index % 60) as u8));
         }
         write_track(
             &fixture.source().join(format!(
