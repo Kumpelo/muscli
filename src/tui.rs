@@ -295,7 +295,7 @@ struct App {
     scan_running: bool,
     scan_pending: PendingScan,
     reload_tx: Sender<()>,
-    reload_rx: tokio_mpsc::UnboundedReceiver<Box<LibrarySnapshot>>,
+    reload_rx: tokio_mpsc::UnboundedReceiver<Result<Box<LibrarySnapshot>, String>>,
     /// A background library rebuild is in flight.
     reload_running: bool,
     /// Something changed while a rebuild was running, so run one more.
@@ -596,8 +596,8 @@ async fn run_inner(
                     }
                 }
                 snapshot = app.reload_rx.recv() => {
-                    if let Some(snapshot) = snapshot {
-                        app.handle_reload_result(*snapshot);
+                    if let Some(result) = snapshot {
+                        app.handle_reload_result(result);
                     }
                 }
                 shutdown = shutdown_rx.recv() => {
@@ -634,8 +634,8 @@ async fn run_inner(
             while let Ok(result) = app.search_rx.try_recv() {
                 app.handle_search_result(result);
             }
-            while let Ok(snapshot) = app.reload_rx.try_recv() {
-                app.handle_reload_result(*snapshot);
+            while let Ok(result) = app.reload_rx.try_recv() {
+                app.handle_reload_result(result);
             }
             app.tick_history()?;
             app.refresh_theme();
