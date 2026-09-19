@@ -43,7 +43,13 @@ pub struct Config {
     pub language: String,
     /// File extensions to index. Empty means the built-in list.
     pub audio_extensions: Vec<String>,
+    /// Equaliser gains in decibels, one per band of `EQUALIZER_BANDS`. Empty
+    /// or all zero means no equaliser at all.
+    pub equalizer: Vec<f32>,
 }
+
+/// Centre frequencies of the equaliser bands, an octave apart.
+pub const EQUALIZER_BANDS: [u32; 8] = [60, 150, 400, 1_000, 2_400, 6_000, 12_000, 16_000];
 
 impl Default for Config {
     fn default() -> Self {
@@ -66,6 +72,7 @@ impl Default for Config {
             gapless: true,
             language: "auto".into(),
             audio_extensions: Vec::new(),
+            equalizer: Vec::new(),
         }
     }
 }
@@ -172,6 +179,18 @@ pub fn all_sources(config: &Config) -> Vec<PathBuf> {
 }
 
 impl Config {
+    /// The equaliser bands, paired with their configured gains.
+    ///
+    /// A configuration with too few or too many gains is used as far as it
+    /// goes rather than rejected: a hand-edited file should not stop playback.
+    pub fn equalizer_bands(&self) -> Vec<(u32, f32)> {
+        EQUALIZER_BANDS
+            .iter()
+            .zip(self.equalizer.iter().copied().chain(std::iter::repeat(0.0)))
+            .map(|(frequency, gain)| (*frequency, gain.clamp(-12.0, 12.0)))
+            .collect()
+    }
+
     /// The scan options this configuration asks for.
     pub fn scan_options(&self) -> crate::library::ScanOptions {
         crate::library::ScanOptions {
@@ -187,5 +206,42 @@ impl Config {
                 self.audio_extensions.clone()
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_equalizer_is_flat() {
+        let config = Config::default();
+        let bands = config.equalizer_bands();
+        assert_eq!(bands.len(), EQUALIZER_BANDS.len());
+        assert!(bands.iter().all(|(_, gain)| *gain == 0.0));
+    }
+
+    #[test]
+    fn a_short_list_of_gains_is_used_as_far_as_it_goes() {
+        // A hand-edited configuration file should not stop playback.
+        let config = Config {
+            equalizer: vec![3.0, -2.0],
+            ..Config::default()
+        };
+        let bands = config.equalizer_bands();
+        assert_eq!(bands[0], (EQUALIZER_BANDS[0], 3.0));
+        assert_eq!(bands[1], (EQUALIZER_BANDS[1], -2.0));
+        assert!(bands[2..].iter().all(|(_, gain)| *gain == 0.0));
+    }
+
+    #[test]
+    fn extra_gains_are_ignored_and_absurd_ones_clamped() {
+        let config = Config {
+            equalizer: vec![99.0; EQUALIZER_BANDS.len() + 4],
+            ..Config::default()
+        };
+        let bands = config.equalizer_bands();
+        assert_eq!(bands.len(), EQUALIZER_BANDS.len());
+        assert!(bands.iter().all(|(_, gain)| *gain == 12.0));
     }
 }

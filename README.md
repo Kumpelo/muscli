@@ -59,7 +59,15 @@ muscli library write-gain --yes
 muscli doctor
 muscli playlist export NAME playlist.m3u8
 muscli playlist import playlist.m3u8
+muscli summary --days 30
 ```
+
+`muscli summary` reports what you have been listening to from the local index.
+Like everything else here, it sends nothing anywhere.
+
+An eight-band equaliser is configured with `equalizer` in `config.toml`, as
+gains in decibels from low to high; all zero means the filter is not installed
+at all.
 
 FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
 indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and

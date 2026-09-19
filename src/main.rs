@@ -259,6 +259,32 @@ fn main() -> Result<()> {
                 println!("{}", t!("cli.lyrics_imported", path = written.display()));
             }
         },
+        Some(Command::Summary { days }) => {
+            let db = Database::open(&paths.database_file())?;
+            let since = days.map(|days| chrono::Utc::now().timestamp() - days.max(0) * 86_400);
+            let summary = db.listening_summary(since)?;
+            let hours = summary.listened_ms as f64 / 3_600_000.0;
+            println!(
+                "{}",
+                t!(
+                    "cli.summary_totals",
+                    plays = summary.plays,
+                    hours = format!("{hours:.1}")
+                )
+            );
+            if !summary.top_tracks.is_empty() {
+                println!("\n{}", t!("cli.summary_tracks"));
+                for (rank, row) in summary.top_tracks.iter().enumerate() {
+                    println!("{:>3}. {:<52} {}", rank + 1, row.label, row.count);
+                }
+            }
+            if !summary.top_artists.is_empty() {
+                println!("\n{}", t!("cli.summary_artists"));
+                for (rank, row) in summary.top_artists.iter().enumerate() {
+                    println!("{:>3}. {:<52} {}", rank + 1, row.label, row.count);
+                }
+            }
+        }
         Some(Command::Doctor) => {
             for check in doctor::run(&paths, &config)? {
                 println!(

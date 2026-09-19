@@ -26,6 +26,14 @@ pub enum Command {
         #[command(subcommand)]
         command: LibraryCommand,
     },
+    /// Show what you have been listening to
+    ///
+    /// Computed from the local index; nothing leaves the machine.
+    Summary {
+        /// Only count plays from the last N days
+        #[arg(long)]
+        days: Option<i64>,
+    },
     /// Check runtime and desktop integration
     Doctor,
     /// Configure desktop integration
