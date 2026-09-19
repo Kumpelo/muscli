@@ -45,6 +45,7 @@ const TAIL_FRAMES: usize = 2_048;
 #[derive(Debug)]
 pub enum Command {
     Load { path: PathBuf, position_ms: u64 },
+    Prefetch(Option<PathBuf>),
     Pause(bool),
     Toggle,
     SeekAbsolute(u64),
@@ -85,7 +86,9 @@ struct Stream {
     staging: Vec<f32>,
     marks: VecDeque<Mark>,
     pushed: u64,
-    /// Set once the file has been read to the end.
+    /// Output frames at which a following track begins, in order.
+    handovers: VecDeque<u64>,
+    /// Set once the last file has been read to the end.
     source_done: bool,
     /// Output frame the audio runs out at, once everything has been staged.
     ends_at: Option<u64>,
@@ -119,6 +122,9 @@ pub struct Engine {
     /// than something that needs a lock on the audio path.
     position_ms: Arc<AtomicU64>,
     stream: Option<Stream>,
+    /// The track queued behind the one playing, opened early so the join
+    /// costs no file opening at the moment it has to be seamless.
+    prefetch: Option<Decoder>,
     paused: bool,
 }
 
@@ -135,6 +141,7 @@ impl Engine {
             events,
             position_ms,
             stream: None,
+            prefetch: None,
             paused: false,
         }
     }
@@ -153,7 +160,26 @@ impl Engine {
 
     pub fn handle(&mut self, command: Command) {
         let outcome = match command {
-            Command::Load { path, position_ms } => self.load(&path, position_ms),
+            Command::Load { path, position_ms } => {
+                self.prefetch = None;
+                self.load(&path, position_ms)
+            }
+            Command::Prefetch(path) => {
+                self.prefetch = match path {
+                    // Opened now rather than when the current track ends:
+                    // opening a file is the one thing in the handover that
+                    // could take long enough to be heard.
+                    Some(path) => match Decoder::open(&path) {
+                        Ok(decoder) => Some(decoder),
+                        Err(error) => {
+                            let _ = self.events.send(PlayerEvent::Error(error.to_string()));
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                Ok(())
+            }
             Command::Pause(paused) => self.set_paused(paused),
             Command::Toggle => self.set_paused(!self.paused),
             Command::SeekAbsolute(position_ms) => self.seek(position_ms),
@@ -228,6 +254,20 @@ impl Engine {
         let duplicate = channels == 2 && source_channels == 1;
         let sample_rate = choose_rate(spec.sample_rate, &self.output.rates(channels))
             .ok_or_else(|| anyhow!("the output offers no sample rate at all"))?;
+        // Bit-perfect means the device gets the file's samples and nothing
+        // else. Converting the rate or the channel count is exactly what it
+        // exists to rule out, so when the device will not match the file the
+        // honest thing is to say so and play it properly instead of quietly
+        // converting under a setting that promises the opposite.
+        let untouched = !self.settings.bit_perfect
+            || (sample_rate == spec.sample_rate && channels == source_channels);
+        if !untouched {
+            let _ = self.events.send(PlayerEvent::Notice(format!(
+                "bit-perfect is off for this track: the output will not take {} Hz in {} channels",
+                spec.sample_rate, source_channels
+            )));
+        }
+
         let resampler = (sample_rate != spec.sample_rate)
             .then(|| Resampler::new(spec.sample_rate, sample_rate, usize::from(source_channels)))
             .transpose()?;
@@ -242,6 +282,7 @@ impl Engine {
         let state = Arc::new(SinkState::default());
 
         let mut chain = Chain::new(sample_rate, usize::from(channels), &self.settings);
+        chain.set_bit_perfect(self.settings.bit_perfect && untouched);
         chain.settle();
 
         self.output
@@ -264,6 +305,7 @@ impl Engine {
             sample_rate,
             staging: Vec::new(),
             marks: VecDeque::new(),
+            handovers: VecDeque::new(),
             pushed: 0,
             source_done: false,
             ends_at: None,
@@ -337,6 +379,31 @@ impl Engine {
             let mut block = match stream.decoder.next_block() {
                 Ok(Some(block)) => block.to_vec(),
                 Ok(None) => {
+                    // A following track can join this stream only if it is
+                    // the same shape: the device is already open at this
+                    // rate, and the converter, if there is one, is halfway
+                    // through a filter that only means anything for this
+                    // rate. Anything else has to start a new stream, which
+                    // is a gap, and there is no way around that.
+                    if let Some(next) = self
+                        .prefetch
+                        .take_if(|next| next.spec() == stream.decoder.spec())
+                    {
+                        if let Some(duration) = next.duration_ms() {
+                            let _ = self.events.send(PlayerEvent::Duration(duration));
+                        }
+                        stream.decoder = next;
+                        // Plus the chain's own delay: the samples staged from
+                        // here on are the next track's, but what the device
+                        // is playing at that frame is still the limiter's
+                        // hold of the last one.
+                        stream.handovers.push_back(
+                            stream.pushed
+                                + stream.staging.len() as u64 / u64::from(stream.channels)
+                                + stream.chain.latency_frames() as u64,
+                        );
+                        continue;
+                    }
                     stream.source_done = true;
                     // A converter holds most of its filter length; feeding it
                     // silence walks the last of the music out of it, which
@@ -396,6 +463,17 @@ impl Engine {
             let elapsed = (played - mark.output_frame) * 1_000 / u64::from(stream.sample_rate);
             self.position_ms
                 .store(mark.source_ms + elapsed, Ordering::Relaxed);
+        }
+
+        while stream
+            .handovers
+            .front()
+            .is_some_and(|frame| *frame <= played)
+        {
+            stream.handovers.pop_front();
+            // The same signal mpv gives when it rolls into the next playlist
+            // entry, so the application's bookkeeping is the same either way.
+            let _ = self.events.send(PlayerEvent::PlaylistPosition(1));
         }
 
         if let Some(ends_at) = stream.ends_at

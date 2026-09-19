@@ -47,7 +47,7 @@ use workers::{
 };
 
 use crate::{
-    audio::{AudioBackend, MpvPlayer, dsp::Settings as DspSettings, native::player::NativePlayer},
+    audio::{AudioBackend, MpvPlayer, dsp::Settings as DspSettings, hybrid::HybridPlayer},
     config::{AudioBackendChoice, Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
     db::{Database, HistoryUpdate, group_albums, group_artists},
@@ -384,7 +384,10 @@ fn start_player(
         let device = Some(config.audio_device.trim())
             .filter(|name| !name.is_empty())
             .map(str::to_string);
-        match NativePlayer::start(device, settings, events.clone()) {
+        // The hybrid, not the native backend alone: a library with an Opus
+        // file in it would otherwise skip past it, and the setting the
+        // listener chose was "play this well", not "play some of this".
+        match HybridPlayer::start(device, settings, &paths.mpv_socket(), events.clone()) {
             Ok(player) => return Ok((Box::new(player), None)),
             Err(error) => {
                 return Ok((

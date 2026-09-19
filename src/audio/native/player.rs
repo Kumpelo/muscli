@@ -154,10 +154,7 @@ impl AudioBackend for NativePlayer {
             replay_gain: true,
             equalizer: true,
             volume: true,
-            // Not yet: the engine plays one file at a time. Saying so is what
-            // keeps the interface from promising a seamless join it cannot
-            // deliver.
-            gapless: false,
+            gapless: true,
         }
     }
 
@@ -168,11 +165,13 @@ impl AudioBackend for NativePlayer {
         })
     }
 
-    fn set_prefetch(&mut self, _path: Option<&Path>) -> Result<()> {
-        Ok(())
+    fn set_prefetch(&mut self, path: Option<&Path>) -> Result<()> {
+        self.send(Command::Prefetch(path.map(Path::to_path_buf)))
     }
 
     fn adopt_prefetch(&mut self) -> Result<()> {
+        // The engine crossed into the next track by itself and said so; there
+        // is no playlist entry left over to retire, as there is with mpv.
         Ok(())
     }
 

@@ -16,6 +16,7 @@ use anyhow::Result;
 
 pub mod decode;
 pub mod dsp;
+pub mod hybrid;
 pub mod measure;
 pub mod mpv;
 pub mod native;

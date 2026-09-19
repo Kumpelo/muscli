@@ -354,3 +354,122 @@ fn the_backend_plays_a_file_through_its_own_thread() {
         "after {played} ms of audio the position reads {position} ms"
     );
 }
+
+#[test]
+fn a_queued_track_joins_the_one_playing_without_a_gap() {
+    // The whole point of prefetching: an album side that was mastered to run
+    // together has to run together, with no silence and no restart of the
+    // device at the join.
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 200)),
+    )
+    .expect("write the first fixture");
+    fs::write(
+        &second,
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 200)),
+    )
+    .expect("write the second fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(AtomicU64::new(0));
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        Arc::clone(&position),
+    );
+
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    engine.handle(Command::Prefetch(Some(second.clone())));
+    assert!(errors(&mut events).is_empty());
+
+    let expected: Vec<f32> = decoded(&first)
+        .into_iter()
+        .chain(decoded(&second))
+        .collect();
+    let mut captured = Vec::new();
+    while captured.len() < expected.len() {
+        engine.step();
+        captured.extend(capture.pull(BLOCK));
+    }
+
+    // One continuous stream: the second file's samples follow the first's
+    // with nothing inserted between them.
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = expected.len() - latency;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+
+    // And the application is told exactly once that it has moved on, so its
+    // queue index and its history follow the audio.
+    let mut handovers = 0;
+    let mut ends = 0;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            PlayerEvent::PlaylistPosition(position) if position >= 1 => handovers += 1,
+            PlayerEvent::EndOfFile => ends += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(handovers, 1, "the handover was announced {handovers} times");
+    assert_eq!(ends, 0, "the stream ended when it should have carried on");
+}
+
+#[test]
+fn a_queued_track_of_another_shape_is_not_forced_to_join() {
+    // Joining a stream at one rate to a file at another would play the second
+    // at the wrong speed. Better a gap, and an ordinary end of file, so the
+    // application reloads and the device reopens.
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 100)),
+    )
+    .expect("write the first fixture");
+    fs::write(
+        &second,
+        common::flac_bytes(48_000, &common::sine(48_000, 440.0, 100)),
+    )
+    .expect("write the second fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE, 48_000]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(AtomicU64::new(0));
+    let mut engine = Engine::new(Box::new(output), Settings::default(), sender, position);
+
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    engine.handle(Command::Prefetch(Some(second)));
+
+    let frames = RATE as usize / 10;
+    for _ in 0..(frames / BLOCK + 8) {
+        engine.step();
+        capture.pull(BLOCK);
+    }
+
+    let mut ends = 0;
+    let mut handovers = 0;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            PlayerEvent::EndOfFile => ends += 1,
+            PlayerEvent::PlaylistPosition(position) if position >= 1 => handovers += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(handovers, 0, "a file at another rate was joined anyway");
+    assert_eq!(ends, 1, "the end of the first track was not announced");
+}

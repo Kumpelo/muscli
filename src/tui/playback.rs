@@ -541,6 +541,7 @@ impl App {
                 self.flush_history(true)?;
                 self.next()?
             }
+            PlayerEvent::Notice(message) => self.status = message,
             PlayerEvent::Error(error) => {
                 self.status = error;
                 self.next()?;

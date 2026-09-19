@@ -88,8 +88,16 @@ distortion at -144.8 dB, which is below what a 24-bit recording can hold.
 `bit_perfect = true` hands the decoder's output over untouched, which means
 giving up the volume control, ReplayGain and the equaliser to do it.
 
-mpv remains the default, and the one to use for Opus, WavPack and Monkey's
-Audio, which the native decoder does not read.
+Album sides that were mastered to run together do: the next track is opened
+early and joined to the one playing inside the same device stream, so the
+samples of the second follow the samples of the first with nothing between
+them. A track at a different sample rate cannot be joined that way and gets
+its own stream, which is a gap — there is no way around that.
+
+The native decoder does not read Opus, WavPack or Monkey's Audio, so files it
+cannot read are handed to mpv automatically, chosen by opening the file
+rather than by trusting its extension. mpv is started only if some file needs
+it.
 
 An eight-band equaliser is configured with `equalizer` in `config.toml`, as
 gains in decibels from low to high; all zero means the filter is not installed

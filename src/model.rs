@@ -230,6 +230,10 @@ pub enum PlayerEvent {
     Paused(bool),
     Volume(f64),
     EndOfFile,
+    /// Something the listener should know that is not a failure, such as a
+    /// setting that could not be honoured for this particular file. Unlike
+    /// [`PlayerEvent::Error`] it does not skip the track.
+    Notice(String),
     Error(String),
 }
 
