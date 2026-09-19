@@ -55,6 +55,7 @@ muscli library list
 muscli library rescan
 muscli library prune
 muscli library analyze-gain
+muscli library write-gain --yes
 muscli doctor
 ```
 
@@ -110,6 +111,11 @@ cargo build --release
 CI runs these checks on Linux and Windows. Tags matching `v*` create draft
 GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
 CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.1`.
+
+`muscli library write-gain` is the only command that modifies your audio files.
+It writes the cached loudness analysis into their ReplayGain tags so other
+players can use it, and requires `--yes`. Everything else muscli does reads
+your files and never writes to them.
 
 ## Lyrics
 

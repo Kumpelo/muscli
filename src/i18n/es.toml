@@ -59,6 +59,8 @@
 "cli.removable" = "extraíble"
 "cli.removed" = "Eliminada {path}"
 "cli.rescan_requested" = "Reescaneo solicitado a la instancia de muscli en marcha"
+"cli.write_gain_confirm" = "esto reescribe tags en tus archivos de audio; pasa --yes para confirmar"
+"cli.write_gain_done" = "Escritos tags de ReplayGain en {written} archivos ({skipped} omitidos)"
 "context.add_to_playlist" = "Añadir a playlist"
 "context.enqueue" = "Añadir al final"
 "context.favorite" = "Favorito"

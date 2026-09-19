@@ -65,6 +65,15 @@ pub enum LibraryCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Write cached ReplayGain results into the audio files themselves
+    ///
+    /// This is the only command that modifies your files. Nothing else muscli
+    /// does writes to them.
+    WriteGain {
+        /// Required: confirms you want the files on disk changed
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

@@ -132,6 +132,48 @@ fn first_number(value: &str) -> Option<f64> {
         .and_then(|number| number.parse().ok())
 }
 
+/// Write the analysis into the file's own tags.
+///
+/// This is the only thing muscli does that modifies a user's audio files, so
+/// it never happens as part of a scan or of analysis: it is a separate command
+/// that has to be asked for. Existing tags with these names are replaced;
+/// nothing else in the file is touched.
+pub fn write_tags(path: &Path, analysis: ReplayGainAnalysis) -> Result<()> {
+    use lofty::{
+        config::WriteOptions,
+        file::TaggedFileExt,
+        prelude::{ItemKey, TagExt},
+        probe::Probe,
+        tag::{Tag, TagType},
+    };
+
+    let tagged = Probe::open(path)
+        .with_context(|| format!("could not open {}", path.display()))?
+        .guess_file_type()?
+        .read()?;
+    // Start from the file's existing tag so nothing else in it is lost; fall
+    // back to a fresh Vorbis comment block for a file with no tag at all.
+    let mut tag = tagged
+        .primary_tag()
+        .or_else(|| tagged.first_tag())
+        .cloned()
+        .unwrap_or_else(|| Tag::new(TagType::VorbisComments));
+
+    // The ReplayGain 1.0 field names, in the units the specification defines.
+    tag.insert_text(
+        ItemKey::ReplayGainTrackGain,
+        format!("{:.2} dB", analysis.gain_db),
+    );
+    tag.insert_text(
+        ItemKey::ReplayGainTrackPeak,
+        format!("{:.6}", 10f64.powf(analysis.true_peak_db / 20.0)),
+    );
+
+    tag.save_to_path(path, WriteOptions::default())
+        .with_context(|| format!("could not write tags to {}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
