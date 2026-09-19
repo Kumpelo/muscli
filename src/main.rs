@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -181,8 +184,8 @@ fn main() -> Result<()> {
                     .collect();
                 // Relative to the playlist's own directory, so it stays valid
                 // if the whole tree moves.
-                let base = path.parent().map(Path::to_path_buf);
-                std::fs::write(&path, m3u::render(&rows, base.as_deref()))?;
+                let base = absolute_playlist_base(&path)?;
+                std::fs::write(&path, m3u::render(&rows, Some(&base)))?;
                 println!(
                     "{}",
                     t!(
@@ -207,17 +210,35 @@ fn main() -> Result<()> {
                 });
                 let playlist = db.create_playlist(&name)?;
 
+                // Build the lookup once. Canonicalizing every library path for
+                // every playlist entry turns a large import into O(n*m)
+                // filesystem work.
+                let mut tracks_by_path = HashMap::<PathBuf, String>::with_capacity(tracks.len() * 2);
+                for track in &tracks {
+                    tracks_by_path
+                        .entry(track.path.clone())
+                        .or_insert_with(|| track.id.clone());
+                    if let Ok(canonical) = track.path.canonicalize() {
+                        tracks_by_path
+                            .entry(canonical)
+                            .or_insert_with(|| track.id.clone());
+                    }
+                }
+
                 let mut added = 0usize;
                 let mut missing = Vec::new();
                 for entry in entries {
-                    // Match on the canonical path so a playlist written with a
-                    // different spelling of the same location still resolves.
-                    let wanted = entry.path.canonicalize().unwrap_or(entry.path.clone());
-                    match tracks.iter().find(|track| {
-                        track.path == wanted || track.path.canonicalize().is_ok_and(|p| p == wanted)
-                    }) {
-                        Some(track) => {
-                            db.add_to_playlist(playlist, &track.id)?;
+                    // Match on both the written path and its canonical spelling
+                    // without rescanning/canonicalizing the whole library.
+                    let canonical = entry.path.canonicalize().ok();
+                    let track_id = tracks_by_path.get(&entry.path).or_else(|| {
+                        canonical
+                            .as_ref()
+                            .and_then(|canonical| tracks_by_path.get(canonical))
+                    });
+                    match track_id {
+                        Some(track_id) => {
+                            db.add_to_playlist(playlist, track_id)?;
                             added += 1;
                         }
                         None => missing.push(
@@ -356,6 +377,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn absolute_playlist_base(path: &Path) -> Result<PathBuf> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    if parent.is_absolute() {
+        Ok(parent.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(parent))
+    }
+}
+
 fn lyrics_name_for_track(db: &Database, id: &str) -> Result<String> {
     let stored_id = db
         .load_tracks()?
@@ -380,6 +410,18 @@ fn resolve_language(flag: Option<&str>, configured: &str) -> Language {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_playlist_exports_use_an_absolute_base() {
+        let base = absolute_playlist_base(Path::new("Music/list.m3u8"))
+            .expect("resolving the export directory");
+        assert_eq!(
+            base,
+            std::env::current_dir()
+                .expect("reading the current directory")
+                .join("Music")
+        );
+    }
 
     #[test]
     fn lyrics_import_rejects_an_unknown_track_id() {
