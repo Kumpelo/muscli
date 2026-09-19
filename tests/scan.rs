@@ -19,6 +19,7 @@ use common::{Fixture, TrackSpec, png_bytes, write_track};
 const OPTIONS: ScanOptions = ScanOptions {
     threads: 0,
     cover_cache_bytes: 64 * 1024 * 1024,
+    full: true,
 };
 
 fn open_db(fixture: &Fixture) -> Database {
@@ -473,6 +474,7 @@ fn one_thread_and_four_threads_produce_identical_results() {
             ScanOptions {
                 threads,
                 cover_cache_bytes: 64 * 1024 * 1024,
+                full: true,
             },
         )
         .expect("scanning the test source");
@@ -609,5 +611,55 @@ fn covers_cached_by_an_older_version_are_reused_not_replaced() {
         db.load_tracks().expect("loading tracks")[0].cover_path,
         Some(legacy),
         "and the row should point at the cover that was kept"
+    );
+}
+
+#[test]
+fn a_partial_scan_does_not_declare_other_sources_missing() {
+    // The trap in rescanning only what changed: mark_missing_sources marks
+    // every source that was not visited as unplugged. Running it on a partial
+    // pass would take the rest of the library offline because one folder was
+    // touched.
+    let fixture = Fixture::new();
+    let other = fixture.source().parent().unwrap().join("second-drive");
+    write_track(
+        &fixture.source().join("first.flac"),
+        &TrackSpec::new("First"),
+    );
+    write_track(&other.join("second.flac"), &TrackSpec::new("Second"));
+
+    let mut db = open_db(&fixture);
+    let both: Vec<PathBuf> = vec![fixture.source(), other.clone()];
+    scan_to_database(&mut db, fixture.paths(), &both, OPTIONS).expect("full scan");
+    assert!(
+        db.load_tracks()
+            .unwrap()
+            .iter()
+            .all(|track| track.available),
+        "both sources start available"
+    );
+
+    // Now rescan only the first source, as a file change there would.
+    let partial = ScanOptions {
+        full: false,
+        ..OPTIONS
+    };
+    scan_to_database(&mut db, fixture.paths(), &[fixture.source()], partial).expect("partial scan");
+
+    let tracks = db.load_tracks().expect("loading tracks");
+    assert_eq!(tracks.len(), 2);
+    assert!(
+        tracks.iter().all(|track| track.available),
+        "a partial scan must leave sources it did not visit alone"
+    );
+
+    // A full pass is still allowed to notice a source really has gone.
+    fs::remove_dir_all(&other).expect("unplugging the second drive");
+    scan_to_database(&mut db, fixture.paths(), &both, OPTIONS).expect("full rescan");
+    let tracks = db.load_tracks().expect("loading tracks");
+    assert_eq!(
+        tracks.iter().filter(|track| !track.available).count(),
+        1,
+        "the drive that actually went away is marked unavailable"
     );
 }

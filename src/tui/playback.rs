@@ -185,7 +185,7 @@ impl App {
             RemoteCommand::MuteToggle => self.handle_action(PlayerAction::MuteToggle)?,
             RemoteCommand::Rescan => {
                 if self.scan_running {
-                    self.scan_pending = true;
+                    self.scan_pending.record_full_rescan();
                 } else {
                     self.start_scan();
                 }

@@ -66,6 +66,7 @@ fn main() -> Result<()> {
                     library::ScanOptions {
                         threads: config.scan_threads,
                         cover_cache_bytes: config.cover_cache_mb * 1024 * 1024,
+                        full: true,
                     },
                 )?;
                 println!(

@@ -7,6 +7,41 @@
 
 use super::*;
 
+/// Sources waiting to be rescanned.
+///
+/// A file change only ever affects one source, so tracking which one avoids
+/// walking every drive because one tag was edited. "Everything" is kept as a
+/// distinct state because it is not the same request: only a full pass may
+/// decide that a source has gone missing.
+#[derive(Debug, Default)]
+pub(super) struct PendingScan {
+    roots: BTreeSet<PathBuf>,
+    everything: bool,
+}
+
+impl PendingScan {
+    pub(super) fn record(&mut self, event: WatchEvent) {
+        match event {
+            WatchEvent::Source(root) => {
+                self.roots.insert(root);
+            }
+            WatchEvent::SourcesChanged => self.everything = true,
+        }
+    }
+
+    pub(super) fn record_full_rescan(&mut self) {
+        self.everything = true;
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        !self.everything && self.roots.is_empty()
+    }
+
+    pub(super) fn take(&mut self) -> Self {
+        std::mem::take(self)
+    }
+}
+
 impl App {
     pub(super) fn reload_library(&mut self) -> Result<()> {
         let _profile = crate::profiling::span("reload_library");
@@ -191,8 +226,38 @@ impl App {
         }
     }
 
+    /// Rescan every configured and discovered source.
     pub(super) fn start_scan(&mut self) {
         let roots = all_sources(&self.config);
+        self.spawn_scan(roots, true);
+    }
+
+    /// Act on what the watcher reported.
+    pub(super) fn start_pending_scan(&mut self, pending: PendingScan) {
+        if pending.everything {
+            self.start_scan();
+            return;
+        }
+        // Only look at the sources that actually changed, and keep the roots
+        // that are still configured: a source removed from the config while the
+        // event was in flight should not come back.
+        let known = all_sources(&self.config);
+        let roots: Vec<PathBuf> = pending
+            .roots
+            .into_iter()
+            .filter(|root| known.contains(root))
+            .collect();
+        if roots.is_empty() {
+            return;
+        }
+        self.spawn_scan(roots, false);
+    }
+
+    /// `full` says whether this pass covers every source. It must, before any
+    /// source can be declared missing: a partial scan that ran
+    /// mark_missing_sources would mark every drive it did not visit as
+    /// unplugged and take the whole library offline.
+    fn spawn_scan(&mut self, roots: Vec<PathBuf>, full: bool) {
         let tx = self.scan_tx.clone();
         let paths = self.paths.clone();
         let cover_cache_bytes = self.config.cover_cache_mb * 1024 * 1024;
@@ -257,10 +322,12 @@ impl App {
                     }
                 }
 
-                match db.mark_missing_sources(&ids) {
-                    Ok(count) => changed |= count > 0,
-                    Err(error) => {
-                        let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
+                if full {
+                    match db.mark_missing_sources(&ids) {
+                        Ok(count) => changed |= count > 0,
+                        Err(error) => {
+                            let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
+                        }
                     }
                 }
                 match db.referenced_cover_paths() {
@@ -386,5 +453,51 @@ impl App {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root(name: &str) -> PathBuf {
+        PathBuf::from(name)
+    }
+
+    #[test]
+    fn nothing_is_pending_to_begin_with() {
+        assert!(PendingScan::default().is_empty());
+    }
+
+    #[test]
+    fn file_events_collect_the_sources_they_touched() {
+        let mut pending = PendingScan::default();
+        pending.record(WatchEvent::Source(root("/music")));
+        pending.record(WatchEvent::Source(root("/media/usb")));
+        // Repeats of the same source must not queue a second pass.
+        pending.record(WatchEvent::Source(root("/music")));
+
+        assert!(!pending.is_empty());
+        let taken = pending.take();
+        assert_eq!(taken.roots.len(), 2);
+        assert!(!taken.everything, "a file change is not a full rescan");
+        assert!(pending.is_empty(), "taking leaves nothing behind");
+    }
+
+    #[test]
+    fn a_drive_appearing_escalates_to_a_full_pass() {
+        // Which sources exist may have changed, and only a full pass is allowed
+        // to conclude that one has gone missing.
+        let mut pending = PendingScan::default();
+        pending.record(WatchEvent::Source(root("/music")));
+        pending.record(WatchEvent::SourcesChanged);
+        assert!(pending.take().everything);
+    }
+
+    #[test]
+    fn an_explicit_rescan_is_always_full() {
+        let mut pending = PendingScan::default();
+        pending.record_full_rescan();
+        assert!(pending.take().everything);
     }
 }
