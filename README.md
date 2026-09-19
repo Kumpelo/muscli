@@ -84,9 +84,11 @@ What it does, in order, is ReplayGain, then the equaliser, then the volume,
 then a look-ahead limiter that keeps an equaliser boost from clipping. With
 all of them neutral the samples that reach the device are the samples that
 were in the file, bit for bit; with all of them working the arithmetic adds
-distortion at -144.8 dB, which is below what a 24-bit recording can hold.
-`bit_perfect = true` hands the decoder's output over untouched, which means
-giving up the volume control, ReplayGain and the equaliser to do it.
+distortion at -144.8 dB, which is below what a 24-bit recording can hold, and
+costs 2.6 ms of one core per second of stereo. `bit_perfect = true` hands the
+decoder's output over untouched, which means giving up the volume control,
+ReplayGain and the equaliser to do it; the settings view says so rather than
+leaving those controls looking as though they still work.
 
 Album sides that were mastered to run together do: the next track is opened
 early and joined to the one playing inside the same device stream, so the

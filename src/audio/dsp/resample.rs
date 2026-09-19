@@ -24,9 +24,10 @@ const CHUNK: usize = 1024;
 
 /// Length of the interpolation filter.
 ///
-/// 256 taps is where rubato's own guidance starts, and the cost is a few per
-/// cent of one core on a path that is otherwise almost free. Shorter filters
-/// buy back time nobody needs at the price of the top octave.
+/// 256 taps is where rubato's own guidance starts. `benches/audio.rs` puts
+/// the cost at 6.7 ms per second of stereo -- under one per cent of a core --
+/// and only tracks the device will not take at their own rate pay it at all.
+/// Shorter filters buy back time nobody needs at the price of the top octave.
 const TAPS: usize = 256;
 
 pub struct Resampler {

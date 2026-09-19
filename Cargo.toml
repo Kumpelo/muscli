@@ -78,6 +78,10 @@ codegen-units = 1
 strip = true
 
 [[bench]]
+name = "audio"
+harness = false
+
+[[bench]]
 name = "scan"
 harness = false
 
