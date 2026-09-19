@@ -155,6 +155,7 @@ impl AudioBackend for NativePlayer {
             equalizer: true,
             volume: true,
             gapless: true,
+            bit_perfect: true,
         }
     }
 
@@ -201,6 +202,10 @@ impl AudioBackend for NativePlayer {
 
     fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()> {
         self.send(Command::Equalizer(bands.to_vec()))
+    }
+
+    fn set_bit_perfect(&mut self, on: bool) -> Result<()> {
+        self.send(Command::BitPerfect(on))
     }
 
     fn stop(&mut self) -> Result<()> {

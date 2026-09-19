@@ -255,6 +255,9 @@ impl AudioBackend for MpvPlayer {
             equalizer: true,
             volume: true,
             gapless: true,
+            // mpv decodes and converts on its own terms; there is no way to
+            // ask it for the file's samples and nothing else.
+            bit_perfect: false,
         }
     }
 

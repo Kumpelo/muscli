@@ -39,6 +39,8 @@ pub struct Capabilities {
     pub volume: bool,
     /// Whether the next track can begin without a gap.
     pub gapless: bool,
+    /// Whether the samples can be handed to the device untouched.
+    pub bit_perfect: bool,
 }
 
 pub trait AudioBackend: Send {
@@ -72,6 +74,15 @@ pub trait AudioBackend: Send {
 
     /// Apply equaliser gains in decibels, as (centre frequency, gain) pairs.
     fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()>;
+
+    /// Hand the decoder's samples to the device untouched, or stop doing so.
+    ///
+    /// Only called on a backend whose capabilities say it can; the default
+    /// exists so that one which cannot does not have to write a refusal it
+    /// will never be asked for.
+    fn set_bit_perfect(&mut self, _on: bool) -> Result<()> {
+        Ok(())
+    }
 
     fn stop(&mut self) -> Result<()>;
 

@@ -36,6 +36,7 @@ pub struct HybridPlayer {
     volume: f64,
     replay_gain: Option<f64>,
     equalizer: Vec<(u32, f32)>,
+    bit_perfect: bool,
 }
 
 impl HybridPlayer {
@@ -47,6 +48,7 @@ impl HybridPlayer {
     ) -> Result<Self> {
         let volume = settings.volume;
         let equalizer = settings.equalizer.clone();
+        let bit_perfect = settings.bit_perfect;
         let native = NativePlayer::start(device, settings, events.clone())?;
 
         Ok(Self {
@@ -58,6 +60,7 @@ impl HybridPlayer {
             volume,
             replay_gain: None,
             equalizer,
+            bit_perfect,
         })
     }
 
@@ -96,6 +99,11 @@ impl HybridPlayer {
             self.native.stop()?;
         }
         self.on_mpv = wants_mpv;
+        if wants_mpv && self.bit_perfect {
+            let _ = self.events.send(PlayerEvent::Notice(
+                "bit-perfect is off for this track: only mpv can read it".to_string(),
+            ));
+        }
 
         let volume = self.volume;
         let replay_gain = self.replay_gain;
@@ -128,7 +136,10 @@ impl AudioBackend for HybridPlayer {
             replay_gain: true,
             equalizer: true,
             volume: true,
+            // Only on the native side; a file that has to go to mpv cannot
+            // be played untouched, and the interface says so when it happens.
             gapless: true,
+            bit_perfect: true,
         }
     }
 
@@ -184,6 +195,11 @@ impl AudioBackend for HybridPlayer {
     fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()> {
         self.equalizer = bands.to_vec();
         self.active().set_equalizer(bands)
+    }
+
+    fn set_bit_perfect(&mut self, on: bool) -> Result<()> {
+        self.bit_perfect = on;
+        self.native.set_bit_perfect(on)
     }
 
     fn stop(&mut self) -> Result<()> {
