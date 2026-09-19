@@ -3,6 +3,7 @@
 mod common;
 
 use muscli::db::Database;
+use rusqlite::Connection;
 
 #[test]
 fn an_unknown_track_has_no_gain_rather_than_an_error() {
@@ -148,6 +149,37 @@ fn the_listening_summary_counts_only_what_was_played() {
         summary.listened_ms > 0,
         "listening time is accumulated alongside the count"
     );
+}
+
+#[test]
+fn a_time_window_does_not_pull_lifetime_counts_into_the_period() {
+    let (fixture, mut db) = scanned_library();
+    let one = track_id(&db, "One");
+
+    play(&mut db, &one, 100);
+
+    let now = chrono::Utc::now().timestamp();
+    let since = now - 7 * 86_400;
+    let old = since - 86_400;
+    let conn = Connection::open(fixture.paths().database_file())
+        .expect("opening the database directly");
+    conn.execute(
+        "UPDATE history SET started_at=?1 WHERE track_id=?2",
+        rusqlite::params![old, one],
+    )
+    .expect("backdating the old history");
+    drop(conn);
+
+    // This updates the lifetime counter to 101 and last_played_at to now. A
+    // summary based on track_stats would therefore incorrectly report all 101.
+    play(&mut db, &one, 1);
+
+    let summary = db.listening_summary(Some(since)).expect("summarising");
+    assert_eq!(summary.plays, 1);
+    assert_eq!(summary.listened_ms, 180_000);
+    assert_eq!(summary.top_tracks.len(), 1);
+    assert_eq!(summary.top_tracks[0].count, 1);
+    assert_eq!(summary.top_artists[0].count, 1);
 }
 
 #[test]
