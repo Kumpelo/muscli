@@ -91,10 +91,27 @@ pub struct SmartRule {
     pub value: serde_json::Value,
 }
 
+impl SmartPlaylist {
+    /// What to show. A playlist muscli seeded follows the interface language;
+    /// one the user made keeps the name they gave it.
+    pub fn display_name(&self) -> &str {
+        match &self.preset_key {
+            Some(key) => crate::i18n::lookup(key),
+            None => &self.name,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SmartPlaylist {
     pub id: i64,
+    /// Name as stored. For a seeded preset this is the original English text;
+    /// what the interface shows comes from `preset_key`.
     pub name: String,
+    /// Translation key, for the playlists muscli seeds itself. `None` means a
+    /// playlist the user made, whose name is theirs and is never translated.
+    #[serde(default)]
+    pub preset_key: Option<String>,
     pub match_mode: SmartMatch,
     pub rules: Vec<SmartRule>,
     pub sort_field: String,

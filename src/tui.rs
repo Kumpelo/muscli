@@ -64,6 +64,7 @@ use crate::{
     paths::AppPaths,
     player::MpvPlayer,
     replaygain::{self, GainMessage},
+    t,
 };
 
 const VIEWS: [View; 13] = [
@@ -95,27 +96,22 @@ enum ContextAction {
     ShowArtist,
 }
 
+/// Paired with a translation key rather than a label; see ContextAction.
 const CONTEXT_ACTIONS: [(ContextAction, &str); 7] = [
-    (ContextAction::PlayNow, "Reproducir ahora"),
-    (ContextAction::PlayNext, "Reproducir después"),
-    (ContextAction::Enqueue, "Añadir al final"),
-    (ContextAction::ToggleFavorite, "Favorito"),
-    (ContextAction::AddToPlaylist, "Añadir a playlist"),
-    (ContextAction::ShowAlbum, "Mostrar álbum"),
-    (ContextAction::ShowArtist, "Mostrar artista"),
+    (ContextAction::PlayNow, "context.play_now"),
+    (ContextAction::PlayNext, "context.play_next"),
+    (ContextAction::Enqueue, "context.enqueue"),
+    (ContextAction::ToggleFavorite, "context.favorite"),
+    (ContextAction::AddToPlaylist, "context.add_to_playlist"),
+    (ContextAction::ShowAlbum, "context.show_album"),
+    (ContextAction::ShowArtist, "context.show_artist"),
 ];
 
 /// Help for keys the binding table cannot describe: the smart-playlist editor
 /// runs its own modal loop, and the Omarchy hotkeys belong to Hyprland.
 const EXTRA_HELP: [(&str, &str); 2] = [
-    (
-        "Editor de listas inteligentes",
-        "Tab cambia de campo · Enter edita el valor · a/d añade o quita regla · m modo · s orden · l límite · Ctrl+S guarda",
-    ),
-    (
-        "Omarchy global",
-        "Shift+Vol± volumen de muscli · Vol± volumen del sistema · Super+Shift+Alt+M compacto",
-    ),
+    ("help.editor.title", "help.editor.body"),
+    ("help.omarchy.title", "help.omarchy.body"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,25 +137,25 @@ enum View {
 
 impl View {
     fn title(self) -> &'static str {
-        match self {
-            Self::Home => "Inicio",
-            Self::Albums => "Álbumes",
-            Self::AlbumDetail => "Álbum",
-            Self::Artists => "Artistas",
-            Self::ArtistDetail => "Artista",
-            Self::Genres => "Géneros",
-            Self::GenreDetail => "Género",
-            Self::Tracks => "Canciones",
-            Self::Playlists => "Playlists",
-            Self::SmartPlaylists => "Listas inteligentes",
-            Self::SmartPlaylistDetail => "Lista inteligente",
-            Self::Favorites => "Favoritos",
-            Self::History => "Historial",
-            Self::Search => "Buscar",
-            Self::Queue => "Cola",
-            Self::Settings => "Settings",
-            Self::Help => "Ayuda",
-        }
+        t!(match self {
+            Self::Home => "view.home",
+            Self::Albums => "view.albums",
+            Self::AlbumDetail => "view.album",
+            Self::Artists => "view.artists",
+            Self::ArtistDetail => "view.artist",
+            Self::Genres => "view.genres",
+            Self::GenreDetail => "view.genre",
+            Self::Tracks => "view.tracks",
+            Self::Playlists => "view.playlists",
+            Self::SmartPlaylists => "view.smart_playlists",
+            Self::SmartPlaylistDetail => "view.smart_playlist",
+            Self::Favorites => "view.favorites",
+            Self::History => "view.history",
+            Self::Search => "view.search",
+            Self::Queue => "view.queue",
+            Self::Settings => "view.settings",
+            Self::Help => "view.help",
+        })
     }
 
     fn icon(self) -> &'static str {
@@ -324,12 +320,15 @@ pub async fn run(paths: AppPaths, config: Config, compact: bool) -> Result<()> {
     let _guard = InstanceGuard::acquire(&paths.lock_file())?;
     let (picker, protocol_note) = match Picker::from_query_stdio() {
         Ok(picker) => {
-            let note = format!("{:?} (detección automática)", picker.protocol_type());
+            let note = t!(
+                "label.image_protocol",
+                protocol = format!("{:?}", picker.protocol_type())
+            );
             (picker, note)
         }
         Err(error) => (
             Picker::halfblocks(),
-            format!("Halfblocks (fallback: {error})"),
+            t!("label.image_protocol_fallback", error = error),
         ),
     };
     let _ = fs::write(paths.image_protocol_file(), protocol_note);
@@ -361,7 +360,7 @@ async fn run_inner(
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
-        Err(error) => (None, Some(format!("MPRIS no disponible: {error}"))),
+        Err(error) => (None, Some(t!("status.mpris_unavailable", error = error))),
     };
     let (scan_tx, scan_rx) = tokio_mpsc::unbounded_channel();
     let (watch_tx, watch_rx) = tokio_mpsc::unbounded_channel();
@@ -459,7 +458,7 @@ async fn run_inner(
         reload_running: false,
         reload_again: false,
         last_scan: Instant::now() - Duration::from_secs(5),
-        status: mpris_warning.unwrap_or_else(|| "Cargando biblioteca…".into()),
+        status: mpris_warning.unwrap_or_else(|| t!("status.loading_library").into()),
         should_quit: false,
         dirty: true,
         covers: Covers {
@@ -510,7 +509,11 @@ async fn run_inner(
         app.load_current(resume_position)?;
         app.mpv.pause(true)?;
         app.playback.status = PlaybackStatus::Paused;
-        app.status = format!("Sesión restaurada: {} — {}", track.title, track.artist);
+        app.status = t!(
+            "status.session_restored",
+            title = track.title,
+            artist = track.artist
+        );
     }
     app.start_scan();
     app.start_gain_analysis()?;
@@ -634,8 +637,8 @@ async fn run_inner(
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;
                 if app.covers.pending_signature != app.covers.drawn_signature {
-                    // Las portadas cambiaron de sitio: un repintado parcial deja
-                    // mezcladas la vieja y la nueva, así que limpio y redibujo.
+                    // The covers moved. A partial repaint would leave the old
+                    // and the new mixed together, so clear and redraw.
                     app.covers.drawn_signature = app.covers.pending_signature;
                     terminal.clear()?;
                     terminal.draw(|frame| draw(frame, &mut app))?;
@@ -1085,7 +1088,7 @@ impl App {
         let name = artist.name.clone();
         self.push_nav(NavTarget::Artist(name), View::ArtistDetail);
         self.refresh_artist_releases();
-        self.status = "Selecciona un álbum o single · Esc para volver".into();
+        self.status = t!("status.pick_release").into();
     }
 
     fn close_artist_detail(&mut self) {
@@ -1119,7 +1122,7 @@ impl App {
             return;
         };
         self.push_nav(NavTarget::Album(album_key), View::AlbumDetail);
-        self.status = "Selecciona una canción · Esc para volver".into();
+        self.status = t!("status.pick_track").into();
     }
 
     fn close_album_detail(&mut self) {
@@ -1224,7 +1227,7 @@ impl App {
                 .is_some_and(|&i| self.tracks[i].available)
         });
         if ids.is_empty() {
-            self.status = "No hay pistas disponibles en esta selección".into();
+            self.status = t!("status.nothing_playable").into();
             return Ok(());
         }
         let target = self.selected_track_id();
@@ -1250,9 +1253,9 @@ impl App {
 }
 
 fn resize_terminal_for_mode(compact: bool) -> Result<()> {
-    // El tamaño real de la ventana lo decide esto, no la regla de Hyprland: al
-    // pedir N celdas, el terminal se redimensiona. En una pantalla de 1920x1080
-    // con celdas de ~10x18 px, 180x52 ocupa unos 1790x960 px.
+    // This, not the Hyprland rule, is what decides the real window size:
+    // asking for N cells makes the terminal resize. On a 1920x1080 screen with
+    // roughly 10x18 px cells, 180x52 comes to about 1790x960 px.
     let (columns, rows) = if compact { (95, 32) } else { (180, 52) };
     crossterm::execute!(std::io::stdout(), SetSize(columns, rows))?;
     Ok(())
@@ -1285,8 +1288,9 @@ fn shifted_index(current: usize, amount: isize, len: usize) -> usize {
     (current as isize + amount).clamp(0, len.saturating_sub(1) as isize) as usize
 }
 fn empty_library(theme: UiTheme) -> Paragraph<'static> {
-    Paragraph::new("\nNo encontré archivos FLAC.\n\nInserta una SD/USB o ejecuta:\nmuscli library add /ruta/a/Music")
-        .alignment(Alignment::Center).style(Style::default().fg(theme.muted))
+    Paragraph::new(t!("empty.library"))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(theme.muted))
 }
 
 fn format_duration(ms: u64) -> String {

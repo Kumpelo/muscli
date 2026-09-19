@@ -5,6 +5,7 @@
 //! positions, and mirroring the current state to MPRIS, SMTC and Discord.
 
 use super::*;
+use crate::t;
 
 /// Listening accounting for the track currently loaded.
 ///
@@ -83,7 +84,7 @@ impl App {
             return Ok(());
         };
         if !track.available || !track.path.exists() {
-            self.status = format!("No disponible: {}", track.title);
+            self.status = t!("status.unavailable", title = track.title);
             self.playback.status = PlaybackStatus::Stopped;
             self.mpv.stop()?;
             self.dirty = true;
@@ -210,7 +211,7 @@ impl App {
             return self.load_current(0);
         }
         self.playback.status = PlaybackStatus::Stopped;
-        self.status = "No quedan pistas disponibles en la cola".into();
+        self.status = t!("status.queue_exhausted").into();
         self.mpv.stop()?;
         self.dirty = true;
         Ok(())
@@ -309,9 +310,10 @@ impl App {
                 )?;
                 let references = self.db.clear_cover_paths(&removed)?;
                 self.reload_library()?;
-                self.status = format!(
-                    "Limpieza: {tracks} pistas, {} referencias de portada",
-                    covers + references
+                self.status = t!(
+                    "status.cleanup",
+                    tracks = tracks,
+                    covers = covers + references
                 );
             }
         }

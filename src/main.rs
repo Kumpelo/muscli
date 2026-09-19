@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use muscli::t;
 
 use muscli::{
     cli::{
@@ -9,7 +10,9 @@ use muscli::{
     config::{Config, all_sources},
     control::{self, RemoteCommand},
     db::Database,
-    doctor, library,
+    doctor,
+    i18n::{self, Language},
+    library,
     library::{prune_cover_cache, prune_unreferenced_covers},
     omarchy,
     paths::AppPaths,
@@ -22,39 +25,42 @@ fn main() -> Result<()> {
     let paths = AppPaths::discover()?;
     paths.ensure()?;
     let mut config = Config::load(&paths)?;
+    // Settled before anything can produce output. The flag wins over the
+    // config file, which wins over the system locale.
+    i18n::set_language(resolve_language(cli.lang.as_deref(), &config.language));
 
     match cli.command {
         Some(Command::Library { command }) => match command {
             LibraryCommand::Add { path } => {
                 if config.add_source(&path)? {
                     config.save(&paths)?;
-                    println!("Added {}", path.display());
+                    println!("{}", t!("cli.added", path = path.display()));
                 } else {
-                    println!("Already configured: {}", path.display());
+                    println!("{}", t!("cli.already_configured", path = path.display()));
                 }
             }
             LibraryCommand::Remove { path } => {
                 if config.remove_source(&path) {
                     config.save(&paths)?;
-                    println!("Removed {}", path.display());
+                    println!("{}", t!("cli.removed", path = path.display()));
                 } else {
-                    println!("Not configured: {}", path.display());
+                    println!("{}", t!("cli.not_configured", path = path.display()));
                 }
             }
             LibraryCommand::List => {
                 let configured = config.sources.clone();
                 for source in all_sources(&config) {
-                    let kind = if configured.contains(&source) {
-                        "configured"
+                    let kind = t!(if configured.contains(&source) {
+                        "cli.configured"
                     } else {
-                        "removable"
-                    };
+                        "cli.removable"
+                    });
                     println!("{kind:10} {}", source.display());
                 }
             }
             LibraryCommand::Rescan => {
                 if control::send(&paths.control_socket(), RemoteCommand::Rescan)? {
-                    println!("Rescan requested from the running muscli instance");
+                    println!("{}", t!("cli.rescan_requested"));
                     return Ok(());
                 }
                 let sources = all_sources(&config);
@@ -70,8 +76,13 @@ fn main() -> Result<()> {
                     },
                 )?;
                 println!(
-                    "Indexed {} tracks from {} sources ({} skipped)",
-                    report.tracks, report.sources, report.skipped
+                    "{}",
+                    t!(
+                        "cli.indexed",
+                        tracks = report.tracks,
+                        sources = report.sources,
+                        skipped = report.skipped
+                    )
                 );
                 for error in report.errors {
                     eprintln!("warning: {error}");
@@ -79,7 +90,7 @@ fn main() -> Result<()> {
             }
             LibraryCommand::Prune => {
                 if control::send(&paths.control_socket(), RemoteCommand::Prune)? {
-                    println!("Maintenance requested from the running muscli instance");
+                    println!("{}", t!("cli.prune_requested"));
                     return Ok(());
                 }
                 let mut db = Database::open(&paths.database_file())?;
@@ -92,8 +103,8 @@ fn main() -> Result<()> {
                 )?;
                 let evicted = db.clear_cover_paths(&removed)?;
                 println!(
-                    "Pruned {tracks} missing tracks and {} dangling cover references",
-                    dangling + evicted
+                    "{}",
+                    t!("cli.pruned", tracks = tracks, covers = dangling + evicted)
                 );
             }
             LibraryCommand::AnalyzeGain { force } => {
@@ -141,14 +152,19 @@ fn main() -> Result<()> {
                         .chars()
                         .all(|character| character.is_ascii_digit())
                 {
-                    anyhow::bail!("Discord application ID must contain only digits");
+                    anyhow::bail!("{}", t!("cli.discord_digits"));
                 }
                 config.discord_enabled = true;
                 config.discord_application_id = Some(application_id.clone());
                 config.discord_large_image = large_image.clone();
                 config.save(&paths)?;
                 println!(
-                    "Discord Rich Presence enabled for application {application_id}; fallback asset: {large_image}"
+                    "{}",
+                    t!(
+                        "cli.discord_enabled",
+                        application = application_id,
+                        asset = large_image
+                    )
                 );
             }
         },
@@ -172,4 +188,44 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Pick the interface language.
+///
+/// An unrecognised name is not an error worth refusing to start over; it falls
+/// through to detection, and then to English.
+fn resolve_language(flag: Option<&str>, configured: &str) -> Language {
+    flag.and_then(Language::from_tag)
+        .or_else(|| Language::from_tag(configured))
+        .or_else(i18n::detect_language)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flag_wins_over_the_configuration() {
+        assert_eq!(resolve_language(Some("es"), "en"), Language::Spanish);
+        assert_eq!(resolve_language(Some("en"), "es"), Language::English);
+    }
+
+    #[test]
+    fn the_configuration_is_used_when_no_flag_is_given() {
+        assert_eq!(resolve_language(None, "es"), Language::Spanish);
+    }
+
+    #[test]
+    fn auto_and_nonsense_fall_through_to_detection() {
+        // "auto" is the default setting, and a typo should not be fatal; both
+        // land on detection, which ends at English when nothing matches.
+        for configured in ["auto", "klingon", ""] {
+            let resolved = resolve_language(None, configured);
+            assert!(
+                matches!(resolved, Language::English | Language::Spanish),
+                "{configured}"
+            );
+        }
+    }
 }

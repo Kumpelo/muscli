@@ -6,6 +6,7 @@ pub mod discord;
 pub mod doctor;
 pub mod features;
 pub mod fsutil;
+pub mod i18n;
 pub mod instance;
 pub mod library;
 pub mod model;

@@ -110,5 +110,11 @@ CI runs these checks on Linux and Windows. Tags matching `v*` create draft
 GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
 CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.1`.
 
+## Language
+
+The interface is English by default and follows the system locale when it
+recognises it. Override with `language = "en"` or `language = "es"` in
+`config.toml`, or `muscli --lang es` for one run.
+
 muscli is MIT licensed. Contributions are welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

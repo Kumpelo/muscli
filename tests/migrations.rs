@@ -12,7 +12,7 @@ use muscli::db::Database;
 use rusqlite::Connection;
 
 /// The newest schema version this build understands.
-const CURRENT_VERSION: i64 = 4;
+const CURRENT_VERSION: i64 = 5;
 
 fn user_version(path: &Path) -> i64 {
     let conn = Connection::open(path).expect("opening the database directly");
@@ -236,4 +236,58 @@ fn the_default_smart_playlists_are_seeded_once() {
         second.len(),
         "reopening must not duplicate the seeded playlists"
     );
+}
+
+#[test]
+fn seeded_playlists_gain_a_translation_key_on_upgrade() {
+    // The five default smart playlists are rows in the database, so their
+    // Spanish names outlived any change of interface language. The v5 step
+    // attaches a key to each so the displayed name can follow the language,
+    // while a playlist the user made keeps the name they chose.
+    let fixture = common::Fixture::new();
+    let path = fixture.paths().database_file();
+    seed_from_fixture(&path, "schema_v1.sql");
+    {
+        let conn = Connection::open(&path).expect("opening the v1 database");
+        conn.execute_batch(
+            "CREATE TABLE smart_playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                match_mode TEXT NOT NULL,
+                rules_json TEXT NOT NULL,
+                sort_field TEXT NOT NULL DEFAULT 'title',
+                descending INTEGER NOT NULL DEFAULT 0,
+                item_limit INTEGER
+             );
+             INSERT INTO smart_playlists(name, match_mode, rules_json)
+                VALUES('Metal favorito', 'all', '[]');
+             INSERT INTO smart_playlists(name, match_mode, rules_json)
+                VALUES('Mis rarezas', 'all', '[]');
+             PRAGMA user_version = 4;",
+        )
+        .expect("seeding a pre-v5 database");
+    }
+
+    let db = Database::open(&path).expect("upgrading to v5");
+    let playlists = db.load_smart_playlists().expect("loading smart playlists");
+
+    let seeded = playlists
+        .iter()
+        .find(|playlist| playlist.name == "Metal favorito")
+        .expect("the seeded playlist survives");
+    assert_eq!(
+        seeded.preset_key.as_deref(),
+        Some("preset.metal_favorites"),
+        "a playlist muscli seeded should be recognised"
+    );
+
+    let mine = playlists
+        .iter()
+        .find(|playlist| playlist.name == "Mis rarezas")
+        .expect("the user's playlist survives");
+    assert_eq!(
+        mine.preset_key, None,
+        "a playlist the user made must not be renamed by a language change"
+    );
+    assert_eq!(mine.display_name(), "Mis rarezas");
 }

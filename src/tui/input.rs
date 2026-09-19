@@ -6,6 +6,7 @@
 
 use super::keys::{self, Action};
 use super::*;
+use crate::t;
 
 impl App {
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -35,11 +36,11 @@ impl App {
             Action::ToggleCompact => {
                 self.compact = !self.compact;
                 resize_terminal_for_mode(self.compact)?;
-                self.status = if self.compact {
-                    "Modo compacto activado"
+                self.status = t!(if self.compact {
+                    "status.compact_on"
                 } else {
-                    "Modo completo activado"
-                }
+                    "status.compact_off"
+                })
                 .into();
             }
             Action::OpenSearch => {
@@ -57,10 +58,10 @@ impl App {
             Action::AddSelectedToPlaylist => {
                 if let Some(id) = self.selected_track_id() {
                     if self.playlists.is_empty() {
-                        let playlist = self.db.create_playlist("Mi playlist")?;
+                        let playlist = self.db.create_playlist(t!("label.default_playlist"))?;
                         self.db.add_to_playlist(playlist, &id)?;
                         self.refresh_playlists()?;
-                        self.status = "Añadida a Mi playlist".into();
+                        self.status = t!("status.added_to_default_playlist").into();
                     } else {
                         self.input = Some(InputMode::ChoosePlaylist {
                             track_id: id,
@@ -128,26 +129,29 @@ impl App {
             Action::Player(player_action) => self.handle_action(player_action)?,
             Action::ToggleShuffle => {
                 self.shuffle = !self.shuffle;
-                self.status = format!(
-                    "Aleatorio {}",
-                    if self.shuffle {
-                        "activado"
-                    } else {
-                        "desactivado"
-                    }
-                );
+                self.status = t!(if self.shuffle {
+                    "status.shuffle_on"
+                } else {
+                    "status.shuffle_off"
+                })
+                .into();
                 self.dirty = true;
             }
             Action::CycleRepeat => {
                 self.repeat = self.repeat.next();
-                self.status = format!("Repetir: {:?}", self.repeat);
+                self.status = t!(match self.repeat {
+                    RepeatMode::Off => "status.repeat_off",
+                    RepeatMode::Track => "status.repeat_track",
+                    RepeatMode::Queue => "status.repeat_queue",
+                })
+                .into();
                 self.dirty = true;
             }
             Action::EnqueueSelected => {
                 if let Some(id) = self.selected_track_id() {
                     self.queue.push(id);
                     self.queue_dirty = true;
-                    self.status = "Añadida a la cola".into();
+                    self.status = t!("status.added_to_queue").into();
                     self.dirty = true;
                 }
             }
@@ -193,7 +197,7 @@ impl App {
                     if let Some(playlist) = self.playlists.get_mut(selected) {
                         self.db.add_to_playlist(playlist.id, &track_id)?;
                         playlist.track_ids.push(track_id);
-                        self.status = format!("Añadida a {}", playlist.name);
+                        self.status = t!("status.added_to_playlist", name = playlist.name);
                         self.dirty = true;
                     }
                     self.input = None;
@@ -212,7 +216,7 @@ impl App {
                             self.queue = queue.track_ids.clone();
                             self.queue_index = (!self.queue.is_empty()).then_some(0);
                             self.queue_dirty = true;
-                            self.status = format!("Cola cargada: {}", queue.name);
+                            self.status = t!("status.queue_loaded", name = queue.name);
                         }
                         self.input = None;
                     }
@@ -230,7 +234,7 @@ impl App {
                     self.mpv.stop()?;
                     self.playback.status = PlaybackStatus::Stopped;
                     self.input = None;
-                    self.status = "Cola vaciada".into();
+                    self.status = t!("status.queue_cleared").into();
                 }
                 KeyCode::Esc | KeyCode::Char('n') => self.input = None,
                 _ => {}
@@ -288,7 +292,7 @@ impl App {
                         self.db.save_smart_playlist(&playlist)?;
                         self.refresh_smart_playlists()?;
                         self.input = None;
-                        self.status = "Lista inteligente guardada".into();
+                        self.status = t!("status.smart_saved").into();
                         self.dirty = true;
                         return Ok(());
                     }
@@ -340,7 +344,8 @@ impl App {
                         if mode == InputMode::NewPlaylist && !self.input_buffer.trim().is_empty() {
                             self.db.create_playlist(self.input_buffer.trim())?;
                             self.refresh_playlists()?;
-                            self.status = format!("Playlist creada: {}", self.input_buffer.trim());
+                            self.status =
+                                t!("status.playlist_created", name = self.input_buffer.trim());
                         }
                         if mode == InputMode::Search {
                             self.query = self.input_buffer.clone();
@@ -351,7 +356,7 @@ impl App {
                             let queue = self.queue.clone();
                             self.db.save_queue(&name, &queue)?;
                             self.saved_queues = self.db.load_saved_queues()?;
-                            self.status = format!("Cola guardada: {name}");
+                            self.status = t!("status.queue_saved", name = name);
                         }
                         self.input = None;
                     }
@@ -423,12 +428,12 @@ impl App {
                 let position = self.queue_index.map_or(0, |index| index + 1);
                 self.queue.insert(position.min(self.queue.len()), track_id);
                 self.queue_dirty = true;
-                self.status = "Se reproducirá después".into();
+                self.status = t!("status.playing_next").into();
             }
             ContextAction::Enqueue => {
                 self.queue.push(track_id);
                 self.queue_dirty = true;
-                self.status = "Añadida al final de la cola".into();
+                self.status = t!("status.added_to_queue_end").into();
             }
             ContextAction::ToggleFavorite => {
                 let favorite = self.db.toggle_favorite(&track_id)?;
@@ -555,10 +560,12 @@ pub(super) fn display_rule_value(rule: &SmartRule) -> String {
 
 fn set_rule_value(rule: &mut SmartRule, value: &str) {
     rule.value = match rule.field.as_str() {
-        "favorite" | "available" | "played" => serde_json::Value::Bool(matches!(
-            value.to_lowercase().as_str(),
-            "1" | "true" | "on" | "si" | "sí"
-        )),
+        // Which words count as yes is itself translated: a Spanish user
+        // typing "sí" should not have it read as false.
+        "favorite" | "available" | "played" => {
+            let typed = value.trim().to_lowercase();
+            serde_json::Value::Bool(t!("truthy").split(',').any(|option| option == typed))
+        }
         "play_count" | "duration_ms" | "added_days" | "last_played_days" => {
             serde_json::Value::from(value.parse::<i64>().unwrap_or_default())
         }
