@@ -299,15 +299,13 @@ pub(super) fn start_library_worker(
     thread::Builder::new()
         .name("muscli-library".into())
         .spawn(move || {
-            let mut db = Database::open(&database_file)
-                .map_err(|error| format!("{error:#}"));
+            let mut db = Database::open(&database_file).map_err(|error| format!("{error:#}"));
 
             while requests.recv().is_ok() {
                 while requests.try_recv().is_ok() {}
 
                 if db.is_err() {
-                    db = Database::open(&database_file)
-                        .map_err(|error| format!("{error:#}"));
+                    db = Database::open(&database_file).map_err(|error| format!("{error:#}"));
                 }
 
                 let result = match &db {
