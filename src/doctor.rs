@@ -9,6 +9,7 @@ use crate::{
     config::{Config, all_sources},
     db::Database,
     paths::AppPaths,
+    t,
 };
 
 #[derive(Debug)]
@@ -77,12 +78,15 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
     let protocol = fs::read_to_string(paths.image_protocol_file())
         .ok()
         .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "sin registrar; abre muscli una vez".into());
+        .filter(|value| !value.is_empty());
+    let protocol_ok = protocol
+        .as_deref()
+        .is_some_and(|value| !value.starts_with("Halfblocks (fallback"));
+    let protocol = protocol.unwrap_or_else(|| t!("doctor.protocol_unknown").to_owned());
     checks.push(Check {
-        ok: !protocol.starts_with("Halfblocks (fallback") && !protocol.starts_with("sin registrar"),
+        ok: protocol_ok,
         name: "terminal graphics",
-        detail: format!("TERM={term}; protocolo elegido: {protocol}"),
+        detail: t!("doctor.terminal_graphics", term = term, protocol = protocol),
     });
     let cache_bytes = directory_size(&paths.cover_cache_dir());
     let cache_limit = config.cover_cache_mb.saturating_mul(1024 * 1024);

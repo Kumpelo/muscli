@@ -13,8 +13,34 @@ use crate::model::{
     SavedQueue, SmartMatch, SmartPlaylist, Track, TrackStats,
 };
 
+/// Three connections write concurrently: the UI, the scanner thread and
+/// ReplayGain analysis. Upserting a large source can hold the write lock for
+/// well over a second, and the previous two-second budget turned that into
+/// spurious SQLITE_BUSY failures on unrelated writes.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct Database {
     conn: Connection,
+}
+
+/// Apply the connection settings every database uses.
+///
+/// `open_memory` previously set none of these, which meant the unit tests ran
+/// without foreign keys while production ran with them - the suite could not
+/// see a constraint violation that a user would hit.
+fn configure(conn: &Connection, on_disk: bool) -> Result<()> {
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    if on_disk {
+        // Meaningless for an in-memory database, which has no journal or file
+        // to map.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", -16_384i64)?;
+        conn.pragma_update(None, "mmap_size", 134_217_728i64)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +109,23 @@ pub struct LibraryState {
     pub added_at: HashMap<String, i64>,
 }
 
+/// One line of a listening summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryRow {
+    pub id: String,
+    pub label: String,
+    pub count: u64,
+}
+
+/// What has been listened to over some period.
+#[derive(Debug, Clone, Default)]
+pub struct ListeningSummary {
+    pub plays: u64,
+    pub listened_ms: u64,
+    pub top_tracks: Vec<SummaryRow>,
+    pub top_artists: Vec<SummaryRow>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LibraryHealth {
     pub tracks: usize,
@@ -99,13 +142,7 @@ impl Database {
         }
         let conn = Connection::open(path)
             .with_context(|| format!("could not open database {}", path.display()))?;
-        conn.busy_timeout(Duration::from_secs(2))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.pragma_update(None, "temp_store", "MEMORY")?;
-        conn.pragma_update(None, "cache_size", -16_384i64)?;
-        conn.pragma_update(None, "mmap_size", 134_217_728i64)?;
+        configure(&conn, true)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 1 && path.exists() {
             let stamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -121,7 +158,7 @@ impl Database {
 
     pub fn open_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.busy_timeout(Duration::from_secs(2))?;
+        configure(&conn, false)?;
         let mut db = Self { conn };
         db.migrate()?;
         db.seed_smart_playlists()?;
@@ -132,7 +169,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -309,13 +346,59 @@ impl Database {
             )?;
             tx.commit()?;
         }
+
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 4 {
+            let tx = self.conn.transaction()?;
+            // Seeded playlists carry a translation key so their names can
+            // follow the interface language; a playlist the user made has none
+            // and keeps the name they chose.
+            tx.execute_batch(
+                "ALTER TABLE smart_playlists ADD COLUMN preset_key TEXT;
+                 UPDATE smart_playlists SET preset_key='preset.metal_favorites'
+                    WHERE name='Metal favorito';
+                 UPDATE smart_playlists SET preset_key='preset.recently_added'
+                    WHERE name='Agregadas recientemente';
+                 UPDATE smart_playlists SET preset_key='preset.unplayed'
+                    WHERE name='No escuchadas';
+                 UPDATE smart_playlists SET preset_key='preset.most_played'
+                    WHERE name='Más reproducidas';
+                 UPDATE smart_playlists SET preset_key='preset.long_tracks'
+                    WHERE name='Más de 8 minutos';
+                 PRAGMA user_version = 5;",
+            )?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
     fn seed_smart_playlists(&self) -> Result<()> {
+        // A short-lived pre-merge v5 build could create both the translated
+        // legacy row and a second English seed with the same preset_key.
+        // Repair that state first, then enforce the key as the identity of a
+        // built-in preset. User-created smart playlists keep preset_key NULL.
+        self.conn.execute_batch(
+            "DELETE FROM smart_playlists
+             WHERE preset_key IS NOT NULL
+               AND id NOT IN (
+                    SELECT MIN(id) FROM smart_playlists
+                    WHERE preset_key IS NOT NULL
+                    GROUP BY preset_key
+               );
+             CREATE UNIQUE INDEX IF NOT EXISTS smart_playlists_preset_key
+             ON smart_playlists(preset_key)
+             WHERE preset_key IS NOT NULL;",
+        )?;
+
+        // Stored under stable English names with a translation key beside them,
+        // so the rows survive a language change and the displayed name follows
+        // it.
         let presets = [
             (
-                "Metal favorito",
+                "preset.metal_favorites",
+                "Favourite metal",
                 "all",
                 r#"[{"field":"genre","operator":"contains","value":"metal"},{"field":"favorite","operator":"is","value":true}]"#,
                 "title",
@@ -323,7 +406,8 @@ impl Database {
                 None,
             ),
             (
-                "Agregadas recientemente",
+                "preset.recently_added",
+                "Recently added",
                 "all",
                 r#"[{"field":"added_days","operator":"lte","value":30}]"#,
                 "added_at",
@@ -331,7 +415,8 @@ impl Database {
                 None,
             ),
             (
-                "No escuchadas",
+                "preset.unplayed",
+                "Unplayed",
                 "all",
                 r#"[{"field":"played","operator":"is","value":false}]"#,
                 "title",
@@ -339,7 +424,8 @@ impl Database {
                 None,
             ),
             (
-                "Más reproducidas",
+                "preset.most_played",
+                "Most played",
                 "all",
                 r#"[{"field":"play_count","operator":"gte","value":1}]"#,
                 "play_count",
@@ -347,7 +433,8 @@ impl Database {
                 Some(100),
             ),
             (
-                "Más de 8 minutos",
+                "preset.long_tracks",
+                "Over 8 minutes",
                 "all",
                 r#"[{"field":"duration_ms","operator":"gte","value":480000}]"#,
                 "duration",
@@ -355,10 +442,10 @@ impl Database {
                 None,
             ),
         ];
-        for (name, mode, rules, sort, descending, limit) in presets {
+        for (preset_key, name, mode, rules, sort, descending, limit) in presets {
             self.conn.execute(
-                "INSERT OR IGNORE INTO smart_playlists(name,match_mode,rules_json,sort_field,descending,item_limit) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![name, mode, rules, sort, descending, limit],
+                "INSERT OR IGNORE INTO smart_playlists(name,match_mode,rules_json,sort_field,descending,item_limit,preset_key) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![name, mode, rules, sort, descending, limit, preset_key],
             )?;
         }
         Ok(())
@@ -509,24 +596,57 @@ impl Database {
         Ok(moved_tracks)
     }
 
-    pub fn mark_missing_sources(&self, available_ids: &BTreeSet<String>) -> Result<usize> {
-        let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
-        let ids = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+    pub fn mark_source_unavailable_by_root(&mut self, root: &Path) -> Result<usize> {
+        let root = root.to_string_lossy().into_owned();
+        let tx = self.conn.transaction()?;
+        let id = tx
+            .query_row(
+                "SELECT id FROM sources WHERE root=?1",
+                [root.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(id) = id else {
+            tx.commit()?;
+            return Ok(0);
+        };
+
         let mut changed = 0;
+        changed += tx.execute(
+            "UPDATE sources SET available=0 WHERE id=?1 AND available!=0",
+            [&id],
+        )?;
+        changed += tx.execute(
+            "UPDATE tracks SET available=0 WHERE source_id=?1 AND available!=0",
+            [&id],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    pub fn mark_missing_sources(&mut self, available_ids: &BTreeSet<String>) -> Result<usize> {
+        let ids = {
+            let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
+            stmt.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut changed = 0;
+        // One transaction: a source and its tracks must never be left disagreeing
+        // about whether the drive is connected.
+        let tx = self.conn.transaction()?;
         for id in ids {
             if !available_ids.contains(&id) {
-                changed += self.conn.execute(
+                changed += tx.execute(
                     "UPDATE sources SET available=0 WHERE id=?1 AND available!=0",
                     [&id],
                 )?;
-                changed += self.conn.execute(
+                changed += tx.execute(
                     "UPDATE tracks SET available=0 WHERE source_id=?1 AND available!=0",
                     [&id],
                 )?;
             }
         }
+        tx.commit()?;
         Ok(changed)
     }
 
@@ -999,6 +1119,140 @@ impl Database {
         Ok(())
     }
 
+    /// What has actually been listened to.
+    ///
+    /// Lifetime totals come from `track_stats`, which survives history
+    /// pruning. A bounded window must instead be aggregated from `history`:
+    /// filtering a lifetime counter by only its last-played timestamp would
+    /// incorrectly pull old plays into the requested period.
+    pub fn listening_summary(&self, since: Option<i64>) -> Result<ListeningSummary> {
+        if let Some(since) = since {
+            return self.listening_summary_since(since);
+        }
+
+        let (played, total_ms): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(play_count),0), COALESCE(SUM(total_listen_ms),0)
+             FROM track_stats",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id, t.title, t.artist, s.play_count
+             FROM track_stats s JOIN tracks t ON t.id=s.track_id
+             WHERE s.play_count > 0
+             ORDER BY s.play_count DESC, t.title COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_tracks = stmt
+            .query_map([], |row| {
+                Ok(SummaryRow {
+                    id: row.get(0)?,
+                    label: format!(
+                        "{} — {}",
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(1)?
+                    ),
+                    count: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT t.artist, SUM(s.play_count) AS plays
+             FROM track_stats s JOIN tracks t ON t.id=s.track_id
+             WHERE s.play_count > 0
+             GROUP BY lower(t.artist)
+             ORDER BY plays DESC, t.artist COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_artists = stmt
+            .query_map([], |row| {
+                Ok(SummaryRow {
+                    id: String::new(),
+                    label: row.get::<_, String>(0)?,
+                    count: row.get::<_, i64>(1)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(ListeningSummary {
+            plays: played.max(0) as u64,
+            listened_ms: total_ms.max(0) as u64,
+            top_tracks,
+            top_artists,
+        })
+    }
+
+    fn listening_summary_since(&self, since: i64) -> Result<ListeningSummary> {
+        let (played, total_ms): (i64, i64) = self.conn.query_row(
+            "SELECT
+                COALESCE(SUM(CASE WHEN counted != 0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(listened_ms),0)
+             FROM history
+             WHERE started_at >= ?1",
+            [since],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                t.id,
+                t.title,
+                t.artist,
+                SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) AS plays
+             FROM history h
+             JOIN tracks t ON t.id=h.track_id
+             WHERE h.started_at >= ?1
+             GROUP BY t.id, t.title, t.artist
+             HAVING SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) > 0
+             ORDER BY plays DESC, t.title COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_tracks = stmt
+            .query_map([since], |row| {
+                Ok(SummaryRow {
+                    id: row.get(0)?,
+                    label: format!(
+                        "{} — {}",
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(1)?
+                    ),
+                    count: row.get::<_, i64>(3)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT
+                t.artist,
+                SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) AS plays
+             FROM history h
+             JOIN tracks t ON t.id=h.track_id
+             WHERE h.started_at >= ?1
+             GROUP BY lower(t.artist)
+             HAVING SUM(CASE WHEN h.counted != 0 THEN 1 ELSE 0 END) > 0
+             ORDER BY plays DESC, t.artist COLLATE NOCASE
+             LIMIT 20",
+        )?;
+        let top_artists = stmt
+            .query_map([since], |row| {
+                Ok(SummaryRow {
+                    id: String::new(),
+                    label: row.get::<_, String>(0)?,
+                    count: row.get::<_, i64>(1)?.max(0) as u64,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(ListeningSummary {
+            plays: played.max(0) as u64,
+            listened_ms: total_ms.max(0) as u64,
+            top_tracks,
+            top_artists,
+        })
+    }
+
     pub fn load_history(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id,track_id,started_at,listened_ms,position_ms,counted,completed
@@ -1020,7 +1274,7 @@ impl Database {
 
     pub fn load_smart_playlists(&self) -> Result<Vec<SmartPlaylist>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id,name,match_mode,rules_json,sort_field,descending,item_limit FROM smart_playlists ORDER BY name COLLATE NOCASE",
+            "SELECT id,name,match_mode,rules_json,sort_field,descending,item_limit,preset_key FROM smart_playlists ORDER BY name COLLATE NOCASE",
         )?;
         let raw = stmt
             .query_map([], |row| {
@@ -1032,25 +1286,29 @@ impl Database {
                     row.get::<_, String>(4)?,
                     row.get::<_, bool>(5)?,
                     row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         raw.into_iter()
-            .map(|(id, name, mode, rules, sort_field, descending, limit)| {
-                Ok(SmartPlaylist {
-                    id,
-                    name,
-                    match_mode: if mode == "any" {
-                        SmartMatch::Any
-                    } else {
-                        SmartMatch::All
-                    },
-                    rules: serde_json::from_str(&rules)?,
-                    sort_field,
-                    descending,
-                    limit: limit.map(|value| value.max(0) as usize),
-                })
-            })
+            .map(
+                |(id, name, mode, rules, sort_field, descending, limit, preset_key)| {
+                    Ok(SmartPlaylist {
+                        id,
+                        preset_key,
+                        name,
+                        match_mode: if mode == "any" {
+                            SmartMatch::Any
+                        } else {
+                            SmartMatch::All
+                        },
+                        rules: serde_json::from_str(&rules)?,
+                        sort_field,
+                        descending,
+                        limit: limit.map(|value| value.max(0) as usize),
+                    })
+                },
+            )
             .collect()
     }
 
@@ -1164,11 +1422,17 @@ impl Database {
     ) -> Result<Option<ReplayGainAnalysis>> {
         if album_mode {
             let mut stmt = self.conn.prepare(
+                // COLLATE NOCASE rather than lower(): lower() on both sides
+                // makes the comparison opaque to the index, turning every
+                // track load into a full join over the library.
                 "SELECT peer.gain_db,peer.true_peak_db,peer.duration_ms
                  FROM tracks current JOIN tracks peer
-                   ON lower(peer.album)=lower(current.album)
-                  AND lower(peer.album_artist)=lower(current.album_artist)
-                 WHERE current.id=?1 AND peer.gain_db IS NOT NULL",
+                   ON peer.album=current.album COLLATE NOCASE
+                  AND peer.album_artist=current.album_artist COLLATE NOCASE
+                 WHERE current.id=?1
+                   AND peer.gain_db IS NOT NULL
+                   AND peer.gain_file_size=peer.file_size
+                   AND peer.gain_modified_ns=peer.modified_ns",
             )?;
             let rows = stmt
                 .query_map([track_id], |row| {
@@ -1196,20 +1460,27 @@ impl Database {
                     .fold(f64::NEG_INFINITY, f64::max),
             }))
         } else {
-            self.conn
+            // A track that is not in the index has no gain; that is an answer,
+            // not an error. Returning QueryReturnedNoRows here aborted playback
+            // of a track the scanner had just pruned.
+            Ok(self
+                .conn
                 .query_row(
-                    "SELECT gain_db,true_peak_db FROM tracks WHERE id=?1",
+                    "SELECT gain_db,true_peak_db FROM tracks
+                     WHERE id=?1
+                       AND gain_file_size=file_size
+                       AND gain_modified_ns=modified_ns",
                     [track_id],
                     |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, Option<f64>>(1)?)),
                 )
-                .map(|(gain, peak)| {
+                .optional()?
+                .and_then(|(gain, peak)| {
                     gain.zip(peak)
                         .map(|(gain_db, true_peak_db)| ReplayGainAnalysis {
                             gain_db,
                             true_peak_db,
                         })
-                })
-                .map_err(Into::into)
+                }))
         }
     }
 }
@@ -1380,6 +1651,39 @@ mod tests {
     }
 
     #[test]
+    fn stale_gain_is_not_returned_after_the_audio_changes() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let original = ScannedTrack {
+            track: track("one", 1),
+            file_size: 100,
+            modified_ns: 1,
+        };
+        db.upsert_scan("s", Path::new("/music"), "Music", &[original], &[])?;
+        db.save_gain(
+            "one",
+            ReplayGainAnalysis {
+                gain_db: -4.0,
+                true_peak_db: -1.0,
+            },
+            100,
+            1,
+        )?;
+        assert!(db.track_gain("one", false)?.is_some());
+
+        let changed = ScannedTrack {
+            track: track("one", 1),
+            file_size: 101,
+            modified_ns: 2,
+        };
+        db.upsert_scan("s", Path::new("/music"), "Music", &[changed], &[])?;
+        assert!(
+            db.track_gain("one", false)?.is_none(),
+            "a gain calculated for previous file contents must not be reused"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn groups_album() {
         let albums = group_albums(&[track("one", 1), track("two", 2)]);
         assert_eq!(albums.len(), 1);
@@ -1407,6 +1711,46 @@ mod tests {
         assert_eq!(db.prune_missing_tracks()?, 1);
         assert!(db.load_tracks()?.is_empty());
         std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn marking_one_source_unavailable_leaves_other_sources_online() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let first = ScannedTrack {
+            track: track("one", 1),
+            file_size: 1,
+            modified_ns: 1,
+        };
+        let mut second_track = track("two", 2);
+        second_track.source_id = "other".into();
+        second_track.path = "/other/two.flac".into();
+        second_track.relative_path = "two.flac".into();
+        let second = ScannedTrack {
+            track: second_track,
+            file_size: 1,
+            modified_ns: 1,
+        };
+
+        db.upsert_scan("s", Path::new("/music"), "Music", &[first], &[])?;
+        db.upsert_scan("other", Path::new("/other"), "Other", &[second], &[])?;
+        assert!(db.mark_source_unavailable_by_root(Path::new("/music"))? > 0);
+
+        let tracks = db.load_tracks()?;
+        assert!(
+            !tracks
+                .iter()
+                .find(|track| track.id == "one")
+                .unwrap()
+                .available
+        );
+        assert!(
+            tracks
+                .iter()
+                .find(|track| track.id == "two")
+                .unwrap()
+                .available
+        );
         Ok(())
     }
 

@@ -1,13 +1,24 @@
-/// Mezcla en la firma qué imagen se dibuja y en qué rectángulo.
-fn anotar_portada(sig: &mut u64, clave: &str, area: Rect) {
+//! Rendering for the terminal UI.
+//!
+//! This module draws `App`; it never mutates application state except for the
+//! image protocols and cover-placement signature that drawing itself owns.
+//!
+//! `use super::*` pulls in `App`, the view enums, the shared constants and the
+//! imports declared in the parent module.
+
+use super::*;
+use crate::t;
+
+/// Mix which image is drawn, and where, into the signature.
+fn note_cover_placement(signature: &mut u64, key: &str, area: Rect) {
     let mut h = DefaultHasher::new();
-    clave.hash(&mut h);
+    key.hash(&mut h);
     (area.x, area.y, area.width, area.height).hash(&mut h);
-    *sig = sig.rotate_left(13) ^ h.finish();
+    *signature = signature.rotate_left(13) ^ h.finish();
 }
 
-fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    app.cover_sig_now = 0;
+pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    app.covers.pending_signature = 0;
     let area = frame.area();
     frame.render_widget(
         Block::default().style(
@@ -93,7 +104,7 @@ fn draw_compact(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(
         List::new(queue_indices).block(
             Block::default()
-                .title(" Cola · m modo completo ")
+                .title(t!("panel.compact_queue"))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(app.theme.accent)),
         ),
@@ -121,11 +132,11 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
-    let stats = format!(
-        "{} canciones  ·  {} álbumes  ·  {} artistas  ",
-        app.tracks.len(),
-        app.albums.len(),
-        app.artists.len()
+    let stats = t!(
+        "label.header_counts",
+        tracks = app.tracks.len(),
+        albums = app.albums.len(),
+        artists = app.artists.len()
     );
     frame.render_widget(
         Paragraph::new(title).block(
@@ -172,7 +183,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         View::ArtistDetail => View::Artists,
         View::GenreDetail => View::Genres,
         View::SmartPlaylistDetail => View::SmartPlaylists,
-        View::AlbumDetail if app.album_parent_view == View::ArtistDetail => View::Artists,
+        View::AlbumDetail if app.nav_parent() == Some(View::ArtistDetail) => View::Artists,
         View::AlbumDetail => View::Albums,
         view => view,
     };
@@ -206,26 +217,24 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let title = match app.view {
         View::AlbumDetail => app
             .opened_album()
-            .map(|album| format!(" {} · Esc para volver ", album.title))
+            .map(|album| t!("panel.back_hint", name = album.title))
             .unwrap_or_else(|| " Álbum ".into()),
         View::ArtistDetail => app
-            .opened_artist_name
-            .as_deref()
-            .map(|artist| format!(" {} · álbumes y singles · Esc para volver ", artist))
+            .opened_artist_name()
+            .map(|artist| t!("panel.artist_hint", name = artist))
             .unwrap_or_else(|| " Artista ".into()),
         View::GenreDetail => app
-            .opened_genre_name
-            .as_deref()
-            .map(|genre| format!(" {genre} · Tab cambia sección · Esc para volver "))
-            .unwrap_or_else(|| " Género ".into()),
+            .opened_genre_name()
+            .map(|genre| t!("panel.genre_hint", name = genre))
+            .unwrap_or_else(|| format!(" {} ", t!("view.genre"))),
         View::SmartPlaylistDetail => app
-            .opened_smart_playlist
+            .opened_smart_playlist()
             .and_then(|id| {
                 app.smart_playlists
                     .iter()
                     .find(|playlist| playlist.id == id)
             })
-            .map(|playlist| format!(" {} · Esc para volver ", playlist.name))
+            .map(|playlist| t!("panel.back_hint", name = playlist.display_name()))
             .unwrap_or_else(|| " Lista inteligente ".into()),
         _ => format!(" {} ", app.view.title()),
     };
@@ -249,6 +258,7 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         View::SmartPlaylists => draw_smart_playlists(frame, inner, app),
         View::Settings => draw_settings(frame, inner, app),
         View::Help => draw_help(frame, inner, app),
+        View::Lyrics => draw_lyrics(frame, inner, app),
         View::AlbumDetail
         | View::Tracks
         | View::Favorites
@@ -263,7 +273,7 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let ids = app.home_track_ids();
     if ids.is_empty() {
         frame.render_widget(
-            Paragraph::new("Reproduce música para llenar Seguir escuchando e Historial.")
+            Paragraph::new(t!("empty.home"))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(app.theme.muted)),
             area,
@@ -324,14 +334,13 @@ fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|genre| {
             ListItem::new(format!(
-                "󰌳  {:<36} {} canciones",
+                "󰌳  {:<36} {}",
                 genre.name,
-                genre.track_ids.len()
+                t!("label.genre_summary", tracks = genre.track_ids.len())
             ))
         })
         .collect::<Vec<_>>();
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -345,7 +354,7 @@ fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let tabs = ["Álbumes", "Artistas", "Canciones"];
+    let tabs = [t!("tab.albums"), t!("tab.artists"), t!("tab.tracks")];
     let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(area);
     frame.render_widget(
         Paragraph::new(
@@ -394,8 +403,7 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .map(|track| ListItem::new(format!("󰎆  {} — {}", track.title, track.artist)))
             .collect(),
     };
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -413,10 +421,13 @@ fn draw_smart_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|playlist| {
             ListItem::new(format!(
-                "󰘬  {:<32} {} canciones · {} reglas",
-                playlist.name,
-                app.evaluate_smart(playlist).len(),
-                playlist.rules.len()
+                "󰘬  {:<32} {}",
+                playlist.display_name(),
+                t!(
+                    "smart.summary",
+                    tracks = app.evaluate_smart(playlist).len(),
+                    rules = playlist.rules.len()
+                )
             ))
         })
         .collect::<Vec<_>>();
@@ -433,59 +444,17 @@ fn draw_smart_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let values = [
-        if app.config.replaygain_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        format!("{:?}", app.config.replaygain_mode),
-        format!("{:.0} LUFS", app.config.replaygain_target_lufs),
-        if app.config.resume_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.config.history_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.config.compact_default {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.config.show_covers {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        format!("{}%", app.config.volume_step),
-        if app.config.auto_discover_removable {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        format!("{} MiB", app.config.cover_cache_mb),
-        if app.config.discord_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.scan_running {
-            "en curso".into()
-        } else {
-            "Enter/Space".into()
-        },
-        app.gain_progress
-            .map(|(done, total)| format!("{done}/{total}"))
-            .unwrap_or_else(|| "Enter/Space".into()),
-    ];
+    // One source of order: the row carries its own label and knows how to
+    // render its own value.
     let items = SETTINGS
         .iter()
-        .zip(values)
-        .map(|(name, value)| ListItem::new(format!("{name:<34}  {value}")))
+        .map(|row| {
+            ListItem::new(format!(
+                "{:<34}  {}",
+                t!(row.label),
+                app.setting_value(row.id)
+            ))
+        })
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(
@@ -499,35 +468,85 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
+fn draw_lyrics(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let Some(lyrics) = app.lyrics.as_ref().filter(|lyrics| !lyrics.is_empty()) else {
+        frame.render_widget(
+            Paragraph::new(t!("empty.lyrics"))
+                .style(Style::default().fg(app.theme.muted))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    };
+
+    let current = lyrics.line_at(app.playback.position_ms);
+    let lines: Vec<Line> = lyrics
+        .lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let style = if Some(index) == current {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.foreground)
+            };
+            Line::from(Span::styled(format!("  {}", line.text), style))
+        })
+        .collect();
+
+    // Keep the current line roughly in the middle rather than letting it run
+    // off the bottom of a long song.
+    let height = area.height as usize;
+    let anchor = current.unwrap_or(0);
+    let start = anchor
+        .saturating_sub(height / 2)
+        .min(lines.len().saturating_sub(height.max(1)));
+    let window: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    frame.render_widget(Paragraph::new(window).wrap(Wrap { trim: false }), area);
+}
+
 fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    frame.render_widget(
-        Paragraph::new(
-            HELP_SECTIONS
-                .into_iter()
-                .flat_map(|(section, keys)| {
-                    [
-                        Line::from(Span::styled(
-                            section,
-                            Style::default()
-                                .fg(app.theme.accent)
-                                .add_modifier(Modifier::BOLD),
-                        )),
-                        Line::from(keys),
-                        Line::default(),
-                    ]
-                })
-                .collect::<Vec<_>>(),
-        )
-        .wrap(Wrap { trim: false }),
-        area,
-    );
+    let heading = Style::default()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(app.theme.foreground);
+    let muted = Style::default().fg(app.theme.muted);
+
+    let mut lines = Vec::new();
+    for (title, entries) in keys::help_sections(&app.bindings) {
+        if entries.is_empty() {
+            continue;
+        }
+        lines.push(Line::from(Span::styled(t!(title), heading)));
+        for entry in entries {
+            let mut spans = vec![
+                Span::styled(format!("  {:<18}", entry.keys), key_style),
+                Span::raw(t!(entry.description).to_owned()),
+            ];
+            if let Some(scope) = entry.scope {
+                spans.push(Span::styled(format!("  ({})", t!(scope)), muted));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::default());
+    }
+    for (title, body) in EXTRA_HELP {
+        lines.push(Line::from(Span::styled(t!(title), heading)));
+        lines.push(Line::from(Span::raw(format!("  {}", t!(body)))));
+        lines.push(Line::default());
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let album_count = app.visible_album_len();
     if album_count == 0 {
         let empty = if app.view == View::ArtistDetail {
-            Paragraph::new("No encontré álbumes ni singles para este artista.")
+            Paragraph::new(t!("empty.artist"))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(app.theme.muted))
         } else {
@@ -556,24 +575,24 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .filter_map(|index| app.albums[index].cover_path.clone())
         .collect::<BTreeSet<_>>();
     for path in &prefetch_covers {
-        if !app.album_covers.contains_key(path) {
+        if !app.covers.grid.contains_key(path) {
             app.request_cover_decode(path.clone(), 256);
         }
     }
     for path in &desired_covers {
-        app.album_cover_order.retain(|cached| cached != path);
-        app.album_cover_order.push_back(path.clone());
+        app.covers.grid_order.retain(|cached| cached != path);
+        app.covers.grid_order.push_back(path.clone());
     }
     let cover_capacity = 64usize.max(desired_covers.len());
-    while app.album_covers.len() > cover_capacity {
-        let Some(oldest) = app.album_cover_order.pop_front() else {
+    while app.covers.grid.len() > cover_capacity {
+        let Some(oldest) = app.covers.grid_order.pop_front() else {
             break;
         };
         if desired_covers.contains(&oldest) {
-            app.album_cover_order.push_back(oldest);
+            app.covers.grid_order.push_back(oldest);
             continue;
         }
-        app.album_covers.remove(&oldest);
+        app.covers.grid.remove(&oldest);
     }
     for position in first..last {
         let Some(index) = app.visible_album_index_at(position) else {
@@ -606,14 +625,18 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             Style::default().fg(app.theme.foreground)
         };
         let unavailable = if available_tracks == 0 {
-            "  [offline]"
+            t!("label.offline")
         } else {
             ""
         };
         let release_kind = if app.view == View::ArtistDetail && track_count == 1 {
-            format!(" Single{unavailable}")
+            t!("label.single", suffix = unavailable)
         } else {
-            format!(" {track_count} pistas{unavailable}")
+            t!(
+                "label.track_count",
+                count = track_count,
+                suffix = unavailable
+            )
         };
         let card = Block::default()
             .borders(Borders::RIGHT | Borders::BOTTOM)
@@ -622,15 +645,19 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         frame.render_widget(card, rect);
         let rows = Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
         if let Some(path) = cover_path
-            && let Some(protocol) = app.album_covers.get_mut(&path)
+            && let Some(protocol) = app.covers.grid.get_mut(&path)
         {
-            let zona = rows[0].inner(Margin {
+            let area = rows[0].inner(Margin {
                 horizontal: 1,
                 vertical: 0,
             });
-            anotar_portada(&mut app.cover_sig_now, &path.to_string_lossy(), zona);
-            frame.render_widget(Clear, zona); // mismo motivo que en el panel
-            frame.render_stateful_widget(StatefulImage::new(), zona, protocol);
+            note_cover_placement(
+                &mut app.covers.pending_signature,
+                &path.to_string_lossy(),
+                area,
+            );
+            frame.render_widget(Clear, area); // same reason as the detail panel
+            frame.render_stateful_widget(StatefulImage::new(), area, protocol);
         } else {
             frame.render_widget(
                 Paragraph::new("󰀥").alignment(Alignment::Center).style(
@@ -675,15 +702,17 @@ fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|artist| {
             ListItem::new(format!(
-                "󰠃  {:<32}  {} álbumes · {} canciones",
+                "󰠃  {:<32}  {}",
                 artist.name,
-                artist.album_count,
-                artist.track_ids.len()
+                t!(
+                    "label.artist_summary",
+                    albums = artist.album_count,
+                    tracks = artist.track_ids.len()
+                )
             ))
         })
         .collect::<Vec<_>>();
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -712,14 +741,13 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|playlist| {
             ListItem::new(format!(
-                "󰲸  {:<36}  {} canciones",
+                "󰲸  {:<36}  {}",
                 playlist.name,
-                playlist.track_ids.len()
+                t!("label.playlist_summary", tracks = playlist.track_ids.len())
             ))
         })
         .collect::<Vec<_>>();
-    let mut state =
-        ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
+    let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
     frame.render_stateful_widget(
         List::new(items).highlight_style(
             Style::default()
@@ -732,7 +760,11 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn track_viewport(total: usize, selected: usize, area_height: u16) -> std::ops::Range<usize> {
+pub(super) fn track_viewport(
+    total: usize,
+    selected: usize,
+    area_height: u16,
+) -> std::ops::Range<usize> {
     let visible_rows = area_height.saturating_sub(1) as usize;
     if total == 0 || visible_rows == 0 {
         return 0..0;
@@ -746,9 +778,9 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let total = app.track_view_len();
     if total == 0 {
         let message = if app.view == View::Search {
-            "Escribe / para buscar por canción, artista o álbum."
+            t!("empty.search")
         } else {
-            "No hay canciones aquí."
+            t!("empty.tracks")
         };
         frame.render_widget(
             Paragraph::new(message)
@@ -764,16 +796,16 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let rows = viewport.filter_map(|position| {
         let index = app.track_index_at_view_position(position)?;
         let track = &app.tracks[index];
-            let marker = if app
-                .current_track()
-                .is_some_and(|current| current.id == track.id)
-            {
-                "▶"
-            } else if track.favorite {
-                "♥"
-            } else {
-                " "
-            };
+        let marker = if app
+            .current_track()
+            .is_some_and(|current| current.id == track.id)
+        {
+            "▶"
+        } else if track.favorite {
+            "♥"
+        } else {
+            " "
+        };
         Some(
             Row::new(vec![
                 Cell::from(format!(
@@ -808,7 +840,14 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_stateful_widget(
         Table::new(rows, widths)
             .header(
-                Row::new(["#", "Título", "Artista", "Álbum", "Tiempo"]).style(
+                Row::new([
+                    t!("table.number"),
+                    t!("table.title"),
+                    t!("table.artist"),
+                    t!("table.album"),
+                    t!("table.time"),
+                ])
+                .style(
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD),
@@ -828,7 +867,7 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let block = Block::default()
-        .title(" Portada ")
+        .title(t!("panel.cover"))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.theme.border));
     let inner = block.inner(area);
@@ -838,17 +877,17 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Constraint::Length(7),
     ])
     .split(inner);
-    if let Some(cover) = app.cover.as_mut() {
-        let zona = parts[0].inner(Margin {
+    if let Some(cover) = app.covers.current.as_mut() {
+        let area = parts[0].inner(Margin {
             horizontal: 1,
             vertical: 1,
         });
-        // Limpiar la zona antes de dibujar: con el protocolo de imágenes de kitty,
-        // la portada anterior deja restos (una franja de la otra imagen) si no se
-        // borra primero.
-        anotar_portada(&mut app.cover_sig_now, "panel", zona);
-        frame.render_widget(Clear, zona);
-        frame.render_stateful_widget(StatefulImage::new(), zona, &mut cover.protocol);
+        // Clear before drawing: with the kitty image protocol the previous
+        // cover leaves a band of itself behind unless the cells are wiped
+        // first.
+        note_cover_placement(&mut app.covers.pending_signature, "panel", area);
+        frame.render_widget(Clear, area);
+        frame.render_stateful_widget(StatefulImage::new(), area, &mut cover.protocol);
     } else {
         frame.render_widget(
             Paragraph::new("\n\n󰀥\nSin portada")
@@ -900,7 +939,7 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let (title, subtitle) = app
         .current_track()
         .map(|t| (t.title.as_str(), t.artist.as_str()))
-        .unwrap_or(("Nada reproduciéndose", "Enter para reproducir"));
+        .unwrap_or((t!("empty.nothing_playing"), t!("empty.press_enter")));
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -947,15 +986,18 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         progress_rows[1],
     );
     let repeat = match app.repeat {
-        RepeatMode::Off => "off",
-        RepeatMode::Track => "una",
-        RepeatMode::Queue => "cola",
+        RepeatMode::Off => t!("label.repeat_off"),
+        RepeatMode::Track => t!("label.repeat_track"),
+        RepeatMode::Queue => t!("label.repeat_queue"),
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{} aleatorio · repetir {}\n󰕾 {:>3}%",
-            if app.shuffle { "󰒟" } else { "󰒞" },
-            repeat,
+            "{}\n󰕾 {:>3}%",
+            t!(
+                "label.shuffle_repeat",
+                shuffle = if app.shuffle { "󰒟" } else { "󰒞" },
+                repeat = repeat
+            ),
             (app.playback.volume * 100.0) as u8
         ))
         .alignment(Alignment::Right),
@@ -978,7 +1020,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         Some(InputMode::Search) => frame.render_widget(
             Paragraph::new(format!("> {}_", app.input_buffer)).block(
                 Block::default()
-                    .title(" Buscar ")
+                    .title(t!("panel.search"))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.accent)),
             ),
@@ -987,7 +1029,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         Some(InputMode::NewPlaylist) => frame.render_widget(
             Paragraph::new(format!("> {}_", app.input_buffer)).block(
                 Block::default()
-                    .title(" Nueva playlist ")
+                    .title(t!("panel.new_playlist"))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.accent)),
             ),
@@ -996,7 +1038,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         Some(InputMode::SaveQueue) => frame.render_widget(
             Paragraph::new(format!("> {}_", app.input_buffer)).block(
                 Block::default()
-                    .title(" Guardar cola ")
+                    .title(t!("panel.save_queue"))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(app.theme.accent)),
             ),
@@ -1013,7 +1055,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 List::new(items)
                     .block(
                         Block::default()
-                            .title(" Añadir a playlist ")
+                            .title(t!("panel.add_to_playlist"))
                             .borders(Borders::ALL)
                             .border_style(Style::default().fg(app.theme.accent)),
                     )
@@ -1032,9 +1074,9 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 .iter()
                 .map(|queue| {
                     ListItem::new(format!(
-                        "{} · {} canciones",
+                        "{} · {}",
                         queue.name,
-                        queue.track_ids.len()
+                        t!("label.playlist_summary", tracks = queue.track_ids.len())
                     ))
                 })
                 .collect::<Vec<_>>();
@@ -1043,7 +1085,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 List::new(items)
                     .block(
                         Block::default()
-                            .title(" Cargar cola ")
+                            .title(t!("panel.load_queue"))
                             .borders(Borders::ALL),
                     )
                     .highlight_style(
@@ -1056,20 +1098,28 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             );
         }
         Some(InputMode::ConfirmClearQueue) => frame.render_widget(
-            Paragraph::new("¿Vaciar toda la cola?  Enter/s: sí · n/Esc: no")
+            Paragraph::new(t!("prompt.clear_queue"))
                 .alignment(Alignment::Center)
-                .block(Block::default().title(" Confirmar ").borders(Borders::ALL)),
+                .block(
+                    Block::default()
+                        .title(t!("panel.confirm"))
+                        .borders(Borders::ALL),
+                ),
             area,
         ),
         Some(InputMode::Context { selected }) => {
             let items = CONTEXT_ACTIONS
                 .iter()
-                .map(|action| ListItem::new(*action))
+                .map(|(_, key)| ListItem::new(t!(*key)))
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(*selected));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::default().title(" Acciones ").borders(Borders::ALL))
+                    .block(
+                        Block::default()
+                            .title(t!("panel.actions"))
+                            .borders(Borders::ALL),
+                    )
                     .highlight_style(
                         Style::default()
                             .fg(app.theme.foreground)
@@ -1093,29 +1143,33 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
                 })
                 .collect::<Vec<_>>();
             if items.is_empty() {
-                items.push(ListItem::new("Sin reglas · a para añadir"));
+                items.push(ListItem::new(t!("empty.rules")));
             }
-            items.push(ListItem::new(format!(
-                "Coincidencia: {:?}",
-                playlist.match_mode
+            items.push(ListItem::new(t!(
+                "smart.match",
+                mode = t!(match playlist.match_mode {
+                    crate::model::SmartMatch::All => "smart.match_all",
+                    crate::model::SmartMatch::Any => "smart.match_any",
+                })
             )));
             items.push(ListItem::new(format!(
                 "Orden: {} {}",
                 playlist.sort_field,
                 if playlist.descending { "↓" } else { "↑" }
             )));
-            items.push(ListItem::new(format!(
-                "Límite: {}",
-                playlist
-                    .limit
-                    .map_or_else(|| "sin límite".into(), |value| value.to_string())
+            items.push(ListItem::new(t!(
+                "smart.limit",
+                value = playlist.limit.map_or_else(
+                    || t!("smart.no_limit").to_owned(),
+                    |value| value.to_string()
+                )
             )));
             let mut state = ListState::default().with_selected(Some(*selected));
             frame.render_stateful_widget(
                 List::new(items)
                     .block(
                         Block::default()
-                            .title(" Editor · Tab campo · Enter valor · a/d regla · m modo · Ctrl+S guardar ")
+                            .title(t!("panel.editor"))
                             .borders(Borders::ALL),
                     )
                     .highlight_style(
@@ -1130,7 +1184,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         Some(InputMode::SmartValue { .. }) => frame.render_widget(
             Paragraph::new(format!("> {}_", app.input_buffer)).block(
                 Block::default()
-                    .title(" Valor de regla ")
+                    .title(t!("panel.rule_value"))
                     .borders(Borders::ALL),
             ),
             area,

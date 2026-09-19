@@ -2,9 +2,10 @@
 
 > [Documentación en español](docs/README.es.md)
 
-muscli is a fast, local-first FLAC player with a Spotify-like terminal UI. It
+muscli is a fast, local-first music player with a Spotify-like terminal UI. It
 indexes removable drives and local folders, keeps playlists usable while a
-drive is offline, and delegates gapless audio playback to mpv. It has no
+drive is offline, and delegates gapless audio playback to mpv, which opens the
+next track before the current one ends. It has no
 account, streaming service, telemetry, or resident daemon.
 
 ## Platforms
@@ -54,11 +55,23 @@ muscli library list
 muscli library rescan
 muscli library prune
 muscli library analyze-gain
+muscli library write-gain --yes
 muscli doctor
+muscli playlist export NAME playlist.m3u8
+muscli playlist import playlist.m3u8
+muscli summary --days 30
 ```
 
-Only `.flac` files are indexed. Tags and embedded/external artwork are read
-without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
+`muscli summary` reports what you have been listening to from the local index.
+Like everything else here, it sends nothing anywhere.
+
+An eight-band equaliser is configured with `equalizer` in `config.toml`, as
+gains in decibels from low to high; all zero means the filter is not installed
+at all.
+
+FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
+indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and
+embedded or external artwork are read without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
 cover cache use the platform-standard application directories. A warm start
 loads the index immediately while scans and ReplayGain analysis continue in
 the background.
@@ -108,6 +121,48 @@ cargo build --release
 CI runs these checks on Linux and Windows. Tags matching `v*` create draft
 GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
 CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.1`.
+
+`muscli library write-gain` is the only command that modifies your audio files.
+It writes the cached loudness analysis into their ReplayGain tags so other
+players can use it, and requires `--yes`. Everything else muscli does reads
+your files and never writes to them.
+
+## Lyrics
+
+Lyrics are never picked up automatically. An `.lrc` file sitting next to a
+track is left alone; lyrics live in their own directory and only get there when
+you put them there:
+
+```bash
+muscli lyrics import song.lrc --artist ARTIST --title TITLE
+muscli lyrics import song.lrc --track TRACK_ID
+muscli lyrics where
+```
+
+Naming by artist and title survives the audio file being moved; naming by track
+id does not, because the id is derived from the path. Timed lines follow
+playback; a file without timestamps is shown as plain text.
+
+## Key bindings
+
+`muscli keys` lists the bindings in effect. To change them, write
+`keybindings.toml` in the configuration directory, naming actions as that
+command prints them:
+
+```toml
+quit = ["ctrl+q"]
+play_pause = ["space", "p"]
+```
+
+Listing an action replaces its default keys rather than adding to them. An
+entry muscli cannot read is reported and skipped; it never stops muscli
+starting.
+
+## Language
+
+The interface is English by default and follows the system locale when it
+recognises it. Override with `language = "en"` or `language = "es"` in
+`config.toml`, or `muscli --lang es` for one run.
 
 muscli is MIT licensed. Contributions are welcome; see
 [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

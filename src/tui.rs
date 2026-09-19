@@ -33,6 +33,20 @@ use ratatui::{
 use ratatui_image::{StatefulImage, picker::Picker, protocol::StatefulProtocol};
 use tokio::sync::mpsc as tokio_mpsc;
 
+use covers::Covers;
+use input::{display_rule_value, handle_terminal_event};
+use library::{LibrarySnapshot, PendingScan};
+use nav::{NavFrame, NavTarget};
+use playback::HistoryTally;
+use render::draw;
+use settings::SETTINGS;
+use theme::UiTheme;
+use workers::{
+    CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult, WatchEvent,
+    start_cover_decode_worker, start_library_worker, start_search_worker, start_shutdown_listener,
+    start_terminal_event_reader, start_watchers,
+};
+
 use crate::{
     config::{Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
@@ -40,7 +54,7 @@ use crate::{
     discord::DiscordPresence,
     features::{Genre, SearchIndex, evaluate_smart_playlist, group_genres},
     instance::InstanceGuard,
-    library::{prune_cover_cache, prune_unreferenced_covers, scan_source_with_database},
+    library::{prune_cover_cache, prune_unreferenced_covers},
     model::{
         Album, Artist, HistoryEntry, PlaybackState, PlaybackStatus, PlayerAction, PlayerEvent,
         Playlist, RepeatMode, SavedPlayback, SavedQueue, SmartPlaylist, SmartRule, Track,
@@ -50,9 +64,10 @@ use crate::{
     paths::AppPaths,
     player::MpvPlayer,
     replaygain::{self, GainMessage},
+    t,
 };
 
-const VIEWS: [View; 13] = [
+const VIEWS: [View; 14] = [
     View::Home,
     View::Albums,
     View::Artists,
@@ -64,58 +79,40 @@ const VIEWS: [View; 13] = [
     View::History,
     View::Search,
     View::Queue,
+    View::Lyrics,
     View::Settings,
     View::Help,
 ];
 
-const SETTINGS: [&str; 13] = [
-    "ReplayGain",
-    "Modo ReplayGain",
-    "Objetivo LUFS",
-    "Restaurar posiciones",
-    "Historial",
-    "Modo compacto por defecto",
-    "Mostrar portadas",
-    "Paso de volumen",
-    "Autodetectar SD/USB",
-    "Caché de portadas",
-    "Discord Rich Presence",
-    "Reescanear biblioteca",
-    "Analizar ReplayGain",
+/// The context menu. Paired with its label rather than addressed by a bare
+/// index, so reordering the menu cannot silently reassign what each entry does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextAction {
+    PlayNow,
+    PlayNext,
+    Enqueue,
+    ToggleFavorite,
+    AddToPlaylist,
+    ShowAlbum,
+    ShowArtist,
+}
+
+/// Paired with a translation key rather than a label; see ContextAction.
+const CONTEXT_ACTIONS: [(ContextAction, &str); 7] = [
+    (ContextAction::PlayNow, "context.play_now"),
+    (ContextAction::PlayNext, "context.play_next"),
+    (ContextAction::Enqueue, "context.enqueue"),
+    (ContextAction::ToggleFavorite, "context.favorite"),
+    (ContextAction::AddToPlaylist, "context.add_to_playlist"),
+    (ContextAction::ShowAlbum, "context.show_album"),
+    (ContextAction::ShowArtist, "context.show_artist"),
 ];
 
-const CONTEXT_ACTIONS: [&str; 7] = [
-    "Reproducir ahora",
-    "Reproducir después",
-    "Añadir al final",
-    "Favorito",
-    "Añadir a playlist",
-    "Mostrar álbum",
-    "Mostrar artista",
-];
-
-const HELP_SECTIONS: [(&str, &str); 6] = [
-    (
-        "Navegación",
-        "↑↓←→ / hjkl mover · Enter abrir/reproducir · Tab cambiar panel · Esc volver",
-    ),
-    (
-        "Reproducción",
-        "Space pausa · n/p siguiente/anterior · +/- volumen · s shuffle · r repetir · m compacto",
-    ),
-    (
-        "Biblioteca",
-        "/ buscar · f favorito · a añadir a cola · P playlist · x menú contextual",
-    ),
-    (
-        "Cola",
-        "Shift+J/K reordenar · d/Delete quitar · C limpiar · S guardar · L cargar",
-    ),
-    ("Ventanas", ", Settings · ? Ayuda · q salir"),
-    (
-        "Omarchy global",
-        "Shift+Vol± volumen de muscli · Vol± volumen del sistema · Super+Shift+Alt+M compacto",
-    ),
+/// Help for keys the binding table cannot describe: the smart-playlist editor
+/// runs its own modal loop, and the Omarchy hotkeys belong to Hyprland.
+const EXTRA_HELP: [(&str, &str); 2] = [
+    ("help.editor.title", "help.editor.body"),
+    ("help.omarchy.title", "help.omarchy.body"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,29 +134,31 @@ enum View {
     Queue,
     Settings,
     Help,
+    Lyrics,
 }
 
 impl View {
     fn title(self) -> &'static str {
-        match self {
-            Self::Home => "Inicio",
-            Self::Albums => "Álbumes",
-            Self::AlbumDetail => "Álbum",
-            Self::Artists => "Artistas",
-            Self::ArtistDetail => "Artista",
-            Self::Genres => "Géneros",
-            Self::GenreDetail => "Género",
-            Self::Tracks => "Canciones",
-            Self::Playlists => "Playlists",
-            Self::SmartPlaylists => "Listas inteligentes",
-            Self::SmartPlaylistDetail => "Lista inteligente",
-            Self::Favorites => "Favoritos",
-            Self::History => "Historial",
-            Self::Search => "Buscar",
-            Self::Queue => "Cola",
-            Self::Settings => "Settings",
-            Self::Help => "Ayuda",
-        }
+        t!(match self {
+            Self::Home => "view.home",
+            Self::Albums => "view.albums",
+            Self::AlbumDetail => "view.album",
+            Self::Artists => "view.artists",
+            Self::ArtistDetail => "view.artist",
+            Self::Genres => "view.genres",
+            Self::GenreDetail => "view.genre",
+            Self::Tracks => "view.tracks",
+            Self::Playlists => "view.playlists",
+            Self::SmartPlaylists => "view.smart_playlists",
+            Self::SmartPlaylistDetail => "view.smart_playlist",
+            Self::Favorites => "view.favorites",
+            Self::History => "view.history",
+            Self::Search => "view.search",
+            Self::Queue => "view.queue",
+            Self::Settings => "view.settings",
+            Self::Help => "view.help",
+            Self::Lyrics => "view.lyrics",
+        })
     }
 
     fn icon(self) -> &'static str {
@@ -179,6 +178,7 @@ impl View {
             Self::Queue => "󰕲",
             Self::Settings => "󰒓",
             Self::Help => "󰋖",
+            Self::Lyrics => "󰲹",
         }
     }
 }
@@ -215,132 +215,9 @@ enum InputMode {
     },
 }
 
-enum ScanMessage {
-    Source {
-        label: String,
-        tracks: usize,
-        moved_tracks: Vec<(String, String)>,
-    },
-    Error(String),
-    Done {
-        changed: bool,
-    },
-}
-
 struct CoverState {
     path: PathBuf,
     protocol: StatefulProtocol,
-}
-
-#[derive(Debug)]
-struct CoverDecodeRequest {
-    path: PathBuf,
-    size: u32,
-}
-
-struct CoverDecodeResult {
-    path: PathBuf,
-    size: u32,
-    image: Option<image::DynamicImage>,
-}
-
-#[derive(Debug)]
-struct SearchRequest {
-    generation: u64,
-    query: String,
-    index: SearchIndex,
-}
-
-#[derive(Debug)]
-struct SearchResult {
-    generation: u64,
-    matches: Vec<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UiTheme {
-    accent: Color,
-    selection: Color,
-    foreground: Color,
-    background: Color,
-    muted: Color,
-    border: Color,
-}
-
-impl Default for UiTheme {
-    fn default() -> Self {
-        Self {
-            accent: Color::Magenta,
-            selection: Color::Magenta,
-            foreground: Color::White,
-            background: Color::Black,
-            muted: Color::Gray,
-            border: Color::DarkGray,
-        }
-    }
-}
-
-impl UiTheme {
-    #[cfg(unix)]
-    fn source_paths() -> [Option<PathBuf>; 2] {
-        let state_home = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-            });
-        let config_home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(".config"));
-        [
-            state_home.map(|root| root.join("omarchy/current/theme/colors.toml")),
-            config_home.map(|root| root.join("omarchy/current/theme/colors.toml")),
-        ]
-    }
-
-    #[cfg(unix)]
-    fn load_with_source() -> (Self, Option<PathBuf>, Option<SystemTime>) {
-        for path in Self::source_paths().into_iter().flatten() {
-            if let Some(theme) = Self::from_file(&path) {
-                let modified = fs::metadata(&path)
-                    .ok()
-                    .and_then(|metadata| metadata.modified().ok());
-                return (theme, Some(path), modified);
-            }
-        }
-        (Self::default(), None, None)
-    }
-
-    #[cfg(any(unix, test))]
-    fn from_file(path: &Path) -> Option<Self> {
-        let raw = fs::read_to_string(path).ok()?;
-        let value = toml::from_str::<toml::Value>(&raw).ok()?;
-        let color = |key: &str| value.get(key)?.as_str().and_then(parse_hex_color);
-        let fallback = Self::default();
-        let accent = color("accent").unwrap_or(fallback.accent);
-        Some(Self {
-            accent,
-            selection: color("selection").unwrap_or(accent),
-            foreground: color("foreground").unwrap_or(fallback.foreground),
-            background: color("background").unwrap_or(fallback.background),
-            muted: color("dark_foreground")
-                .or_else(|| color("muted"))
-                .unwrap_or(fallback.muted),
-            border: color("muted").unwrap_or(fallback.border),
-        })
-    }
-}
-
-#[cfg(any(unix, test))]
-fn parse_hex_color(value: &str) -> Option<Color> {
-    let hex = value.strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    Some(Color::Rgb(
-        u8::from_str_radix(&hex[0..2], 16).ok()?,
-        u8::from_str_radix(&hex[2..4], 16).ok()?,
-        u8::from_str_radix(&hex[4..6], 16).ok()?,
-    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -379,17 +256,11 @@ struct App {
     view: View,
     focus: Focus,
     selected: usize,
-    opened_album_key: Option<String>,
-    album_return_selection: usize,
-    album_parent_view: View,
-    opened_artist_name: Option<String>,
+    /// Open detail views, outermost first. Empty means a top-level view.
+    nav: Vec<NavFrame>,
+    /// Albums and singles of the innermost open artist; derived from `nav`.
     artist_release_keys: Vec<String>,
-    artist_return_selection: usize,
-    artist_parent_view: View,
-    opened_genre_name: Option<String>,
-    genre_return_selection: usize,
     genre_tab: usize,
-    opened_smart_playlist: Option<i64>,
     query: String,
     search_index: SearchIndex,
     search_matches: Vec<usize>,
@@ -401,6 +272,8 @@ struct App {
     queue: Vec<String>,
     queue_index: Option<usize>,
     queue_dirty: bool,
+    /// Queue index of the track handed to mpv to play next, when one is armed.
+    prefetched: Option<usize>,
     shuffle: bool,
     repeat: RepeatMode,
     playback: PlaybackState,
@@ -418,27 +291,27 @@ struct App {
     gain_progress: Option<(usize, usize)>,
     scan_rx: tokio_mpsc::UnboundedReceiver<ScanMessage>,
     scan_tx: tokio_mpsc::UnboundedSender<ScanMessage>,
-    watch_rx: tokio_mpsc::UnboundedReceiver<()>,
+    watch_rx: tokio_mpsc::UnboundedReceiver<WatchEvent>,
     scan_running: bool,
-    scan_pending: bool,
+    scan_pending: PendingScan,
+    reload_tx: Sender<()>,
+    reload_rx: tokio_mpsc::UnboundedReceiver<std::result::Result<Box<LibrarySnapshot>, String>>,
+    /// A background library rebuild is in flight.
+    reload_running: bool,
+    /// Something changed while a rebuild was running, so run one more.
+    reload_again: bool,
     last_scan: Instant,
     status: String,
     should_quit: bool,
     dirty: bool,
-    picker: Picker,
-    cover: Option<CoverState>,
-    // Firma de qué portadas se dibujaron y dónde. Las imágenes de kitty van
-    // ancladas a celdas de texto, y ratatui solo reescribe las celdas que
-    // cambian: si una portada se mueve, quedan restos de la anterior mezclados
-    // con la nueva. Comparando la firma entre fotogramas sabemos cuándo hace
-    // falta repintar la pantalla entera.
-    cover_sig: u64,
-    cover_sig_now: u64,
-    album_covers: HashMap<PathBuf, StatefulProtocol>,
-    album_cover_order: VecDeque<PathBuf>,
-    cover_decode_tx: Sender<CoverDecodeRequest>,
-    cover_decode_rx: tokio_mpsc::UnboundedReceiver<CoverDecodeResult>,
-    cover_decode_pending: HashSet<(PathBuf, u32)>,
+    covers: Covers,
+    /// Lyrics for the loaded track, and which track they were loaded for.
+    lyrics: Option<crate::lyrics::Lyrics>,
+    lyrics_track: Option<String>,
+    /// Missing lyrics are retried at a low rate so CLI imports appear live.
+    last_lyrics_check: Instant,
+    /// Key bindings in effect: the defaults with any user overrides applied.
+    bindings: Vec<keys::Binding>,
     album_columns: usize,
     last_mpris_signature: Option<MediaSessionSignature>,
     last_mpris_position_signature: Option<(u64, u64)>,
@@ -448,13 +321,8 @@ struct App {
     theme_path: Option<PathBuf>,
     #[cfg(unix)]
     theme_modified: Option<SystemTime>,
-    history_id: Option<i64>,
-    history_track_id: Option<String>,
-    listened_this_session_ms: u64,
-    pending_listen_ms: u64,
-    history_counted: bool,
-    last_history_tick: Instant,
-    last_history_flush: Instant,
+    /// Listening accounting for the loaded track.
+    tally: HistoryTally,
     last_playback_save: Instant,
     last_theme_check: Instant,
 }
@@ -463,12 +331,15 @@ pub async fn run(paths: AppPaths, config: Config, compact: bool) -> Result<()> {
     let _guard = InstanceGuard::acquire(&paths.lock_file())?;
     let (picker, protocol_note) = match Picker::from_query_stdio() {
         Ok(picker) => {
-            let note = format!("{:?} (detección automática)", picker.protocol_type());
+            let note = t!(
+                "label.image_protocol",
+                protocol = format!("{:?}", picker.protocol_type())
+            );
             (picker, note)
         }
         Err(error) => (
             Picker::halfblocks(),
-            format!("Halfblocks (fallback: {error})"),
+            t!("label.image_protocol_fallback", error = error),
         ),
     };
     let _ = fs::write(paths.image_protocol_file(), protocol_note);
@@ -497,10 +368,11 @@ async fn run_inner(
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     let saved_volume = saved.volume.clamp(0.0, 1.0);
     mpv.set_volume(saved_volume)?;
+    mpv.set_equalizer(&config.equalizer_bands())?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
-        Err(error) => (None, Some(format!("MPRIS no disponible: {error}"))),
+        Err(error) => (None, Some(t!("status.mpris_unavailable", error = error))),
     };
     let (scan_tx, scan_rx) = tokio_mpsc::unbounded_channel();
     let (watch_tx, watch_rx) = tokio_mpsc::unbounded_channel();
@@ -521,6 +393,12 @@ async fn run_inner(
     let (cover_decode_tx, cover_decode_requests) = mpsc::channel();
     let (cover_results_tx, cover_decode_rx) = tokio_mpsc::unbounded_channel();
     start_cover_decode_worker(cover_decode_requests, cover_results_tx);
+    let (reload_tx, reload_requests) = mpsc::channel();
+    let (reload_results_tx, reload_rx) = tokio_mpsc::unbounded_channel();
+    start_library_worker(paths.database_file(), reload_requests, reload_results_tx);
+    let overrides = keys::KeyOverrides::load(&paths.keybindings_file());
+    let binding_problems = overrides.problems.clone();
+    let bindings = keys::effective_bindings(&overrides);
     let (search_tx, search_requests) = mpsc::channel();
     let (search_results_tx, search_rx) = tokio_mpsc::unbounded_channel();
     start_search_worker(search_requests, search_results_tx);
@@ -550,17 +428,9 @@ async fn run_inner(
         view: View::Home,
         focus: Focus::Content,
         selected: 0,
-        opened_album_key: None,
-        album_return_selection: 0,
-        album_parent_view: View::Albums,
-        opened_artist_name: None,
+        nav: Vec::new(),
         artist_release_keys: Vec::new(),
-        artist_return_selection: 0,
-        artist_parent_view: View::Artists,
-        opened_genre_name: None,
-        genre_return_selection: 0,
         genre_tab: 0,
-        opened_smart_playlist: None,
         query: String::new(),
         search_index: SearchIndex::default(),
         search_matches: Vec::new(),
@@ -572,6 +442,7 @@ async fn run_inner(
         queue: saved.queue,
         queue_index: saved.current_index,
         queue_dirty: false,
+        prefetched: None,
         shuffle: saved.shuffle,
         repeat: saved.repeat,
         playback: PlaybackState {
@@ -596,20 +467,34 @@ async fn run_inner(
         scan_tx,
         watch_rx,
         scan_running: false,
-        scan_pending: false,
+        scan_pending: PendingScan::default(),
+        reload_tx,
+        reload_rx,
+        reload_running: false,
+        reload_again: false,
         last_scan: Instant::now() - Duration::from_secs(5),
-        status: mpris_warning.unwrap_or_else(|| "Cargando biblioteca…".into()),
+        status: binding_problems
+            .first()
+            .map(|problem| t!("status.keybindings_problem", problem = problem))
+            .or(mpris_warning)
+            .unwrap_or_else(|| t!("status.loading_library").into()),
         should_quit: false,
         dirty: true,
-        picker,
-        cover: None,
-        cover_sig: 0,
-        cover_sig_now: 0,
-        album_covers: HashMap::new(),
-        album_cover_order: VecDeque::new(),
-        cover_decode_tx,
-        cover_decode_rx,
-        cover_decode_pending: HashSet::new(),
+        bindings,
+        lyrics: None,
+        lyrics_track: None,
+        last_lyrics_check: Instant::now() - Duration::from_secs(1),
+        covers: Covers {
+            picker,
+            current: None,
+            drawn_signature: 0,
+            pending_signature: 0,
+            grid: HashMap::new(),
+            grid_order: VecDeque::new(),
+            requests: cover_decode_tx,
+            results: cover_decode_rx,
+            in_flight: HashSet::new(),
+        },
         album_columns: 1,
         last_mpris_signature: None,
         last_mpris_position_signature: None,
@@ -619,13 +504,7 @@ async fn run_inner(
         theme_path,
         #[cfg(unix)]
         theme_modified,
-        history_id: None,
-        history_track_id: None,
-        listened_this_session_ms: 0,
-        pending_listen_ms: 0,
-        history_counted: false,
-        last_history_tick: Instant::now(),
-        last_history_flush: Instant::now(),
+        tally: HistoryTally::new(),
         last_playback_save: Instant::now() - Duration::from_secs(5),
         last_theme_check: Instant::now(),
     };
@@ -653,7 +532,11 @@ async fn run_inner(
         app.load_current(resume_position)?;
         app.mpv.pause(true)?;
         app.playback.status = PlaybackStatus::Paused;
-        app.status = format!("Sesión restaurada: {} — {}", track.title, track.artist);
+        app.status = t!(
+            "status.session_restored",
+            title = track.title,
+            artist = track.artist
+        );
     }
     app.start_scan();
     app.start_gain_analysis()?;
@@ -701,11 +584,11 @@ async fn run_inner(
                     }
                 }
                 changed = app.watch_rx.recv() => {
-                    if changed.is_some() {
-                        app.scan_pending = true;
+                    if let Some(event) = changed {
+                        app.scan_pending.record(event);
                     }
                 }
-                result = app.cover_decode_rx.recv() => {
+                result = app.covers.results.recv() => {
                     if let Some(result) = result {
                         app.handle_cover_decode_result(result);
                     }
@@ -713,6 +596,11 @@ async fn run_inner(
                 result = app.search_rx.recv() => {
                     if let Some(result) = result {
                         app.handle_search_result(result);
+                    }
+                }
+                snapshot = app.reload_rx.recv() => {
+                    if let Some(result) = snapshot {
+                        app.handle_reload_result(result);
                     }
                 }
                 shutdown = shutdown_rx.recv() => {
@@ -743,37 +631,42 @@ async fn run_inner(
             while let Ok(message) = app.gain_rx.try_recv() {
                 app.handle_gain_message(message)?;
             }
-            if app.watch_rx.try_recv().is_ok() {
-                while app.watch_rx.try_recv().is_ok() {}
-                app.scan_pending = true;
+            while let Ok(event) = app.watch_rx.try_recv() {
+                app.scan_pending.record(event);
             }
             while let Ok(result) = app.search_rx.try_recv() {
                 app.handle_search_result(result);
             }
+            while let Ok(result) = app.reload_rx.try_recv() {
+                app.handle_reload_result(result);
+            }
             app.tick_history()?;
             app.refresh_theme();
-            if app.scan_pending
+            if !app.scan_pending.is_empty()
                 && !app.scan_running
                 && app.last_scan.elapsed() > Duration::from_secs(2)
             {
-                app.scan_pending = false;
-                app.start_scan();
+                let pending = app.scan_pending.take();
+                app.start_pending_scan(pending);
             }
 
             let periodic_draw_due = app.playback.status == PlaybackStatus::Playing
                 && last_draw.elapsed() >= Duration::from_millis(250);
+            // Re-armed here rather than at every queue mutation; see
+            // sync_prefetch.
+            app.sync_prefetch()?;
+            app.sync_lyrics();
+
             if app.dirty || periodic_draw_due {
                 app.refresh_cover();
                 terminal.draw(|frame| draw(frame, &mut app))?;
-                if app.cover_sig_now != app.cover_sig {
-                    // Las portadas cambiaron de sitio: un repintado parcial deja
-                    // mezcladas la vieja y la nueva, así que limpio y redibujo.
-                    app.cover_sig = app.cover_sig_now;
-                    // `Terminal::clear` consulta primero la posición del cursor.
-                    // Algunos terminales (incluido Kitty en ciertas sesiones)
-                    // no responden a esa consulta y Crossterm expira tras dos
-                    // segundos. Redimensionar el viewport actual produce el
-                    // mismo borrado y reinicia ambos buffers sin esa consulta.
+                if app.covers.pending_signature != app.covers.drawn_signature {
+                    // The covers moved. A partial repaint would leave the old
+                    // and the new mixed together, so clear and redraw.
+                    app.covers.drawn_signature = app.covers.pending_signature;
+                    // Terminal::clear queries the cursor first and can stall
+                    // for two seconds on Kitty in some sessions. Resizing the
+                    // current viewport clears both buffers without that query.
                     let area = terminal.size()?;
                     terminal.resize(area.into())?;
                     terminal.draw(|frame| draw(frame, &mut app))?;
@@ -794,364 +687,6 @@ async fn run_inner(
 }
 
 impl App {
-    fn reload_library(&mut self) -> Result<()> {
-        let _profile = crate::profiling::span("reload_library");
-        let library = self.db.load_library_state()?;
-        self.tracks = library.tracks;
-        self.stats = library.stats;
-        self.added_at = library.added_at;
-        let (search_index, albums, artists, genres) = if self.tracks.len() >= 2_000 {
-            thread::scope(|scope| -> Result<_> {
-                let tracks = &self.tracks;
-                let search = scope.spawn(|| SearchIndex::build(tracks));
-                let albums = scope.spawn(|| group_albums(tracks));
-                let artists = scope.spawn(|| group_artists(tracks));
-                let genres = scope.spawn(|| group_genres(tracks));
-                Ok((
-                    search
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("search index worker panicked"))?,
-                    albums
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("album grouping worker panicked"))?,
-                    artists
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("artist grouping worker panicked"))?,
-                    genres
-                        .join()
-                        .map_err(|_| anyhow::anyhow!("genre grouping worker panicked"))?,
-                ))
-            })?
-        } else {
-            (
-                SearchIndex::build(&self.tracks),
-                group_albums(&self.tracks),
-                group_artists(&self.tracks),
-                group_genres(&self.tracks),
-            )
-        };
-        self.search_index = search_index;
-        self.albums = albums;
-        self.artists = artists;
-        self.genres = genres;
-        self.refresh_search();
-        self.track_index = self
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.id.clone(), i))
-            .collect();
-        self.favorite_indices = self
-            .tracks
-            .iter()
-            .enumerate()
-            .filter_map(|(index, track)| track.favorite.then_some(index))
-            .collect();
-        self.album_index = self
-            .albums
-            .iter()
-            .enumerate()
-            .map(|(index, album)| (album.key.clone(), index))
-            .collect();
-        self.artist_index = self
-            .artists
-            .iter()
-            .enumerate()
-            .map(|(index, artist)| (artist.name.clone(), index))
-            .collect();
-        self.rebuild_genre_indices();
-        self.playlists = self.db.load_playlists()?;
-        self.smart_playlists = self.db.load_smart_playlists()?;
-        self.saved_queues = self.db.load_saved_queues()?;
-        self.history = self.db.load_history(500)?;
-        self.rebuild_home_tracks();
-        self.rebuild_smart_matches();
-        self.refresh_artist_releases();
-        if self.view == View::AlbumDetail && self.opened_album().is_none() {
-            self.view = self.album_parent_view;
-            self.opened_album_key = None;
-        }
-        if self.view == View::ArtistDetail && self.opened_artist().is_none() {
-            self.view = View::Artists;
-            self.opened_artist_name = None;
-            self.artist_release_keys.clear();
-        }
-        if self.view == View::GenreDetail
-            && !self.genres.iter().any(|genre| {
-                self.opened_genre_name
-                    .as_deref()
-                    .is_some_and(|name| genre.name == name)
-            })
-        {
-            self.view = View::Genres;
-            self.opened_genre_name = None;
-        }
-        self.selected = self.selected.min(self.item_count().saturating_sub(1));
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn rebuild_smart_matches(&mut self) {
-        let now = chrono::Utc::now().timestamp();
-        self.smart_matches = self
-            .smart_playlists
-            .iter()
-            .map(|playlist| {
-                (
-                    playlist.id,
-                    evaluate_smart_playlist(
-                        playlist,
-                        &self.tracks,
-                        &self.search_index,
-                        &self.stats,
-                        &self.added_at,
-                        now,
-                    ),
-                )
-            })
-            .collect();
-    }
-
-    fn rebuild_smart_matches_for_field(&mut self, field: &str) {
-        let now = chrono::Utc::now().timestamp();
-        for playlist in &self.smart_playlists {
-            if playlist.rules.iter().any(|rule| rule.field == field) {
-                self.smart_matches.insert(
-                    playlist.id,
-                    evaluate_smart_playlist(
-                        playlist,
-                        &self.tracks,
-                        &self.search_index,
-                        &self.stats,
-                        &self.added_at,
-                        now,
-                    ),
-                );
-            }
-        }
-    }
-
-    fn set_favorite_local(&mut self, track_id: &str, favorite: bool) {
-        let Some(index) = self.track_index.get(track_id).copied() else {
-            return;
-        };
-        self.tracks[index].favorite = favorite;
-        match self.favorite_indices.binary_search(&index) {
-            Ok(position) if !favorite => {
-                self.favorite_indices.remove(position);
-            }
-            Err(position) if favorite => {
-                self.favorite_indices.insert(position, index);
-            }
-            _ => {}
-        }
-        self.rebuild_smart_matches_for_field("favorite");
-        self.selected = self.selected.min(self.item_count().saturating_sub(1));
-        self.dirty = true;
-    }
-
-    fn refresh_playlists(&mut self) -> Result<()> {
-        self.playlists = self.db.load_playlists()?;
-        self.selected = self.selected.min(self.item_count().saturating_sub(1));
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn refresh_smart_playlists(&mut self) -> Result<()> {
-        self.smart_playlists = self.db.load_smart_playlists()?;
-        self.rebuild_smart_matches();
-        if self.opened_smart_playlist.is_some_and(|id| {
-            !self
-                .smart_playlists
-                .iter()
-                .any(|playlist| playlist.id == id)
-        }) {
-            self.opened_smart_playlist = None;
-            if self.view == View::SmartPlaylistDetail {
-                self.view = View::SmartPlaylists;
-            }
-        }
-        self.selected = self.selected.min(self.item_count().saturating_sub(1));
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn refresh_theme(&mut self) {
-        if self.last_theme_check.elapsed() < Duration::from_secs(1) {
-            return;
-        }
-        self.last_theme_check = Instant::now();
-
-        #[cfg(unix)]
-        {
-            let modified = self
-                .theme_path
-                .as_ref()
-                .and_then(|path| fs::metadata(path).ok())
-                .and_then(|metadata| metadata.modified().ok());
-            if self.theme_path.is_some() && modified == self.theme_modified {
-                return;
-            }
-
-            let (theme, path, modified) = UiTheme::load_with_source();
-            self.theme_path = path;
-            self.theme_modified = modified;
-            if theme != self.theme {
-                self.theme = theme;
-                self.status = "Tema de Omarchy actualizado".into();
-                self.dirty = true;
-            }
-        }
-    }
-
-    fn start_scan(&mut self) {
-        let roots = all_sources(&self.config);
-        let tx = self.scan_tx.clone();
-        let paths = self.paths.clone();
-        let cover_cache_bytes = self.config.cover_cache_mb * 1024 * 1024;
-        self.scan_running = true;
-        self.last_scan = Instant::now();
-        self.status = format!("Escaneando {} fuente(s)…", roots.len());
-        thread::Builder::new()
-            .name("muscli-scanner".into())
-            .spawn(move || {
-                let mut db = match Database::open(&paths.database_file()) {
-                    Ok(db) => db,
-                    Err(error) => {
-                        let _ = tx.send(ScanMessage::Error(format!("Base de datos: {error:#}")));
-                        let _ = tx.send(ScanMessage::Done { changed: false });
-                        return;
-                    }
-                };
-                let mut ids = BTreeSet::new();
-                let mut changed = false;
-                for root in roots {
-                    let scan = match scan_source_with_database(&paths, &root, &db) {
-                        Ok(scan) => scan,
-                        Err(error) => {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
-                            continue;
-                        }
-                    };
-                    ids.insert(scan.id.clone());
-                    changed |= !scan.tracks.is_empty() || !scan.missing_track_ids.is_empty();
-                    let moved_tracks = match db.upsert_scan(
-                        &scan.id,
-                        &scan.root,
-                        &scan.label,
-                        &scan.tracks,
-                        &scan.missing_track_ids,
-                    ) {
-                        Ok(moved) => moved,
-                        Err(error) => {
-                            let _ =
-                                tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
-                            continue;
-                        }
-                    };
-                    match db.prune_missing_for_source(&scan.id, &scan.failed_paths) {
-                        Ok(count) => changed |= count > 0,
-                        Err(error) => {
-                            let _ =
-                                tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
-                        }
-                    }
-                    if tx
-                        .send(ScanMessage::Source {
-                            label: scan.label,
-                            tracks: scan.track_count,
-                            moved_tracks,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-
-                match db.mark_missing_sources(&ids) {
-                    Ok(count) => changed |= count > 0,
-                    Err(error) => {
-                        let _ = tx.send(ScanMessage::Error(format!("Fuentes: {error:#}")));
-                    }
-                }
-                match db.referenced_cover_paths() {
-                    Ok(referenced) => {
-                        if let Err(error) =
-                            prune_unreferenced_covers(&paths.cover_cache_dir(), &referenced)
-                        {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
-                        }
-                    }
-                    Err(error) => {
-                        let _ =
-                            tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
-                    }
-                }
-                match prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes) {
-                    Ok(removed) => match db.clear_cover_paths(&removed) {
-                        Ok(count) => changed |= count > 0,
-                        Err(error) => {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
-                        }
-                    },
-                    Err(error) => {
-                        let _ =
-                            tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
-                    }
-                }
-                let _ = tx.send(ScanMessage::Done { changed });
-            })
-            .ok();
-    }
-
-    fn handle_scan(&mut self, message: ScanMessage) -> Result<()> {
-        match message {
-            ScanMessage::Source {
-                label,
-                tracks,
-                moved_tracks,
-            } => {
-                let mut queue_changed = false;
-                for id in &mut self.queue {
-                    if let Some((_, new_id)) = moved_tracks.iter().find(|(old_id, _)| id == old_id)
-                    {
-                        *id = new_id.clone();
-                        queue_changed = true;
-                    }
-                }
-                self.queue_dirty |= queue_changed;
-                self.status = format!("Indexadas {tracks} pistas de {label}");
-                self.dirty = true;
-            }
-            ScanMessage::Error(error) => {
-                self.status = format!("Scan: {error}");
-                self.dirty = true;
-            }
-            ScanMessage::Done { changed } => {
-                self.scan_running = false;
-                if changed {
-                    self.reload_library()?;
-                    self.status = format!(
-                        "{} canciones · {} álbumes · listo",
-                        self.tracks.len(),
-                        self.albums.len()
-                    );
-                } else {
-                    self.status = format!(
-                        "{} canciones · {} álbumes · sin cambios",
-                        self.tracks.len(),
-                        self.albums.len()
-                    );
-                    self.dirty = true;
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn item_count(&self) -> usize {
         match self.view {
             View::Home => self.home_track_ids().len(),
@@ -1169,6 +704,9 @@ impl App {
             View::History => self.history.len(),
             View::Search => self.search_results().len(),
             View::Queue => self.queue.len(),
+            // The lyrics view has no selectable list of its own; it follows
+            // whatever is playing.
+            View::Lyrics => 0,
             View::Settings => SETTINGS.len(),
             View::Help => 0,
         }
@@ -1262,6 +800,7 @@ impl App {
                 .iter()
                 .map(|&i| self.tracks[i].id.clone())
                 .collect(),
+            View::Lyrics => Vec::new(),
             View::Queue => self.queue.clone(),
             View::Albums => self
                 .albums
@@ -1319,6 +858,7 @@ impl App {
                 .search_results()
                 .get(self.selected)
                 .map(|&i| self.tracks[i].id.clone()),
+            View::Lyrics => self.current_track().map(|track| track.id.clone()),
             View::Queue => self.queue.get(self.selected).cloned(),
             View::Albums => self
                 .albums
@@ -1398,7 +938,7 @@ impl App {
     }
 
     fn opened_genre(&self) -> Option<&Genre> {
-        let name = self.opened_genre_name.as_deref()?;
+        let name = self.opened_genre_name()?;
         self.genres.iter().find(|genre| genre.name == name)
     }
 
@@ -1455,16 +995,14 @@ impl App {
     }
 
     fn genre_album_indices(&self) -> &[usize] {
-        self.opened_genre_name
-            .as_deref()
+        self.opened_genre_name()
             .and_then(|name| self.genre_album_cache.get(name))
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }
 
     fn genre_artist_indices(&self) -> &[usize] {
-        self.opened_genre_name
-            .as_deref()
+        self.opened_genre_name()
             .and_then(|name| self.genre_artist_cache.get(name))
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -1500,7 +1038,7 @@ impl App {
     }
 
     fn smart_track_ids(&self) -> &[String] {
-        self.opened_smart_playlist
+        self.opened_smart_playlist()
             .and_then(|id| self.smart_matches.get(&id))
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -1521,15 +1059,9 @@ impl App {
     }
 
     fn opened_album(&self) -> Option<&Album> {
-        let key = self.opened_album_key.as_deref()?;
+        let key = self.opened_album_key()?;
         let index = self.album_index.get(key).copied()?;
         self.albums.get(index)
-    }
-
-    fn opened_artist(&self) -> Option<&Artist> {
-        let name = self.opened_artist_name.as_deref()?;
-        let index = self.artist_index.get(name).copied()?;
-        self.artists.get(index)
     }
 
     fn visible_album_len(&self) -> usize {
@@ -1561,13 +1093,13 @@ impl App {
     }
 
     fn refresh_artist_releases(&mut self) {
-        let Some(name) = self.opened_artist_name.as_deref() else {
+        let Some(name) = self.opened_artist_name().map(str::to_owned) else {
             self.artist_release_keys.clear();
             return;
         };
         let Some(artist) = self
             .artist_index
-            .get(name)
+            .get(name.as_str())
             .and_then(|index| self.artists.get(*index))
         else {
             self.artist_release_keys.clear();
@@ -1586,82 +1118,70 @@ impl App {
         let Some(artist) = self.artists.get(self.selected) else {
             return;
         };
-        self.artist_return_selection = self.selected;
-        self.artist_parent_view = self.view;
-        self.opened_artist_name = Some(artist.name.clone());
+        let name = artist.name.clone();
+        self.push_nav(NavTarget::Artist(name), View::ArtistDetail);
         self.refresh_artist_releases();
-        self.view = View::ArtistDetail;
-        self.selected = 0;
-        self.focus = Focus::Content;
-        self.status = "Selecciona un álbum o single · Esc para volver".into();
-        self.dirty = true;
+        self.status = t!("status.pick_release").into();
     }
 
     fn close_artist_detail(&mut self) {
         if self.view != View::ArtistDetail {
             return;
         }
-        self.view = self.artist_parent_view;
-        self.selected = self
-            .opened_artist_name
-            .as_deref()
-            .and_then(|name| {
-                if self.artist_parent_view == View::GenreDetail {
-                    self.genre_artist_indices()
-                        .iter()
-                        .position(|index| self.artists[*index].name == name)
-                } else {
-                    self.artist_index.get(name).copied()
-                }
-            })
-            .unwrap_or(self.artist_return_selection)
-            .min(self.artists.len().saturating_sub(1));
-        self.opened_artist_name = None;
-        self.artist_release_keys.clear();
+        let Some(frame) = self.pop_nav() else {
+            return;
+        };
+        let NavTarget::Artist(name) = frame.target else {
+            return;
+        };
+        // Prefer re-finding the artist over the remembered index: a rescan may
+        // have shifted the list while the detail view was open.
+        self.selected = if frame.parent == View::GenreDetail {
+            self.genre_artist_indices()
+                .iter()
+                .position(|index| self.artists[*index].name == name)
+        } else {
+            self.artist_index.get(name.as_str()).copied()
+        }
+        .unwrap_or(frame.selection)
+        .min(self.artists.len().saturating_sub(1));
+        // An artist may still be open below this one.
+        self.refresh_artist_releases();
         self.status.clear();
-        self.dirty = true;
     }
 
     fn open_selected_album(&mut self) {
         let Some(album_key) = self.selected_album().map(|album| album.key.clone()) else {
             return;
         };
-        self.album_return_selection = self.selected;
-        self.album_parent_view = self.view;
-        self.opened_album_key = Some(album_key);
-        self.view = View::AlbumDetail;
-        self.selected = 0;
-        self.focus = Focus::Content;
-        self.status = "Selecciona una canción · Esc para volver".into();
-        self.dirty = true;
+        self.push_nav(NavTarget::Album(album_key), View::AlbumDetail);
+        self.status = t!("status.pick_track").into();
     }
 
     fn close_album_detail(&mut self) {
         if self.view != View::AlbumDetail {
             return;
         }
-        self.view = self.album_parent_view;
-        self.selected = self
-            .opened_album_key
-            .as_deref()
-            .and_then(|key| {
-                if self.album_parent_view == View::ArtistDetail {
-                    self.artist_release_keys
-                        .iter()
-                        .position(|album_key| album_key == key)
-                } else if self.album_parent_view == View::GenreDetail {
-                    self.genre_album_indices()
-                        .iter()
-                        .position(|index| self.albums[*index].key == key)
-                } else {
-                    self.albums.iter().position(|album| album.key == key)
-                }
-            })
-            .unwrap_or(self.album_return_selection)
-            .min(self.item_count().saturating_sub(1));
-        self.opened_album_key = None;
+        let Some(frame) = self.pop_nav() else {
+            return;
+        };
+        let NavTarget::Album(key) = frame.target else {
+            return;
+        };
+        self.selected = match frame.parent {
+            View::ArtistDetail => self
+                .artist_release_keys
+                .iter()
+                .position(|album_key| album_key == &key),
+            View::GenreDetail => self
+                .genre_album_indices()
+                .iter()
+                .position(|index| self.albums[*index].key == key),
+            _ => self.albums.iter().position(|album| album.key == key),
+        }
+        .unwrap_or(frame.selection)
+        .min(self.item_count().saturating_sub(1));
         self.status.clear();
-        self.dirty = true;
     }
 
     fn activate_or_open(&mut self) -> Result<()> {
@@ -1672,486 +1192,36 @@ impl App {
             self.open_selected_album();
             Ok(())
         } else if self.view == View::Genres {
-            if let Some(genre) = self.genres.get(self.selected) {
-                self.genre_return_selection = self.selected;
-                self.opened_genre_name = Some(genre.name.clone());
+            if let Some(name) = self
+                .genres
+                .get(self.selected)
+                .map(|genre| genre.name.clone())
+            {
+                self.push_nav(NavTarget::Genre(name), View::GenreDetail);
                 self.genre_tab = 0;
-                self.selected = 0;
-                self.view = View::GenreDetail;
             }
             Ok(())
         } else if self.view == View::GenreDetail && self.genre_tab == 0 {
             if let Some(index) = self.genre_album_indices().get(self.selected).copied() {
-                self.album_return_selection = self.selected;
-                self.album_parent_view = View::GenreDetail;
-                self.opened_album_key = Some(self.albums[index].key.clone());
-                self.view = View::AlbumDetail;
-                self.selected = 0;
+                let key = self.albums[index].key.clone();
+                self.push_nav(NavTarget::Album(key), View::AlbumDetail);
             }
             Ok(())
         } else if self.view == View::GenreDetail && self.genre_tab == 1 {
             if let Some(index) = self.genre_artist_indices().get(self.selected).copied() {
-                self.artist_return_selection = self.selected;
-                self.artist_parent_view = View::GenreDetail;
-                self.opened_artist_name = Some(self.artists[index].name.clone());
+                let name = self.artists[index].name.clone();
+                self.push_nav(NavTarget::Artist(name), View::ArtistDetail);
                 self.refresh_artist_releases();
-                self.view = View::ArtistDetail;
-                self.selected = 0;
             }
             Ok(())
         } else if self.view == View::SmartPlaylists {
-            if let Some(playlist) = self.smart_playlists.get(self.selected) {
-                self.opened_smart_playlist = Some(playlist.id);
-                self.view = View::SmartPlaylistDetail;
-                self.selected = 0;
+            if let Some(id) = self.smart_playlists.get(self.selected).map(|list| list.id) {
+                self.push_nav(NavTarget::SmartPlaylist(id), View::SmartPlaylistDetail);
             }
             Ok(())
         } else {
             self.activate_selection()
         }
-    }
-
-    fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        if self.input.is_some() {
-            return self.handle_input(key);
-        }
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            self.should_quit = true;
-            return Ok(());
-        }
-        match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Esc if self.view == View::AlbumDetail => self.close_album_detail(),
-            KeyCode::Esc if self.view == View::ArtistDetail => self.close_artist_detail(),
-            KeyCode::Esc if self.view == View::GenreDetail => {
-                self.view = View::Genres;
-                self.selected = self.genre_return_selection;
-                self.opened_genre_name = None;
-            }
-            KeyCode::Esc if self.view == View::SmartPlaylistDetail => {
-                self.view = View::SmartPlaylists;
-                self.opened_smart_playlist = None;
-                self.selected = 0;
-            }
-            KeyCode::Char('?') => {
-                self.view = View::Help;
-                self.selected = 0;
-            }
-            KeyCode::Char(',') => {
-                self.view = View::Settings;
-                self.selected = 0;
-            }
-            KeyCode::Char('m') => {
-                self.compact = !self.compact;
-                resize_terminal_for_mode(self.compact)?;
-                self.status = if self.compact {
-                    "Modo compacto activado"
-                } else {
-                    "Modo completo activado"
-                }
-                .into();
-            }
-            KeyCode::Char('/') => {
-                self.view = View::Search;
-                self.selected = 0;
-                self.query.clear();
-                self.refresh_search();
-                self.input = Some(InputMode::Search);
-                self.input_buffer.clear();
-            }
-            KeyCode::Char('c') => {
-                self.input = Some(InputMode::NewPlaylist);
-                self.input_buffer.clear();
-            }
-            KeyCode::Char('P') => {
-                if let Some(id) = self.selected_track_id() {
-                    if self.playlists.is_empty() {
-                        let playlist = self.db.create_playlist("Mi playlist")?;
-                        self.db.add_to_playlist(playlist, &id)?;
-                        self.refresh_playlists()?;
-                        self.status = "Añadida a Mi playlist".into();
-                    } else {
-                        self.input = Some(InputMode::ChoosePlaylist {
-                            track_id: id,
-                            selected: 0,
-                        });
-                    }
-                }
-            }
-            KeyCode::Tab if self.view == View::GenreDetail => {
-                self.genre_tab = (self.genre_tab + 1) % 3;
-                self.selected = 0;
-            }
-            KeyCode::Tab => {
-                self.focus = if self.focus == Focus::Sidebar {
-                    Focus::Content
-                } else {
-                    Focus::Sidebar
-                };
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.view == View::Settings => {
-                self.adjust_setting(key.code)?
-            }
-            KeyCode::Left | KeyCode::Char('h') if self.view == View::AlbumDetail => {
-                self.close_album_detail()
-            }
-            KeyCode::Left | KeyCode::Char('h')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(-1)
-            }
-            KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Sidebar,
-            KeyCode::Right | KeyCode::Char('l')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(1)
-            }
-            KeyCode::Right | KeyCode::Char('l') => self.focus = Focus::Content,
-            KeyCode::Up | KeyCode::Char('k')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(-(self.album_columns as isize))
-            }
-            KeyCode::Down | KeyCode::Char('j')
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(self.album_columns as isize)
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
-            KeyCode::Home => {
-                self.selected = 0;
-                self.dirty = true;
-            }
-            KeyCode::End => {
-                self.selected = self.item_count().saturating_sub(1);
-                self.dirty = true;
-            }
-            KeyCode::Enter if self.view == View::Settings => {
-                self.adjust_setting(KeyCode::Char(' '))?
-            }
-            KeyCode::Enter => self.activate_or_open()?,
-            KeyCode::Char('x') if self.selected_track_id().is_some() => {
-                self.input = Some(InputMode::Context { selected: 0 })
-            }
-            KeyCode::Char('J') if self.view == View::Queue => self.move_queue_item(1),
-            KeyCode::Char('K') if self.view == View::Queue => self.move_queue_item(-1),
-            KeyCode::Delete | KeyCode::Char('d') if self.view == View::Queue => {
-                self.remove_queue_item()
-            }
-            KeyCode::Char('C') if self.view == View::Queue && !self.queue.is_empty() => {
-                self.input = Some(InputMode::ConfirmClearQueue)
-            }
-            KeyCode::Char('S') if self.view == View::Queue && !self.queue.is_empty() => {
-                self.input_buffer.clear();
-                self.input = Some(InputMode::SaveQueue)
-            }
-            KeyCode::Char('L') if self.view == View::Queue && !self.saved_queues.is_empty() => {
-                self.input = Some(InputMode::LoadQueue { selected: 0 })
-            }
-            KeyCode::Char('e') if self.view == View::SmartPlaylists => {
-                if let Some(playlist) = self.smart_playlists.get(self.selected).cloned() {
-                    self.input = Some(InputMode::SmartEditor {
-                        playlist,
-                        selected: 0,
-                    });
-                }
-            }
-            KeyCode::Char(' ') => self.handle_action(PlayerAction::Toggle)?,
-            KeyCode::Char('n') => self.handle_action(PlayerAction::Next)?,
-            KeyCode::Char('p') => self.handle_action(PlayerAction::Previous)?,
-            KeyCode::Char('s') => {
-                self.shuffle = !self.shuffle;
-                self.status = format!(
-                    "Aleatorio {}",
-                    if self.shuffle {
-                        "activado"
-                    } else {
-                        "desactivado"
-                    }
-                );
-                self.dirty = true;
-            }
-            KeyCode::Char('r') => {
-                self.repeat = self.repeat.next();
-                self.status = format!("Repetir: {:?}", self.repeat);
-                self.dirty = true;
-            }
-            KeyCode::Char('a') => {
-                if let Some(id) = self.selected_track_id() {
-                    self.queue.push(id);
-                    self.queue_dirty = true;
-                    self.status = "Añadida a la cola".into();
-                    self.dirty = true;
-                }
-            }
-            KeyCode::Char('f') => {
-                if let Some(id) = self.selected_track_id() {
-                    let value = self.db.toggle_favorite(&id)?;
-                    self.set_favorite_local(&id, value);
-                    self.status = if value {
-                        "Añadida a favoritos"
-                    } else {
-                        "Eliminada de favoritos"
-                    }
-                    .into();
-                }
-            }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.handle_remote_action(RemoteCommand::VolumeUp)?
-            }
-            KeyCode::Char('-') => self.handle_remote_action(RemoteCommand::VolumeDown)?,
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn handle_input(&mut self, key: KeyEvent) -> Result<()> {
-        match self.input.clone().unwrap() {
-            InputMode::ChoosePlaylist {
-                track_id,
-                mut selected,
-            } => match key.code {
-                KeyCode::Esc => self.input = None,
-                KeyCode::Up | KeyCode::Char('k') => {
-                    selected = selected.saturating_sub(1);
-                    self.input = Some(InputMode::ChoosePlaylist { track_id, selected });
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    selected = (selected + 1).min(self.playlists.len().saturating_sub(1));
-                    self.input = Some(InputMode::ChoosePlaylist { track_id, selected });
-                }
-                KeyCode::Enter => {
-                    if let Some(playlist) = self.playlists.get_mut(selected) {
-                        self.db.add_to_playlist(playlist.id, &track_id)?;
-                        playlist.track_ids.push(track_id);
-                        self.status = format!("Añadida a {}", playlist.name);
-                        self.dirty = true;
-                    }
-                    self.input = None;
-                }
-                _ => {}
-            },
-            InputMode::LoadQueue { mut selected } => {
-                match key.code {
-                    KeyCode::Esc => self.input = None,
-                    KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1).min(self.saved_queues.len().saturating_sub(1))
-                    }
-                    KeyCode::Enter => {
-                        if let Some(queue) = self.saved_queues.get(selected) {
-                            self.queue = queue.track_ids.clone();
-                            self.queue_index = (!self.queue.is_empty()).then_some(0);
-                            self.queue_dirty = true;
-                            self.status = format!("Cola cargada: {}", queue.name);
-                        }
-                        self.input = None;
-                    }
-                    _ => {}
-                }
-                if matches!(self.input, Some(InputMode::LoadQueue { .. })) {
-                    self.input = Some(InputMode::LoadQueue { selected });
-                }
-            }
-            InputMode::ConfirmClearQueue => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('s') | KeyCode::Enter => {
-                    self.queue.clear();
-                    self.queue_index = None;
-                    self.queue_dirty = true;
-                    self.mpv.stop()?;
-                    self.playback.status = PlaybackStatus::Stopped;
-                    self.input = None;
-                    self.status = "Cola vaciada".into();
-                }
-                KeyCode::Esc | KeyCode::Char('n') => self.input = None,
-                _ => {}
-            },
-            InputMode::Context { mut selected } => {
-                match key.code {
-                    KeyCode::Esc => self.input = None,
-                    KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1).min(CONTEXT_ACTIONS.len() - 1)
-                    }
-                    KeyCode::Enter => {
-                        self.run_context_action(selected)?;
-                        if !matches!(self.input, Some(InputMode::ChoosePlaylist { .. })) {
-                            self.input = None;
-                        }
-                    }
-                    _ => {}
-                }
-                if matches!(self.input, Some(InputMode::Context { .. })) {
-                    self.input = Some(InputMode::Context { selected });
-                }
-            }
-            InputMode::SmartEditor {
-                mut playlist,
-                mut selected,
-            } => {
-                match key.code {
-                    KeyCode::Esc => self.input = None,
-                    KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1).min(playlist.rules.len().saturating_sub(1))
-                    }
-                    KeyCode::Char('m') => {
-                        playlist.match_mode =
-                            if playlist.match_mode == crate::model::SmartMatch::All {
-                                crate::model::SmartMatch::Any
-                            } else {
-                                crate::model::SmartMatch::All
-                            };
-                    }
-                    KeyCode::Char('a') => playlist.rules.push(SmartRule {
-                        field: "genre".into(),
-                        operator: "contains".into(),
-                        value: serde_json::Value::String(String::new()),
-                    }),
-                    KeyCode::Char('d') if !playlist.rules.is_empty() => {
-                        playlist.rules.remove(selected);
-                        selected = selected.min(playlist.rules.len().saturating_sub(1));
-                    }
-                    KeyCode::Tab if !playlist.rules.is_empty() => {
-                        cycle_smart_rule(&mut playlist.rules[selected]);
-                    }
-                    KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.db.save_smart_playlist(&playlist)?;
-                        self.refresh_smart_playlists()?;
-                        self.input = None;
-                        self.status = "Lista inteligente guardada".into();
-                        self.dirty = true;
-                        return Ok(());
-                    }
-                    KeyCode::Char('s') => cycle_smart_sort(&mut playlist),
-                    KeyCode::Char('l') => {
-                        playlist.limit = match playlist.limit {
-                            None => Some(25),
-                            Some(25) => Some(100),
-                            _ => None,
-                        }
-                    }
-                    KeyCode::Enter if !playlist.rules.is_empty() => {
-                        self.input_buffer = display_rule_value(&playlist.rules[selected]);
-                        self.input = Some(InputMode::SmartValue { playlist, selected });
-                        self.dirty = true;
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-                if matches!(self.input, Some(InputMode::SmartEditor { .. })) {
-                    self.input = Some(InputMode::SmartEditor { playlist, selected });
-                }
-            }
-            InputMode::SmartValue {
-                mut playlist,
-                selected,
-            } => match key.code {
-                KeyCode::Esc => self.input = Some(InputMode::SmartEditor { playlist, selected }),
-                KeyCode::Enter => {
-                    set_rule_value(&mut playlist.rules[selected], self.input_buffer.trim());
-                    self.input_buffer.clear();
-                    self.input = Some(InputMode::SmartEditor { playlist, selected });
-                }
-                KeyCode::Backspace => {
-                    self.input_buffer.pop();
-                }
-                KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.input_buffer.push(character)
-                }
-                _ => {}
-            },
-            mode @ (InputMode::Search | InputMode::NewPlaylist | InputMode::SaveQueue) => {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.input = None;
-                        self.input_buffer.clear();
-                    }
-                    KeyCode::Enter => {
-                        if mode == InputMode::NewPlaylist && !self.input_buffer.trim().is_empty() {
-                            self.db.create_playlist(self.input_buffer.trim())?;
-                            self.refresh_playlists()?;
-                            self.status = format!("Playlist creada: {}", self.input_buffer.trim());
-                        }
-                        if mode == InputMode::Search {
-                            self.query = self.input_buffer.clone();
-                            self.refresh_search();
-                        }
-                        if mode == InputMode::SaveQueue && !self.input_buffer.trim().is_empty() {
-                            let name = self.input_buffer.trim().to_owned();
-                            let queue = self.queue.clone();
-                            self.db.save_queue(&name, &queue)?;
-                            self.saved_queues = self.db.load_saved_queues()?;
-                            self.status = format!("Cola guardada: {name}");
-                        }
-                        self.input = None;
-                    }
-                    KeyCode::Backspace => {
-                        self.input_buffer.pop();
-                        if mode == InputMode::Search {
-                            self.query = self.input_buffer.clone();
-                            self.refresh_search();
-                            self.selected = 0;
-                        }
-                    }
-                    KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.input_buffer.push(c);
-                        if mode == InputMode::Search {
-                            self.query = self.input_buffer.clone();
-                            self.refresh_search();
-                            self.selected = 0;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> Result<()> {
-        match mouse.kind {
-            MouseEventKind::ScrollUp
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(-(self.album_columns as isize))
-            }
-            MouseEventKind::ScrollDown
-                if matches!(self.view, View::Albums | View::ArtistDetail)
-                    && self.focus == Focus::Content =>
-            {
-                self.move_album_selection(self.album_columns as isize)
-            }
-            MouseEventKind::ScrollUp => self.move_selection(-1),
-            MouseEventKind::ScrollDown => self.move_selection(1),
-            MouseEventKind::Down(MouseButton::Left)
-                if mouse.column < 22 && (4..(4 + VIEWS.len() as u16)).contains(&mouse.row) =>
-            {
-                let index = (mouse.row - 4) as usize;
-                if let Some(view) = VIEWS.get(index) {
-                    self.view = *view;
-                    self.opened_album_key = None;
-                    self.opened_artist_name = None;
-                    self.artist_release_keys.clear();
-                    self.selected = 0;
-                    self.focus = Focus::Content;
-                    self.dirty = true;
-                }
-            }
-            MouseEventKind::Down(MouseButton::Right) if self.selected_track_id().is_some() => {
-                self.input = Some(InputMode::Context { selected: 0 });
-                self.dirty = true;
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     fn move_selection(&mut self, amount: isize) {
@@ -2160,16 +1230,14 @@ impl App {
                 View::ArtistDetail => View::Artists,
                 View::GenreDetail => View::Genres,
                 View::SmartPlaylistDetail => View::SmartPlaylists,
-                View::AlbumDetail if self.album_parent_view == View::ArtistDetail => View::Artists,
+                View::AlbumDetail if self.nav_parent() == Some(View::ArtistDetail) => View::Artists,
                 View::AlbumDetail => View::Albums,
                 view => view,
             };
             let current = VIEWS.iter().position(|v| *v == sidebar_view).unwrap_or(0);
             let next = (current as isize + amount).clamp(0, VIEWS.len() as isize - 1) as usize;
             self.view = VIEWS[next];
-            self.opened_album_key = None;
-            self.opened_artist_name = None;
-            self.artist_release_keys.clear();
+            self.clear_nav();
             self.selected = 0;
         } else {
             self.selected = (self.selected as isize + amount)
@@ -2192,7 +1260,7 @@ impl App {
                 .is_some_and(|&i| self.tracks[i].available)
         });
         if ids.is_empty() {
-            self.status = "No hay pistas disponibles en esta selección".into();
+            self.status = t!("status.nothing_playable").into();
             return Ok(());
         }
         let target = self.selected_track_id();
@@ -2215,892 +1283,27 @@ impl App {
             0
         })
     }
-
-    fn load_current(&mut self, position_ms: u64) -> Result<()> {
-        self.flush_history(false)?;
-        let Some(track) = self.current_track().cloned() else {
-            return Ok(());
-        };
-        if !track.available || !track.path.exists() {
-            self.status = format!("No disponible: {}", track.title);
-            self.playback.status = PlaybackStatus::Stopped;
-            self.mpv.stop()?;
-            self.dirty = true;
-            return Ok(());
-        }
-        let gain = if self.config.replaygain_enabled {
-            self.db.track_gain(
-                &track.id,
-                self.config.replaygain_mode == ReplayGainMode::Album,
-            )?
-        } else {
-            None
-        };
-        let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
-        self.mpv.set_replay_gain(gain)?;
-        self.mpv.load(&track.path, position_ms)?;
-        self.mpv.pause(false)?;
-        self.playback.status = PlaybackStatus::Playing;
-        self.playback.position_ms = position_ms;
-        self.playback.duration_ms = track.duration_ms;
-        if self.config.history_enabled {
-            self.history_id = Some(self.db.start_history(&track.id)?);
-            self.history_track_id = Some(track.id.clone());
-            self.listened_this_session_ms = 0;
-            self.pending_listen_ms = 0;
-            self.history_counted = false;
-            self.last_history_tick = Instant::now();
-            self.last_history_flush = Instant::now();
-        }
-        self.status.clear();
-        self.dirty = true;
-        self.persist_playback()?;
-        Ok(())
-    }
-
-    fn next(&mut self) -> Result<()> {
-        if self.queue.is_empty() {
-            return Ok(());
-        }
-        let current = self.queue_index.unwrap_or(0);
-        for offset in 1..=self.queue.len() {
-            let raw = current + offset;
-            if raw >= self.queue.len() && self.repeat != RepeatMode::Queue {
-                break;
-            }
-            let index = raw % self.queue.len();
-            if self.queue_track_is_playable(index) {
-                self.queue_index = Some(index);
-                return self.load_current(0);
-            }
-        }
-        self.playback.status = PlaybackStatus::Stopped;
-        self.status = "No quedan pistas disponibles en la cola".into();
-        self.mpv.stop()?;
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn previous(&mut self) -> Result<()> {
-        if self.playback.position_ms > 5_000 {
-            return self.load_current(0);
-        }
-        let current = self.queue_index.unwrap_or(0);
-        for offset in 1..=self.queue.len() {
-            let Some(index) = current.checked_sub(offset) else {
-                break;
-            };
-            if self.queue_track_is_playable(index) {
-                self.queue_index = Some(index);
-                return self.load_current(0);
-            }
-        }
-        self.load_current(0)
-    }
-
-    fn queue_track_is_playable(&self, index: usize) -> bool {
-        self.queue
-            .get(index)
-            .and_then(|id| self.track_index.get(id))
-            .map(|&track_index| &self.tracks[track_index])
-            .is_some_and(|track| track.available && track.path.exists())
-    }
-
-    fn move_queue_item(&mut self, amount: isize) {
-        if self.queue.is_empty() {
-            return;
-        }
-        let target = shifted_index(self.selected, amount, self.queue.len());
-        self.queue.swap(self.selected, target);
-        self.queue_dirty = true;
-        if self.queue_index == Some(self.selected) {
-            self.queue_index = Some(target);
-        } else if self.queue_index == Some(target) {
-            self.queue_index = Some(self.selected);
-        }
-        self.selected = target;
-        self.dirty = true;
-    }
-
-    fn remove_queue_item(&mut self) {
-        if self.selected >= self.queue.len() {
-            return;
-        }
-        self.queue.remove(self.selected);
-        self.queue_dirty = true;
-        if let Some(current) = self.queue_index {
-            self.queue_index = if self.queue.is_empty() {
-                None
-            } else if self.selected < current {
-                Some(current - 1)
-            } else {
-                Some(current.min(self.queue.len() - 1))
-            };
-        }
-        self.selected = self.selected.min(self.queue.len().saturating_sub(1));
-        self.dirty = true;
-    }
-
-    fn run_context_action(&mut self, action: usize) -> Result<()> {
-        let Some(track_id) = self.selected_track_id() else {
-            return Ok(());
-        };
-        match action {
-            0 => self.activate_selection()?,
-            1 => {
-                let position = self.queue_index.map_or(0, |index| index + 1);
-                self.queue.insert(position.min(self.queue.len()), track_id);
-                self.queue_dirty = true;
-                self.status = "Se reproducirá después".into();
-            }
-            2 => {
-                self.queue.push(track_id);
-                self.queue_dirty = true;
-                self.status = "Añadida al final de la cola".into();
-            }
-            3 => {
-                let favorite = self.db.toggle_favorite(&track_id)?;
-                self.set_favorite_local(&track_id, favorite);
-                self.status = if favorite {
-                    "Añadida a favoritos"
-                } else {
-                    "Eliminada de favoritos"
-                }
-                .into();
-            }
-            4 => {
-                self.input = Some(InputMode::ChoosePlaylist {
-                    track_id,
-                    selected: 0,
-                });
-            }
-            5 => {
-                if let Some(track) = self
-                    .track_index
-                    .get(&track_id)
-                    .and_then(|index| self.tracks.get(*index))
-                    && let Some(album) = self.albums.iter().find(|album| {
-                        album.title.eq_ignore_ascii_case(&track.album)
-                            && album.artist.eq_ignore_ascii_case(&track.album_artist)
-                    })
-                {
-                    self.opened_album_key = Some(album.key.clone());
-                    self.album_parent_view = self.view;
-                    self.view = View::AlbumDetail;
-                    self.selected = album
-                        .track_ids
-                        .iter()
-                        .position(|id| id == &track_id)
-                        .unwrap_or(0);
-                }
-            }
-            6 => {
-                if let Some(track) = self
-                    .track_index
-                    .get(&track_id)
-                    .and_then(|index| self.tracks.get(*index))
-                {
-                    self.artist_parent_view = self.view;
-                    self.opened_artist_name = Some(track.artist.clone());
-                    self.refresh_artist_releases();
-                    self.view = View::ArtistDetail;
-                    self.selected = 0;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn adjust_setting(&mut self, key: KeyCode) -> Result<()> {
-        let increase = matches!(key, KeyCode::Right);
-        let horizontal = matches!(key, KeyCode::Left | KeyCode::Right);
-        match self.selected {
-            0 => self.config.replaygain_enabled = !self.config.replaygain_enabled,
-            1 => {
-                self.config.replaygain_mode = match self.config.replaygain_mode {
-                    ReplayGainMode::Album => ReplayGainMode::Track,
-                    ReplayGainMode::Track => ReplayGainMode::Album,
-                }
-            }
-            2 => {
-                if !horizontal {
-                    return Ok(());
-                }
-                self.config.replaygain_target_lufs = (self.config.replaygain_target_lufs
-                    + if increase { 1.0 } else { -1.0 })
-                .clamp(-30.0, -5.0)
-            }
-            3 => self.config.resume_enabled = !self.config.resume_enabled,
-            4 => self.config.history_enabled = !self.config.history_enabled,
-            5 => self.config.compact_default = !self.config.compact_default,
-            6 => self.config.show_covers = !self.config.show_covers,
-            7 => {
-                if !horizontal {
-                    return Ok(());
-                }
-                self.config.volume_step = if increase {
-                    self.config.volume_step.saturating_add(1).min(20)
-                } else {
-                    self.config.volume_step.saturating_sub(1).max(1)
-                }
-            }
-            8 => self.config.auto_discover_removable = !self.config.auto_discover_removable,
-            9 => {
-                if !horizontal {
-                    return Ok(());
-                }
-                self.config.cover_cache_mb = if increase {
-                    self.config.cover_cache_mb.saturating_add(8).min(512)
-                } else {
-                    self.config.cover_cache_mb.saturating_sub(8).max(16)
-                };
-            }
-            10 => {
-                if self.config.discord_application_id.is_none() {
-                    self.status =
-                        "Configura Discord con: muscli setup discord APPLICATION_ID".into();
-                    return Ok(());
-                }
-                self.config.discord_enabled = !self.config.discord_enabled;
-                self.discord = if self.config.discord_enabled {
-                    self.config
-                        .discord_application_id
-                        .clone()
-                        .map(|application_id| {
-                            DiscordPresence::start(
-                                application_id,
-                                self.config.discord_large_image.clone(),
-                            )
-                        })
-                } else {
-                    None
-                };
-            }
-            11 => {
-                if horizontal {
-                    return Ok(());
-                }
-                self.start_scan();
-                self.status = "Reescaneo iniciado".into();
-            }
-            12 => {
-                if horizontal {
-                    return Ok(());
-                }
-                self.start_gain_analysis()?;
-            }
-            _ => {}
-        }
-        self.config.save(&self.paths)?;
-        self.status = "Settings guardados".into();
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn handle_remote_action(&mut self, action: RemoteCommand) -> Result<()> {
-        let step = f64::from(self.config.volume_step.clamp(1, 20)) / 100.0;
-        match action {
-            RemoteCommand::VolumeUp => self.handle_action(PlayerAction::SetVolume(
-                (self.playback.volume + step).min(1.0),
-            ))?,
-            RemoteCommand::VolumeDown => self.handle_action(PlayerAction::SetVolume(
-                (self.playback.volume - step).max(0.0),
-            ))?,
-            RemoteCommand::VolumeSet(percent) => {
-                self.handle_action(PlayerAction::SetVolume(f64::from(percent.min(100)) / 100.0))?
-            }
-            RemoteCommand::MuteToggle => self.handle_action(PlayerAction::MuteToggle)?,
-            RemoteCommand::Rescan => {
-                if self.scan_running {
-                    self.scan_pending = true;
-                } else {
-                    self.start_scan();
-                }
-            }
-            RemoteCommand::Prune => {
-                let tracks = self.db.prune_missing_tracks()?;
-                let covers = self.db.clear_dangling_cover_paths()?;
-                prune_unreferenced_covers(
-                    &self.paths.cover_cache_dir(),
-                    &self.db.referenced_cover_paths()?,
-                )?;
-                let removed = prune_cover_cache(
-                    &self.paths.cover_cache_dir(),
-                    self.config.cover_cache_mb * 1024 * 1024,
-                )?;
-                let references = self.db.clear_cover_paths(&removed)?;
-                self.reload_library()?;
-                self.status = format!(
-                    "Limpieza: {tracks} pistas, {} referencias de portada",
-                    covers + references
-                );
-            }
-        }
-        Ok(())
-    }
-
-    fn start_gain_analysis(&mut self) -> Result<()> {
-        if !self.config.replaygain_enabled || self.gain_running {
-            return Ok(());
-        }
-        let candidates = self.db.gain_analysis_candidates(false)?;
-        if candidates.is_empty() {
-            return Ok(());
-        }
-        let total = candidates.len();
-        self.gain_running = true;
-        replaygain::start(
-            candidates,
-            self.config.replaygain_target_lufs,
-            self.gain_tx.clone(),
-        );
-        self.gain_progress = Some((0, total));
-        Ok(())
-    }
-
-    fn handle_gain_message(&mut self, message: GainMessage) -> Result<()> {
-        match message {
-            GainMessage::Result {
-                track_id,
-                result,
-                size,
-                modified,
-                completed,
-                total,
-            } => {
-                self.db.save_gain(&track_id, result, size, modified)?;
-                self.gain_progress = Some((completed, total));
-                self.status = format!("Analizando volumen {completed}/{total}");
-                self.dirty = true;
-            }
-            GainMessage::Error(error) => {
-                self.status = format!("ReplayGain: {error}");
-                self.dirty = true;
-            }
-            GainMessage::Done => {
-                self.gain_running = false;
-                self.gain_progress = None;
-                self.status = "Análisis de volumen terminado".into();
-                self.dirty = true;
-            }
-        }
-        Ok(())
-    }
-
-    fn tick_history(&mut self) -> Result<()> {
-        let elapsed = self.last_history_tick.elapsed();
-        self.last_history_tick = Instant::now();
-        let playing = self.playback.status == PlaybackStatus::Playing;
-        if playing && self.history_id.is_some() {
-            let millis = elapsed.as_millis().min(u64::MAX as u128) as u64;
-            self.listened_this_session_ms = self.listened_this_session_ms.saturating_add(millis);
-            self.pending_listen_ms = self.pending_listen_ms.saturating_add(millis);
-        }
-
-        let history_due = playing
-            && self.history_id.is_some()
-            && self.last_history_flush.elapsed() >= Duration::from_secs(5);
-        let playback_due = playing
-            && self.current_track().is_some()
-            && self.last_playback_save.elapsed() >= Duration::from_secs(5);
-
-        if history_due && playback_due {
-            self.flush_history_with_playback(false)?;
-        } else if history_due {
-            self.flush_history(false)?;
-        } else if playback_due {
-            self.persist_playback()?;
-        }
-        Ok(())
-    }
-
-    fn flush_history(&mut self, completed: bool) -> Result<()> {
-        self.flush_history_inner(completed, false)
-    }
-
-    fn flush_history_with_playback(&mut self, completed: bool) -> Result<()> {
-        self.flush_history_inner(completed, true)
-    }
-
-    fn flush_history_inner(&mut self, completed: bool, save_playback: bool) -> Result<()> {
-        let (Some(history_id), Some(track_id)) = (self.history_id, self.history_track_id.clone())
-        else {
-            return Ok(());
-        };
-        let duration = self
-            .track_index
-            .get(&track_id)
-            .map(|index| self.tracks[*index].duration_ms)
-            .unwrap_or(self.playback.duration_ms);
-        let threshold = (duration / 2).min(240_000);
-        let count_now = self.listened_this_session_ms >= threshold && threshold > 0;
-        let completed = completed
-            || (duration > 0 && self.playback.position_ms >= duration.saturating_mul(95) / 100);
-        if save_playback {
-            let state = self.playback_snapshot();
-            let queue = self.queue_dirty.then_some(self.queue.as_slice());
-            self.db.update_history_and_playback(
-                HistoryUpdate {
-                    history_id,
-                    track_id: &track_id,
-                    listened_delta_ms: self.pending_listen_ms,
-                    position_ms: self.playback.position_ms,
-                    was_counted: self.history_counted,
-                    count_now,
-                    completed,
-                },
-                &state,
-                queue,
-            )?;
-            self.queue_dirty = false;
-            self.last_playback_save = Instant::now();
-        } else {
-            self.db.update_history(HistoryUpdate {
-                history_id,
-                track_id: &track_id,
-                listened_delta_ms: self.pending_listen_ms,
-                position_ms: self.playback.position_ms,
-                was_counted: self.history_counted,
-                count_now,
-                completed,
-            })?;
-        }
-        self.pending_listen_ms = 0;
-        self.history_counted |= count_now;
-        self.last_history_flush = Instant::now();
-        Ok(())
-    }
-
-    fn handle_action(&mut self, action: PlayerAction) -> Result<()> {
-        match action {
-            PlayerAction::Play => {
-                if self.current_track().is_none() {
-                    self.activate_selection()?
-                } else if !self
-                    .queue_index
-                    .is_some_and(|index| self.queue_track_is_playable(index))
-                {
-                    self.next()?;
-                } else {
-                    self.mpv.pause(false)?;
-                    self.playback.status = PlaybackStatus::Playing;
-                }
-            }
-            PlayerAction::Pause => {
-                self.mpv.pause(true)?;
-                self.playback.status = PlaybackStatus::Paused;
-                self.flush_history(false)?;
-            }
-            PlayerAction::Toggle => {
-                if self.current_track().is_none() {
-                    self.activate_selection()?;
-                } else if !self
-                    .queue_index
-                    .is_some_and(|index| self.queue_track_is_playable(index))
-                {
-                    self.next()?;
-                } else {
-                    self.mpv.toggle()?;
-                }
-            }
-            PlayerAction::Stop => {
-                self.mpv.stop()?;
-                self.playback.status = PlaybackStatus::Stopped;
-            }
-            PlayerAction::Next => self.next()?,
-            PlayerAction::Previous => self.previous()?,
-            PlayerAction::SeekRelative(offset_ms) => {
-                self.mpv.seek_relative(offset_ms as f64 / 1000.0)?
-            }
-            PlayerAction::SeekAbsolute(position) => self.mpv.seek_absolute_ms(position)?,
-            PlayerAction::SetVolume(volume) => {
-                self.playback.volume = volume.clamp(0.0, 1.0);
-                self.mpv.set_volume(self.playback.volume)?;
-                if self.playback.volume > 0.0 {
-                    self.muted_volume = None;
-                }
-            }
-            PlayerAction::MuteToggle => {
-                if self.playback.volume > 0.0 {
-                    self.muted_volume = Some(self.playback.volume);
-                    self.playback.volume = 0.0;
-                } else {
-                    self.playback.volume = self.muted_volume.take().unwrap_or(1.0);
-                }
-                self.mpv.set_volume(self.playback.volume)?;
-            }
-            PlayerAction::SetShuffle(value) => self.shuffle = value,
-            PlayerAction::SetRepeat(value) => self.repeat = value,
-            PlayerAction::Quit => self.should_quit = true,
-        }
-        self.dirty = true;
-        Ok(())
-    }
-
-    fn handle_player_event(&mut self, event: PlayerEvent) -> Result<()> {
-        let force_redraw = !matches!(&event, PlayerEvent::Position(_));
-        match event {
-            PlayerEvent::Position(value) => self.playback.position_ms = value,
-            PlayerEvent::Duration(value) => self.playback.duration_ms = value,
-            PlayerEvent::Paused(true) => {
-                self.playback.status = PlaybackStatus::Paused;
-                self.flush_history(false)?;
-                self.persist_playback()?;
-            }
-            PlayerEvent::Paused(false) if self.current_track().is_some() => {
-                self.playback.status = PlaybackStatus::Playing
-            }
-            PlayerEvent::Paused(false) => {}
-            PlayerEvent::Volume(value) => self.playback.volume = value,
-            PlayerEvent::EndOfFile if self.repeat == RepeatMode::Track => {
-                self.flush_history(true)?;
-                self.load_current(0)?
-            }
-            PlayerEvent::EndOfFile => {
-                self.flush_history(true)?;
-                self.next()?
-            }
-            PlayerEvent::Error(error) => {
-                self.status = error;
-                self.next()?;
-            }
-        }
-        self.dirty |= force_redraw;
-        Ok(())
-    }
-
-    fn refresh_cover(&mut self) {
-        if !self.config.show_covers {
-            self.cover = None;
-            self.album_covers.clear();
-            self.album_cover_order.clear();
-            self.cover_decode_pending.clear();
-            return;
-        }
-
-        let path = self
-            .detail_track()
-            .and_then(|track| track.cover_path.clone());
-        match path {
-            Some(path) if self.cover.as_ref().is_some_and(|cover| cover.path == path) => {}
-            Some(path) => {
-                self.cover = None;
-                self.request_cover_decode(path, 512);
-            }
-            None => self.cover = None,
-        }
-    }
-
-    fn request_cover_decode(&mut self, path: PathBuf, size: u32) {
-        let key = (path.clone(), size);
-        if !self.cover_decode_pending.insert(key.clone()) {
-            return;
-        }
-        if self
-            .cover_decode_tx
-            .send(CoverDecodeRequest { path, size })
-            .is_err()
-        {
-            self.cover_decode_pending.remove(&key);
-        }
-    }
-
-    fn handle_cover_decode_result(&mut self, result: CoverDecodeResult) {
-        self.cover_decode_pending
-            .remove(&(result.path.clone(), result.size));
-        let Some(image) = result.image else {
-            return;
-        };
-
-        match result.size {
-            512 => {
-                let wanted = self
-                    .detail_track()
-                    .and_then(|track| track.cover_path.as_ref());
-                if wanted.is_some_and(|path| path == &result.path) {
-                    self.cover = Some(CoverState {
-                        path: result.path,
-                        protocol: self.picker.new_resize_protocol(image),
-                    });
-                    self.dirty = true;
-                }
-            }
-            256 => {
-                self.album_covers
-                    .insert(result.path.clone(), self.picker.new_resize_protocol(image));
-                self.album_cover_order.retain(|path| path != &result.path);
-                self.album_cover_order.push_back(result.path);
-                self.dirty = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn current_track_hash(&self) -> Option<u64> {
-        self.current_track().map(|track| {
-            let mut hasher = DefaultHasher::new();
-            track.id.hash(&mut hasher);
-            hasher.finish()
-        })
-    }
-
-    async fn sync_mpris(&mut self) {
-        let index = self.queue_index.unwrap_or(0);
-        let state_signature = MediaSessionSignature {
-            track_hash: self.current_track_hash(),
-            status: self.playback.status,
-            volume_bits: self.playback.volume.to_bits(),
-            shuffle: self.shuffle,
-            repeat: self.repeat,
-            can_previous: index > 0,
-            can_next: index + 1 < self.queue.len(),
-        };
-        let position_signature = (self.playback.duration_ms, self.playback.position_ms / 1000);
-
-        if let Some(mpris) = &self.mpris {
-            if self.last_mpris_signature != Some(state_signature) {
-                let _ = mpris
-                    .sync(
-                        self.current_track(),
-                        &self.playback,
-                        self.shuffle,
-                        self.repeat,
-                        state_signature.can_previous,
-                        state_signature.can_next,
-                    )
-                    .await;
-                self.last_mpris_signature = Some(state_signature);
-            }
-            if self.last_mpris_position_signature != Some(position_signature) {
-                let _ = mpris.sync_position(&self.playback).await;
-                self.last_mpris_position_signature = Some(position_signature);
-            }
-        }
-    }
-
-    fn sync_discord(&mut self) {
-        let signature = (
-            self.current_track_hash(),
-            self.playback.status,
-            self.playback.duration_ms,
-            self.playback.position_ms / 15_000,
-        );
-        if self.last_discord_signature == Some(signature) {
-            return;
-        }
-        self.last_discord_signature = Some(signature);
-        if let Some(discord) = &self.discord {
-            discord.sync(self.current_track(), &self.playback);
-        }
-    }
-
-    fn save_state(&mut self) -> Result<()> {
-        self.flush_history(false)?;
-        self.persist_playback()
-    }
-
-    fn playback_snapshot(&self) -> SavedPlayback {
-        SavedPlayback {
-            queue: Vec::new(),
-            current_index: self.queue_index,
-            position_ms: self.playback.position_ms,
-            volume: self.playback.volume,
-            last_nonzero_volume: self.muted_volume,
-            shuffle: self.shuffle,
-            repeat: self.repeat,
-        }
-    }
-
-    fn persist_playback(&mut self) -> Result<()> {
-        let state = self.playback_snapshot();
-        let queue = self.queue_dirty.then_some(self.queue.as_slice());
-        self.db.save_playback(&state, queue)?;
-        self.queue_dirty = false;
-        self.last_playback_save = Instant::now();
-        Ok(())
-    }
 }
 
 fn resize_terminal_for_mode(compact: bool) -> Result<()> {
-    // El tamaño real de la ventana lo decide esto, no la regla de Hyprland: al
-    // pedir N celdas, el terminal se redimensiona. En una pantalla de 1920x1080
-    // con celdas de ~10x18 px, 180x52 ocupa unos 1790x960 px.
+    // This, not the Hyprland rule, is what decides the real window size:
+    // asking for N cells makes the terminal resize. On a 1920x1080 screen with
+    // roughly 10x18 px cells, 180x52 comes to about 1790x960 px.
     let (columns, rows) = if compact { (95, 32) } else { (180, 52) };
     crossterm::execute!(std::io::stdout(), SetSize(columns, rows))?;
     Ok(())
 }
 
-fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<()>) {
-    let configured = config.sources.clone();
-    thread::Builder::new()
-        .name("muscli-watcher".into())
-        .spawn(move || {
-            let event_tx = tx.clone();
-            let Ok(mut watcher) = RecommendedWatcher::new(
-                move |result: notify::Result<notify::Event>| {
-                    if result.is_ok() {
-                        let _ = event_tx.send(());
-                    }
-                },
-                notify::Config::default(),
-            ) else {
-                return;
-            };
-            for root in configured.iter().filter(|p| p.exists()) {
-                let _ = watcher.watch(root, RecursiveMode::Recursive);
-            }
-
-            let mut known_removable = crate::config::discover_removable_roots()
-                .into_iter()
-                .filter(|path| path.exists())
-                .collect::<BTreeSet<_>>();
-            let mut watched_removable = BTreeSet::new();
-            loop {
-                let current_removable = crate::config::discover_removable_roots()
-                    .into_iter()
-                    .filter(|path| path.exists())
-                    .collect::<BTreeSet<_>>();
-
-                if current_removable != known_removable {
-                    let _ = tx.send(());
-                    known_removable = current_removable.clone();
-                }
-
-                let added = current_removable
-                    .difference(&watched_removable)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for root in added {
-                    if watcher.watch(&root, RecursiveMode::Recursive).is_ok() {
-                        watched_removable.insert(root);
-                    }
-                }
-
-                let removed = watched_removable
-                    .difference(&current_removable)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for root in removed {
-                    let _ = watcher.unwatch(&root);
-                    watched_removable.remove(&root);
-                }
-
-                thread::sleep(Duration::from_secs(2));
-            }
-        })
-        .ok();
-}
-
-fn start_search_worker(
-    requests: Receiver<SearchRequest>,
-    results: tokio_mpsc::UnboundedSender<SearchResult>,
-) {
-    thread::Builder::new()
-        .name("muscli-search".into())
-        .spawn(move || {
-            while let Ok(mut request) = requests.recv() {
-                for newer in requests.try_iter() {
-                    request = newer;
-                }
-                let matches = request.index.search(&request.query, 100);
-                if results
-                    .send(SearchResult {
-                        generation: request.generation,
-                        matches,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .ok();
-}
-
-fn start_cover_decode_worker(
-    requests: Receiver<CoverDecodeRequest>,
-    results: tokio_mpsc::UnboundedSender<CoverDecodeResult>,
-) {
-    thread::Builder::new()
-        .name("muscli-cover-decode".into())
-        .spawn(move || {
-            while let Ok(request) = requests.recv() {
-                let image = image::ImageReader::open(&request.path)
-                    .ok()
-                    .and_then(|reader| reader.decode().ok())
-                    .map(|image| image.thumbnail(request.size, request.size));
-                if results
-                    .send(CoverDecodeResult {
-                        path: request.path,
-                        size: request.size,
-                        image,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .ok();
-}
-
-fn start_terminal_event_reader() -> tokio_mpsc::UnboundedReceiver<Event> {
-    let (tx, rx) = tokio_mpsc::unbounded_channel();
-    thread::Builder::new()
-        .name("muscli-terminal-events".into())
-        .spawn(move || {
-            while let Ok(event) = event::read() {
-                if tx.send(event).is_err() {
-                    break;
-                }
-            }
-        })
-        .ok();
-    rx
-}
-
-fn handle_terminal_event(app: &mut App, event: Event) -> Result<()> {
-    match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
-        Event::Mouse(mouse) => app.handle_mouse(mouse),
-        Event::Resize(_, _) => {
-            app.dirty = true;
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-#[cfg(unix)]
-fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
-    let (shutdown_tx, shutdown_rx) = tokio_mpsc::unbounded_channel();
-    for kind in [
-        tokio::signal::unix::SignalKind::interrupt(),
-        tokio::signal::unix::SignalKind::terminate(),
-        tokio::signal::unix::SignalKind::hangup(),
-    ] {
-        let mut signal = tokio::signal::unix::signal(kind)?;
-        let tx = shutdown_tx.clone();
-        tokio::task::spawn_local(async move {
-            let _ = signal.recv().await;
-            let _ = tx.send(());
-        });
-    }
-    Ok(shutdown_rx)
-}
-
-#[cfg(windows)]
-fn start_shutdown_listener() -> Result<tokio_mpsc::UnboundedReceiver<()>> {
-    let (shutdown_tx, shutdown_rx) = tokio_mpsc::unbounded_channel();
-    tokio::task::spawn_local(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        let _ = shutdown_tx.send(());
-    });
-    Ok(shutdown_rx)
-}
-
-include!("tui/render.rs");
+mod covers;
+mod input;
+pub mod keys;
+mod library;
+mod nav;
+mod playback;
+mod render;
+mod settings;
+mod theme;
+mod workers;
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(
@@ -3117,82 +1320,10 @@ fn shifted_index(current: usize, amount: isize, len: usize) -> usize {
     }
     (current as isize + amount).clamp(0, len.saturating_sub(1) as isize) as usize
 }
-
-fn cycle_smart_rule(rule: &mut SmartRule) {
-    const FIELDS: [&str; 11] = [
-        "genre",
-        "title",
-        "artist",
-        "album",
-        "favorite",
-        "available",
-        "played",
-        "play_count",
-        "duration_ms",
-        "added_days",
-        "last_played_days",
-    ];
-    let current = FIELDS
-        .iter()
-        .position(|field| *field == rule.field)
-        .unwrap_or(0);
-    rule.field = FIELDS[(current + 1) % FIELDS.len()].into();
-    match rule.field.as_str() {
-        "favorite" | "available" | "played" => {
-            rule.operator = "is".into();
-            rule.value = serde_json::Value::Bool(true);
-        }
-        "play_count" | "duration_ms" => {
-            rule.operator = "gte".into();
-            rule.value = serde_json::Value::from(1);
-        }
-        "added_days" | "last_played_days" => {
-            rule.operator = "lte".into();
-            rule.value = serde_json::Value::from(30);
-        }
-        _ => {
-            rule.operator = "contains".into();
-            rule.value = serde_json::Value::String(String::new());
-        }
-    }
-}
-
-fn cycle_smart_sort(playlist: &mut SmartPlaylist) {
-    const SORTS: [&str; 5] = ["title", "added_at", "last_played", "play_count", "duration"];
-    let current = SORTS
-        .iter()
-        .position(|field| *field == playlist.sort_field)
-        .unwrap_or(0);
-    playlist.sort_field = SORTS[(current + 1) % SORTS.len()].into();
-    playlist.descending = matches!(
-        playlist.sort_field.as_str(),
-        "added_at" | "last_played" | "play_count" | "duration"
-    );
-}
-
-fn display_rule_value(rule: &SmartRule) -> String {
-    match &rule.value {
-        serde_json::Value::String(value) => value.clone(),
-        value => value.to_string(),
-    }
-}
-
-fn set_rule_value(rule: &mut SmartRule, value: &str) {
-    rule.value = match rule.field.as_str() {
-        "favorite" | "available" | "played" => serde_json::Value::Bool(matches!(
-            value.to_lowercase().as_str(),
-            "1" | "true" | "on" | "si" | "sí"
-        )),
-        "play_count" | "duration_ms" | "added_days" | "last_played_days" => {
-            serde_json::Value::from(value.parse::<i64>().unwrap_or_default())
-        }
-        _ => serde_json::Value::String(value.to_owned()),
-    };
-}
-
 fn empty_library(theme: UiTheme) -> Paragraph<'static> {
-    Paragraph::new("\nNo encontré archivos FLAC.\n\nInserta una SD/USB o ejecuta:\nmuscli library add /ruta/a/Music")
-        .alignment(Alignment::Center).style(Style::default().fg(theme.muted))
+    Paragraph::new(t!("empty.library"))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(theme.muted))
 }
 
 fn format_duration(ms: u64) -> String {
@@ -3202,6 +1333,7 @@ fn format_duration(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::render::track_viewport;
     use super::*;
 
     #[test]
@@ -3213,28 +1345,6 @@ mod tests {
     fn centered_rect_is_inside_parent() {
         let parent = Rect::new(0, 0, 80, 24);
         assert_eq!(centered(parent, 40, 10), Rect::new(20, 7, 40, 10));
-    }
-
-    #[test]
-    fn parses_omarchy_hex_colors() {
-        assert_eq!(parse_hex_color("#ff2ec1"), Some(Color::Rgb(255, 46, 193)));
-        assert_eq!(parse_hex_color("ff2ec1"), None);
-        assert_eq!(parse_hex_color("#bad"), None);
-    }
-
-    #[test]
-    fn loads_an_omarchy_colors_document() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("colors.toml");
-        fs::write(
-            &path,
-            "mode = \"dark\"\naccent = \"#509475\"\nselection = \"#32473B\"\nforeground = \"#C1C497\"\nbackground = \"#111c18\"\nmuted = \"#53685B\"\n",
-        )
-        .unwrap();
-        let theme = UiTheme::from_file(&path).unwrap();
-        assert_eq!(theme.accent, Color::Rgb(80, 148, 117));
-        assert_eq!(theme.selection, Color::Rgb(50, 71, 59));
-        assert_eq!(theme.background, Color::Rgb(17, 28, 24));
     }
 
     #[test]

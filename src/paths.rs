@@ -56,8 +56,21 @@ impl AppPaths {
         self.config_dir.join("config.toml")
     }
 
+    /// Optional user overrides for the key bindings.
+    pub fn keybindings_file(&self) -> PathBuf {
+        self.config_dir.join("keybindings.toml")
+    }
+
     pub fn database_file(&self) -> PathBuf {
         self.data_dir.join("library.db")
+    }
+
+    /// Where imported lyrics live.
+    ///
+    /// Deliberately away from the music: the scanner never reads `.lrc` files
+    /// beside the audio, so nothing ends up here by accident.
+    pub fn lyrics_dir(&self) -> PathBuf {
+        self.data_dir.join("lyrics")
     }
 
     pub fn cover_cache_dir(&self) -> PathBuf {

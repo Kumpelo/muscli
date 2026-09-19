@@ -39,6 +39,9 @@ impl MpvPlayer {
             .arg("--no-video")
             .arg("--audio-display=no")
             .arg("--gapless-audio=yes")
+            // Let mpv open the next playlist entry before the current one ends;
+            // without this, gapless only applies to files already demuxed.
+            .arg("--prefetch-playlist=yes")
             .arg("--keep-open=no")
             .arg(format!("--input-ipc-server={}", socket.display()))
             .stdin(Stdio::null())
@@ -100,6 +103,7 @@ impl MpvPlayer {
             (2, "duration"),
             (3, "pause"),
             (4, "volume"),
+            (5, "playlist-pos"),
         ] {
             player.command(json!(["observe_property", id, property]))?;
         }
@@ -128,6 +132,33 @@ impl MpvPlayer {
                 "exact"
             ]))?;
         }
+        Ok(())
+    }
+
+    /// Queue `path` to play straight after the current file.
+    ///
+    /// The entry is appended rather than loaded, so mpv can open and start
+    /// decoding it before the current one ends. That early open is what makes
+    /// the transition seamless; loading on end-of-file cannot be, because the
+    /// round trip through this process is itself the gap.
+    pub fn set_prefetch(&self, path: &Path) -> Result<()> {
+        self.clear_prefetch()?;
+        self.command(json!(["loadfile", path.to_string_lossy(), "append"]))
+    }
+
+    /// Drop anything queued after the current file.
+    ///
+    /// Failing means there was nothing queued, which is the desired state, so
+    /// the reply is ignored.
+    pub fn clear_prefetch(&self) -> Result<()> {
+        let _ = self.command(json!(["playlist-remove", 1]));
+        Ok(())
+    }
+
+    /// Discard the entry that just finished, making the playing file entry 0
+    /// again so a new one can be queued behind it.
+    pub fn drop_finished_entry(&self) -> Result<()> {
+        let _ = self.command(json!(["playlist-remove", 0]));
         Ok(())
     }
 
@@ -177,6 +208,33 @@ impl MpvPlayer {
             ]))?;
         }
         Ok(())
+    }
+
+    /// Apply a graphic equaliser.
+    ///
+    /// Uses the same labelled-filter mechanism as the ReplayGain filter, so the
+    /// two stack without either disturbing the other. An empty set removes the
+    /// filter rather than installing a flat one, which keeps the audio path
+    /// untouched when the equaliser is off.
+    pub fn set_equalizer(&self, bands: &[(u32, f32)]) -> Result<()> {
+        let _ = self.command(json!(["af", "remove", "@muscli_eq"]));
+        let active: Vec<String> = bands
+            .iter()
+            .filter(|(_, gain)| gain.abs() >= 0.1)
+            .map(|(frequency, gain)| {
+                // width_type=o means the width is in octaves, which is what
+                // makes a fixed set of bands sound even across the spectrum.
+                format!("equalizer=f={frequency}:width_type=o:width=1:gain={gain:.1}")
+            })
+            .collect();
+        if active.is_empty() {
+            return Ok(());
+        }
+        self.command(json!([
+            "af",
+            "add",
+            format!("@muscli_eq:lavfi=[{}]", active.join(","))
+        ]))
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -236,6 +294,7 @@ fn parse_event(value: &Value) -> Option<PlayerEvent> {
                 "volume" => data?
                     .as_f64()
                     .map(|v| PlayerEvent::Volume((v / 100.0).clamp(0.0, 1.0))),
+                "playlist-pos" => data?.as_i64().map(PlayerEvent::PlaylistPosition),
                 _ => None,
             }
         }
