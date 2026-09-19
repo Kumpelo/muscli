@@ -83,11 +83,12 @@ ReplayGain analysis, settings, a keybinding reference, and compact mode.
 ## Discord Rich Presence
 
 ```text
-muscli setup discord APPLICATION_ID --large-image peter
+muscli setup discord --large-image peter
 ```
 
-No bot token or OAuth is needed. The local Discord/Vesktop IPC displays title,
-artist, album and progress. Assets named `peter_metal`, `peter_dj`, and
+MusCLI ships with its official Discord application ID, so users do not need to
+create or configure a Discord application. No bot token or OAuth is needed. The
+local Discord/Vesktop IPC displays title, artist, album and progress. Assets named `peter_metal`, `peter_dj`, and
 `daft_punk` are selected for their matching genres/artist; otherwise the
 configured fallback is used. Local cover art is never uploaded.
 
