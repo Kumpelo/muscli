@@ -211,7 +211,7 @@ impl App {
 
     pub(super) fn handle_reload_result(
         &mut self,
-        result: Result<Box<LibrarySnapshot>, String>,
+        result: std::result::Result<Box<LibrarySnapshot>, String>,
     ) {
         self.reload_running = false;
         match result {
