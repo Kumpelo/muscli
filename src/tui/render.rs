@@ -506,27 +506,37 @@ fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    frame.render_widget(
-        Paragraph::new(
-            HELP_SECTIONS
-                .into_iter()
-                .flat_map(|(section, keys)| {
-                    [
-                        Line::from(Span::styled(
-                            section,
-                            Style::default()
-                                .fg(app.theme.accent)
-                                .add_modifier(Modifier::BOLD),
-                        )),
-                        Line::from(keys),
-                        Line::default(),
-                    ]
-                })
-                .collect::<Vec<_>>(),
-        )
-        .wrap(Wrap { trim: false }),
-        area,
-    );
+    let heading = Style::default()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(app.theme.foreground);
+    let muted = Style::default().fg(app.theme.muted);
+
+    let mut lines = Vec::new();
+    for (title, entries) in keys::help_sections() {
+        if entries.is_empty() {
+            continue;
+        }
+        lines.push(Line::from(Span::styled(title, heading)));
+        for entry in entries {
+            let mut spans = vec![
+                Span::styled(format!("  {:<18}", entry.keys), key_style),
+                Span::raw(entry.description.to_owned()),
+            ];
+            if let Some(scope) = entry.scope {
+                spans.push(Span::styled(format!("  ({scope})"), muted));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::default());
+    }
+    for (title, body) in EXTRA_HELP {
+        lines.push(Line::from(Span::styled(title, heading)));
+        lines.push(Line::from(Span::raw(format!("  {body}"))));
+        lines.push(Line::default());
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
