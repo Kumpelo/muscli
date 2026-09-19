@@ -191,9 +191,15 @@ pub fn scan_to_database(
     Ok(report)
 }
 
+/// Called as files are read, with the count done so far and the total.
+///
+/// Shared by the worker threads, so it must be cheap and thread-safe; it is
+/// invoked once per batch of claims rather than per file.
+pub type ProgressFn<'a> = &'a (dyn Fn(usize, usize) + Send + Sync);
+
 pub fn scan_source(paths: &AppPaths, root: &Path, threads: usize) -> Result<SourceScan> {
     let database = Database::open(&paths.database_file()).ok();
-    scan_source_inner(paths, root, database.as_ref(), threads)
+    scan_source_inner(paths, root, database.as_ref(), threads, None)
 }
 
 pub fn scan_source_with_database(
@@ -202,7 +208,21 @@ pub fn scan_source_with_database(
     database: &Database,
     threads: usize,
 ) -> Result<SourceScan> {
-    scan_source_inner(paths, root, Some(database), threads)
+    scan_source_inner(paths, root, Some(database), threads, None)
+}
+
+/// As `scan_source_with_database`, reporting how far along it is.
+///
+/// A first import of a large drive otherwise shows nothing at all until the
+/// whole source is finished.
+pub fn scan_source_reporting(
+    paths: &AppPaths,
+    root: &Path,
+    database: &Database,
+    threads: usize,
+    progress: ProgressFn<'_>,
+) -> Result<SourceScan> {
+    scan_source_inner(paths, root, Some(database), threads, Some(progress))
 }
 
 fn scan_source_inner(
@@ -210,6 +230,7 @@ fn scan_source_inner(
     root: &Path,
     database: Option<&Database>,
     threads: usize,
+    progress: Option<ProgressFn<'_>>,
 ) -> Result<SourceScan> {
     let _profile = crate::profiling::span("scan_source");
     let root = root
@@ -234,7 +255,14 @@ fn scan_source_inner(
 
     // Phase 2: read tags and artwork, in parallel when it is worth it.
     let caches = ScanCaches::default();
-    let outcomes = read_candidates(paths, &id, &root, &candidates, &cached, &caches, threads);
+    let context = ReadContext {
+        paths,
+        source_id: &id,
+        root: &root,
+        cached: &cached,
+        caches: &caches,
+    };
+    let outcomes = read_candidates(&context, &candidates, threads, progress);
 
     // Phase 3: fold the outcomes back together in walk order.
     let mut scan = SourceScan {
@@ -306,21 +334,42 @@ fn collect_candidates(root: &Path) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
+/// What every reader needs and none of them changes.
+struct ReadContext<'a> {
+    paths: &'a AppPaths,
+    source_id: &'a str,
+    root: &'a Path,
+    /// What the database already knows about this source, keyed by relative
+    /// path. Read-only, so the workers can share it without locking.
+    cached: &'a HashMap<String, ScannedTrack>,
+    caches: &'a ScanCaches,
+}
+
 fn read_candidates(
-    paths: &AppPaths,
-    source_id: &str,
-    root: &Path,
+    context: &ReadContext<'_>,
     candidates: &[(PathBuf, String)],
-    cached: &HashMap<String, ScannedTrack>,
-    caches: &ScanCaches,
     threads: usize,
+    progress: Option<ProgressFn<'_>>,
 ) -> Vec<ScanOutcome> {
-    let workers = worker_count(threads, candidates.len());
+    let total = candidates.len();
+    let done = AtomicUsize::new(0);
+    let report = |count: usize| {
+        if let Some(progress) = progress {
+            progress(done.fetch_add(count, Ordering::Relaxed) + count, total);
+        }
+    };
+
+    let workers = worker_count(threads, total);
     if workers <= 1 {
         return candidates
             .iter()
-            .map(|(path, relative)| {
-                read_candidate(paths, source_id, root, path, relative, cached, caches)
+            .enumerate()
+            .map(|(index, (path, relative))| {
+                let outcome = read_candidate(context, path, relative);
+                if index % CLAIM_BATCH == CLAIM_BATCH - 1 || index + 1 == total {
+                    report(1 + index % CLAIM_BATCH);
+                }
+                outcome
             })
             .collect();
     }
@@ -348,13 +397,9 @@ fn read_candidates(
                         let end = (start + CLAIM_BATCH).min(candidates.len());
                         for (offset, (path, relative)) in candidates[start..end].iter().enumerate()
                         {
-                            local.push((
-                                start + offset,
-                                read_candidate(
-                                    paths, source_id, root, path, relative, cached, caches,
-                                ),
-                            ));
+                            local.push((start + offset, read_candidate(context, path, relative)));
                         }
+                        report(end - start);
                     }
                     local
                 })
@@ -374,15 +419,14 @@ fn read_candidates(
     ordered.into_iter().flatten().collect()
 }
 
-fn read_candidate(
-    paths: &AppPaths,
-    source_id: &str,
-    root: &Path,
-    path: &Path,
-    relative: &str,
-    cached: &HashMap<String, ScannedTrack>,
-    caches: &ScanCaches,
-) -> ScanOutcome {
+fn read_candidate(context: &ReadContext<'_>, path: &Path, relative: &str) -> ScanOutcome {
+    let ReadContext {
+        paths,
+        source_id,
+        root,
+        cached,
+        caches,
+    } = context;
     let fingerprint = file_fingerprint(path);
     let unchanged = fingerprint.and_then(|(size, modified)| {
         cached.get(relative).filter(|item| {

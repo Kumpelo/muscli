@@ -12,6 +12,12 @@ use notify::EventKind;
 use super::*;
 
 pub(super) enum ScanMessage {
+    /// How far through the current source the scan is.
+    Progress {
+        label: String,
+        done: usize,
+        total: usize,
+    },
     Source {
         label: String,
         tracks: usize,
