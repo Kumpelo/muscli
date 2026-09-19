@@ -439,59 +439,11 @@ fn draw_smart_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 fn draw_settings(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let values = [
-        if app.config.replaygain_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        format!("{:?}", app.config.replaygain_mode),
-        format!("{:.0} LUFS", app.config.replaygain_target_lufs),
-        if app.config.resume_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.config.history_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.config.compact_default {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.config.show_covers {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        format!("{}%", app.config.volume_step),
-        if app.config.auto_discover_removable {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        format!("{} MiB", app.config.cover_cache_mb),
-        if app.config.discord_enabled {
-            "on".into()
-        } else {
-            "off".into()
-        },
-        if app.scan_running {
-            "en curso".into()
-        } else {
-            "Enter/Space".into()
-        },
-        app.gain_progress
-            .map(|(done, total)| format!("{done}/{total}"))
-            .unwrap_or_else(|| "Enter/Space".into()),
-    ];
+    // One source of order: the row carries its own label and knows how to
+    // render its own value.
     let items = SETTINGS
         .iter()
-        .zip(values)
-        .map(|(name, value)| ListItem::new(format!("{name:<34}  {value}")))
+        .map(|row| ListItem::new(format!("{:<34}  {}", row.label, app.setting_value(row.id))))
         .collect::<Vec<_>>();
     let mut state = ListState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(
@@ -1082,7 +1034,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         Some(InputMode::Context { selected }) => {
             let items = CONTEXT_ACTIONS
                 .iter()
-                .map(|action| ListItem::new(*action))
+                .map(|(_, label)| ListItem::new(*label))
                 .collect::<Vec<_>>();
             let mut state = ListState::default().with_selected(Some(*selected));
             frame.render_stateful_widget(

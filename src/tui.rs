@@ -36,6 +36,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use input::{display_rule_value, handle_terminal_event};
 use nav::{NavFrame, NavTarget};
 use render::draw;
+use settings::SETTINGS;
 use theme::UiTheme;
 use workers::{
     CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult,
@@ -78,30 +79,27 @@ const VIEWS: [View; 13] = [
     View::Help,
 ];
 
-const SETTINGS: [&str; 13] = [
-    "ReplayGain",
-    "Modo ReplayGain",
-    "Objetivo LUFS",
-    "Restaurar posiciones",
-    "Historial",
-    "Modo compacto por defecto",
-    "Mostrar portadas",
-    "Paso de volumen",
-    "Autodetectar SD/USB",
-    "Caché de portadas",
-    "Discord Rich Presence",
-    "Reescanear biblioteca",
-    "Analizar ReplayGain",
-];
+/// The context menu. Paired with its label rather than addressed by a bare
+/// index, so reordering the menu cannot silently reassign what each entry does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextAction {
+    PlayNow,
+    PlayNext,
+    Enqueue,
+    ToggleFavorite,
+    AddToPlaylist,
+    ShowAlbum,
+    ShowArtist,
+}
 
-const CONTEXT_ACTIONS: [&str; 7] = [
-    "Reproducir ahora",
-    "Reproducir después",
-    "Añadir al final",
-    "Favorito",
-    "Añadir a playlist",
-    "Mostrar álbum",
-    "Mostrar artista",
+const CONTEXT_ACTIONS: [(ContextAction, &str); 7] = [
+    (ContextAction::PlayNow, "Reproducir ahora"),
+    (ContextAction::PlayNext, "Reproducir después"),
+    (ContextAction::Enqueue, "Añadir al final"),
+    (ContextAction::ToggleFavorite, "Favorito"),
+    (ContextAction::AddToPlaylist, "Añadir a playlist"),
+    (ContextAction::ShowAlbum, "Mostrar álbum"),
+    (ContextAction::ShowArtist, "Mostrar artista"),
 ];
 
 /// Help for keys the binding table cannot describe: the smart-playlist editor
@@ -1259,6 +1257,7 @@ mod library;
 mod nav;
 mod playback;
 mod render;
+mod settings;
 mod theme;
 mod workers;
 

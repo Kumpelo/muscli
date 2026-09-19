@@ -4,7 +4,7 @@
 //! takes over entirely and interprets the same keys per `InputMode`. Both are
 //! reached through `handle_terminal_event`, which is what the event loop calls.
 
-use super::keys::{self, Action, SettingInput};
+use super::keys::{self, Action};
 use super::*;
 
 impl App {
@@ -410,24 +410,27 @@ impl App {
         Ok(())
     }
 
-    fn run_context_action(&mut self, action: usize) -> Result<()> {
+    fn run_context_action(&mut self, index: usize) -> Result<()> {
         let Some(track_id) = self.selected_track_id() else {
             return Ok(());
         };
+        let Some((action, _)) = CONTEXT_ACTIONS.get(index) else {
+            return Ok(());
+        };
         match action {
-            0 => self.activate_selection()?,
-            1 => {
+            ContextAction::PlayNow => self.activate_selection()?,
+            ContextAction::PlayNext => {
                 let position = self.queue_index.map_or(0, |index| index + 1);
                 self.queue.insert(position.min(self.queue.len()), track_id);
                 self.queue_dirty = true;
                 self.status = "Se reproducirá después".into();
             }
-            2 => {
+            ContextAction::Enqueue => {
                 self.queue.push(track_id);
                 self.queue_dirty = true;
                 self.status = "Añadida al final de la cola".into();
             }
-            3 => {
+            ContextAction::ToggleFavorite => {
                 let favorite = self.db.toggle_favorite(&track_id)?;
                 self.set_favorite_local(&track_id, favorite);
                 self.status = if favorite {
@@ -437,13 +440,13 @@ impl App {
                 }
                 .into();
             }
-            4 => {
+            ContextAction::AddToPlaylist => {
                 self.input = Some(InputMode::ChoosePlaylist {
                     track_id,
                     selected: 0,
                 });
             }
-            5 => {
+            ContextAction::ShowAlbum => {
                 if let Some(track) = self
                     .track_index
                     .get(&track_id)
@@ -463,7 +466,7 @@ impl App {
                     self.selected = position;
                 }
             }
-            6 => {
+            ContextAction::ShowArtist => {
                 if let Some(track) = self
                     .track_index
                     .get(&track_id)
@@ -474,94 +477,7 @@ impl App {
                     self.refresh_artist_releases();
                 }
             }
-            _ => {}
         }
-        Ok(())
-    }
-
-    fn adjust_setting(&mut self, input: SettingInput) -> Result<()> {
-        let increase = input.increases();
-        let horizontal = input.is_horizontal();
-        match self.selected {
-            0 => self.config.replaygain_enabled = !self.config.replaygain_enabled,
-            1 => {
-                self.config.replaygain_mode = match self.config.replaygain_mode {
-                    ReplayGainMode::Album => ReplayGainMode::Track,
-                    ReplayGainMode::Track => ReplayGainMode::Album,
-                }
-            }
-            2 => {
-                if !horizontal {
-                    return Ok(());
-                }
-                self.config.replaygain_target_lufs = (self.config.replaygain_target_lufs
-                    + if increase { 1.0 } else { -1.0 })
-                .clamp(-30.0, -5.0)
-            }
-            3 => self.config.resume_enabled = !self.config.resume_enabled,
-            4 => self.config.history_enabled = !self.config.history_enabled,
-            5 => self.config.compact_default = !self.config.compact_default,
-            6 => self.config.show_covers = !self.config.show_covers,
-            7 => {
-                if !horizontal {
-                    return Ok(());
-                }
-                self.config.volume_step = if increase {
-                    self.config.volume_step.saturating_add(1).min(20)
-                } else {
-                    self.config.volume_step.saturating_sub(1).max(1)
-                }
-            }
-            8 => self.config.auto_discover_removable = !self.config.auto_discover_removable,
-            9 => {
-                if !horizontal {
-                    return Ok(());
-                }
-                self.config.cover_cache_mb = if increase {
-                    self.config.cover_cache_mb.saturating_add(8).min(512)
-                } else {
-                    self.config.cover_cache_mb.saturating_sub(8).max(16)
-                };
-            }
-            10 => {
-                if self.config.discord_application_id.is_none() {
-                    self.status =
-                        "Configura Discord con: muscli setup discord APPLICATION_ID".into();
-                    return Ok(());
-                }
-                self.config.discord_enabled = !self.config.discord_enabled;
-                self.discord = if self.config.discord_enabled {
-                    self.config
-                        .discord_application_id
-                        .clone()
-                        .map(|application_id| {
-                            DiscordPresence::start(
-                                application_id,
-                                self.config.discord_large_image.clone(),
-                            )
-                        })
-                } else {
-                    None
-                };
-            }
-            11 => {
-                if horizontal {
-                    return Ok(());
-                }
-                self.start_scan();
-                self.status = "Reescaneo iniciado".into();
-            }
-            12 => {
-                if horizontal {
-                    return Ok(());
-                }
-                self.start_gain_analysis()?;
-            }
-            _ => {}
-        }
-        self.config.save(&self.paths)?;
-        self.status = "Settings guardados".into();
-        self.dirty = true;
         Ok(())
     }
 }
