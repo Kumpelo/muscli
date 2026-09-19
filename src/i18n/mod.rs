@@ -9,7 +9,13 @@
 //! to locate, and means a malformed catalogue fails the build's tests rather
 //! than a user's session.
 
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{
+        OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
+};
 
 mod detect;
 
@@ -25,11 +31,39 @@ pub enum Language {
     Spanish,
 }
 
+/// The values the `language` setting accepts, in the order the settings view
+/// cycles through them. `auto` follows the system locale.
+pub const LANGUAGE_CHOICES: [&str; 3] = ["auto", "en", "es"];
+
 impl Language {
     pub fn code(self) -> &'static str {
         match self {
             Self::English => "en",
             Self::Spanish => "es",
+        }
+    }
+
+    /// The language's own name for itself, which is what a language picker
+    /// should show: someone looking for Spanish is looking for "Español", not
+    /// for whatever the current interface language calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Spanish => "Español",
+        }
+    }
+
+    fn ordinal(self) -> u8 {
+        match self {
+            Self::English => 0,
+            Self::Spanish => 1,
+        }
+    }
+
+    fn from_ordinal(value: u8) -> Self {
+        match value {
+            1 => Self::Spanish,
+            _ => Self::English,
         }
     }
 
@@ -54,7 +88,7 @@ struct Catalogues {
 }
 
 static CATALOGUES: OnceLock<Catalogues> = OnceLock::new();
-static ACTIVE: OnceLock<Language> = OnceLock::new();
+static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
 fn parse(source: &str, name: &str) -> HashMap<String, String> {
     toml::from_str(source)
@@ -68,16 +102,30 @@ fn catalogues() -> &'static Catalogues {
     })
 }
 
-/// Fix the language for the rest of the process.
+/// Set the interface language.
 ///
-/// Called once during start-up. Later calls are ignored rather than switching
-/// language underneath a half-drawn screen.
+/// Called during start-up, and again whenever the setting is changed in the
+/// settings view. Every string is looked up as it is drawn, so a change takes
+/// effect on the next frame; the caller marks the screen dirty so that frame
+/// comes immediately.
 pub fn set_language(language: Language) {
-    let _ = ACTIVE.set(language);
+    ACTIVE.store(language.ordinal(), Ordering::Relaxed);
 }
 
 pub fn language() -> Language {
-    *ACTIVE.get_or_init(Language::default)
+    Language::from_ordinal(ACTIVE.load(Ordering::Relaxed))
+}
+
+/// Pick the interface language.
+///
+/// The `--lang` flag wins over the configured language, which wins over the
+/// system locale. An unrecognised name is not worth refusing to start over; it
+/// falls through to detection, and then to English.
+pub fn resolve_language(flag: Option<&str>, configured: &str) -> Language {
+    flag.and_then(Language::from_tag)
+        .or_else(|| Language::from_tag(configured))
+        .or_else(detect_language)
+        .unwrap_or_default()
 }
 
 /// The translation for `key`, falling back to English and then to the key.
@@ -200,6 +248,39 @@ mod tests {
         assert_eq!(Language::from_tag("en_GB.UTF-8"), Some(Language::English));
         assert_eq!(Language::from_tag("fr_FR"), None);
         assert_eq!(Language::from_tag("C"), None);
+    }
+
+    #[test]
+    fn the_flag_wins_over_the_configuration() {
+        assert_eq!(resolve_language(Some("es"), "en"), Language::Spanish);
+        assert_eq!(resolve_language(Some("en"), "es"), Language::English);
+    }
+
+    #[test]
+    fn the_configuration_is_used_when_no_flag_is_given() {
+        assert_eq!(resolve_language(None, "es"), Language::Spanish);
+    }
+
+    #[test]
+    fn auto_and_nonsense_fall_through_to_detection() {
+        // "auto" is the default setting, and a typo should not be fatal; both
+        // land on detection, which ends at English when nothing matches.
+        for configured in ["auto", "klingon", ""] {
+            let resolved = resolve_language(None, configured);
+            assert!(
+                matches!(resolved, Language::English | Language::Spanish),
+                "{configured}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_explicit_choice_names_a_language_muscli_speaks() {
+        // The settings view cycles through these, so a choice that parses to
+        // nothing would silently leave the language where it was.
+        for choice in LANGUAGE_CHOICES.iter().filter(|choice| **choice != "auto") {
+            assert!(Language::from_tag(choice).is_some(), "{choice}");
+        }
     }
 
     #[test]
