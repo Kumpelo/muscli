@@ -30,6 +30,7 @@ fn options(threads: usize) -> ScanOptions {
     ScanOptions {
         threads,
         cover_cache_bytes: CACHE_LIMIT,
+        full: true,
     }
 }
 

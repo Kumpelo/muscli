@@ -35,13 +35,14 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 use covers::Covers;
 use input::{display_rule_value, handle_terminal_event};
+use library::PendingScan;
 use nav::{NavFrame, NavTarget};
 use playback::HistoryTally;
 use render::draw;
 use settings::SETTINGS;
 use theme::UiTheme;
 use workers::{
-    CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult,
+    CoverDecodeRequest, CoverDecodeResult, ScanMessage, SearchRequest, SearchResult, WatchEvent,
     start_cover_decode_worker, start_search_worker, start_shutdown_listener,
     start_terminal_event_reader, start_watchers,
 };
@@ -288,9 +289,9 @@ struct App {
     gain_progress: Option<(usize, usize)>,
     scan_rx: tokio_mpsc::UnboundedReceiver<ScanMessage>,
     scan_tx: tokio_mpsc::UnboundedSender<ScanMessage>,
-    watch_rx: tokio_mpsc::UnboundedReceiver<()>,
+    watch_rx: tokio_mpsc::UnboundedReceiver<WatchEvent>,
     scan_running: bool,
-    scan_pending: bool,
+    scan_pending: PendingScan,
     last_scan: Instant,
     status: String,
     should_quit: bool,
@@ -440,7 +441,7 @@ async fn run_inner(
         scan_tx,
         watch_rx,
         scan_running: false,
-        scan_pending: false,
+        scan_pending: PendingScan::default(),
         last_scan: Instant::now() - Duration::from_secs(5),
         status: mpris_warning.unwrap_or_else(|| "Cargando biblioteca…".into()),
         should_quit: false,
@@ -541,8 +542,8 @@ async fn run_inner(
                     }
                 }
                 changed = app.watch_rx.recv() => {
-                    if changed.is_some() {
-                        app.scan_pending = true;
+                    if let Some(event) = changed {
+                        app.scan_pending.record(event);
                     }
                 }
                 result = app.covers.results.recv() => {
@@ -583,21 +584,20 @@ async fn run_inner(
             while let Ok(message) = app.gain_rx.try_recv() {
                 app.handle_gain_message(message)?;
             }
-            if app.watch_rx.try_recv().is_ok() {
-                while app.watch_rx.try_recv().is_ok() {}
-                app.scan_pending = true;
+            while let Ok(event) = app.watch_rx.try_recv() {
+                app.scan_pending.record(event);
             }
             while let Ok(result) = app.search_rx.try_recv() {
                 app.handle_search_result(result);
             }
             app.tick_history()?;
             app.refresh_theme();
-            if app.scan_pending
+            if !app.scan_pending.is_empty()
                 && !app.scan_running
                 && app.last_scan.elapsed() > Duration::from_secs(2)
             {
-                app.scan_pending = false;
-                app.start_scan();
+                let pending = app.scan_pending.take();
+                app.start_pending_scan(pending);
             }
 
             let periodic_draw_due = app.playback.status == PlaybackStatus::Playing

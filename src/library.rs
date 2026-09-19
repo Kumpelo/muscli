@@ -57,6 +57,12 @@ pub struct ScanOptions {
     /// too many readers spend their time seeking rather than reading.
     pub threads: usize,
     pub cover_cache_bytes: u64,
+    /// Whether this pass covers every source.
+    ///
+    /// Only a full pass may conclude that a source has gone missing. A partial
+    /// scan that marked absent sources unavailable would take the whole library
+    /// offline because one folder changed.
+    pub full: bool,
 }
 
 impl Default for ScanOptions {
@@ -64,6 +70,7 @@ impl Default for ScanOptions {
         Self {
             threads: 0,
             cover_cache_bytes: 64 * 1024 * 1024,
+            full: true,
         }
     }
 }
@@ -175,7 +182,9 @@ pub fn scan_to_database(
             Err(error) => report.errors.push(format!("{}: {error:#}", root.display())),
         }
     }
-    let _ = db.mark_missing_sources(&ids)?;
+    if options.full {
+        let _ = db.mark_missing_sources(&ids)?;
+    }
     prune_unreferenced_covers(&paths.cover_cache_dir(), &db.referenced_cover_paths()?)?;
     let removed = prune_cover_cache(&paths.cover_cache_dir(), options.cover_cache_bytes)?;
     db.clear_cover_paths(&removed)?;
@@ -270,18 +279,21 @@ fn scan_source_inner(
     Ok(scan)
 }
 
+/// Whether the scanner would index this path.
+///
+/// Shared with the filesystem watcher so the two cannot disagree about what
+/// counts as a library change.
+pub fn is_indexable(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("flac"))
+}
+
 fn collect_candidates(root: &Path) -> Vec<(PathBuf, String)> {
     WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry.file_type().is_file()
-                && entry
-                    .path()
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("flac"))
-        })
+        .filter(|entry| entry.file_type().is_file() && is_indexable(entry.path()))
         .map(|entry| {
             let relative = entry
                 .path()
