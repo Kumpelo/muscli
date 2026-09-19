@@ -596,6 +596,34 @@ impl Database {
         Ok(moved_tracks)
     }
 
+    pub fn mark_source_unavailable_by_root(&mut self, root: &Path) -> Result<usize> {
+        let root = root.to_string_lossy().into_owned();
+        let tx = self.conn.transaction()?;
+        let id = tx
+            .query_row(
+                "SELECT id FROM sources WHERE root=?1",
+                [root.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(id) = id else {
+            tx.commit()?;
+            return Ok(0);
+        };
+
+        let mut changed = 0;
+        changed += tx.execute(
+            "UPDATE sources SET available=0 WHERE id=?1 AND available!=0",
+            [&id],
+        )?;
+        changed += tx.execute(
+            "UPDATE tracks SET available=0 WHERE source_id=?1 AND available!=0",
+            [&id],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
     pub fn mark_missing_sources(&mut self, available_ids: &BTreeSet<String>) -> Result<usize> {
         let ids = {
             let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
@@ -1683,6 +1711,34 @@ mod tests {
         assert_eq!(db.prune_missing_tracks()?, 1);
         assert!(db.load_tracks()?.is_empty());
         std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn marking_one_source_unavailable_leaves_other_sources_online() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let first = ScannedTrack {
+            track: track("one", 1),
+            file_size: 1,
+            modified_ns: 1,
+        };
+        let mut second_track = track("two", 2);
+        second_track.source_id = "other".into();
+        second_track.path = "/other/two.flac".into();
+        second_track.relative_path = "two.flac".into();
+        let second = ScannedTrack {
+            track: second_track,
+            file_size: 1,
+            modified_ns: 1,
+        };
+
+        db.upsert_scan("s", Path::new("/music"), "Music", &[first], &[])?;
+        db.upsert_scan("other", Path::new("/other"), "Other", &[second], &[])?;
+        assert!(db.mark_source_unavailable_by_root(Path::new("/music"))? > 0);
+
+        let tracks = db.load_tracks()?;
+        assert!(!tracks.iter().find(|track| track.id == "one").unwrap().available);
+        assert!(tracks.iter().find(|track| track.id == "two").unwrap().available);
         Ok(())
     }
 
