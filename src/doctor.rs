@@ -78,10 +78,13 @@ pub fn run(paths: &AppPaths, config: &Config) -> Result<Vec<Check>> {
     let protocol = fs::read_to_string(paths.image_protocol_file())
         .ok()
         .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| t!("doctor.protocol_unknown").to_owned());
+        .filter(|value| !value.is_empty());
+    let protocol_ok = protocol
+        .as_deref()
+        .is_some_and(|value| !value.starts_with("Halfblocks (fallback"));
+    let protocol = protocol.unwrap_or_else(|| t!("doctor.protocol_unknown").to_owned());
     checks.push(Check {
-        ok: !protocol.starts_with("Halfblocks (fallback") && !protocol.starts_with("sin registrar"),
+        ok: protocol_ok,
         name: "terminal graphics",
         detail: t!("doctor.terminal_graphics", term = term, protocol = protocol),
     });

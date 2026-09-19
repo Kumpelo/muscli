@@ -9,10 +9,11 @@ use super::Language;
 /// general fallback.
 #[cfg(unix)]
 pub fn detect_language() -> Option<Language> {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
         .filter_map(|name| std::env::var(name).ok())
-        .find_map(|value| Language::from_tag(&value))
+        .find(|value| !value.trim().is_empty())?;
+    Language::from_tag(&locale)
 }
 
 /// Windows has no locale environment variables, so ask the API.
