@@ -49,6 +49,7 @@ struct PlaybackCheckpoint {
     last_nonzero_volume: Option<f64>,
     shuffle: bool,
     repeat: RepeatMode,
+    volume_is_position: bool,
 }
 
 impl Default for PlaybackCheckpoint {
@@ -60,6 +61,7 @@ impl Default for PlaybackCheckpoint {
             last_nonzero_volume: None,
             shuffle: false,
             repeat: RepeatMode::Off,
+            volume_is_position: false
         }
     }
 }
@@ -73,6 +75,7 @@ impl From<&SavedPlayback> for PlaybackCheckpoint {
             last_nonzero_volume: value.last_nonzero_volume,
             shuffle: value.shuffle,
             repeat: value.repeat,
+            volume_is_position: value.volume_is_position,
         }
     }
 }
@@ -85,6 +88,7 @@ impl PlaybackCheckpoint {
         playback.last_nonzero_volume = self.last_nonzero_volume;
         playback.shuffle = self.shuffle;
         playback.repeat = self.repeat;
+        playback.volume_is_position = self.volume_is_position;
     }
 }
 
@@ -166,7 +170,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -367,6 +371,31 @@ impl Database {
                  PRAGMA user_version = 5;",
             )?;
             tx.commit()?;
+        }
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 5 {
+                let tx = self.conn.transaction()?;
+                tx.execute_batch(
+                    // El checkpoint pisa todo lo que la fila anterior al reparto traía,
+                    // menos la marca que dice en qué unidad está el volumen. Heredarla
+                    // hace que una posición se convierta por la curva una segunda vez.
+                    "INSERT INTO app_state(key,value)
+                    SELECT 'playback_queue', json_extract(value,'$.queue')
+                    FROM app_state
+                    WHERE key='playback'
+                        AND json_valid(value)
+                        AND EXISTS (SELECT 1 FROM app_state WHERE key='playback_state')
+                    ON CONFLICT(key) DO NOTHING;
+
+                    DELETE FROM app_state
+                    WHERE key='playback'
+                        AND EXISTS (SELECT 1 FROM app_state WHERE key='playback_state');
+
+                    PRAGMA user_version = 6;",
+                )?;
+                tx.commit()?;
         }
         Ok(())
     }

@@ -9,7 +9,7 @@ use muscli::db::Database;
 use rusqlite::Connection;
 
 /// The newest schema version this build understands.
-const CURRENT_VERSION: i64 = 5;
+const CURRENT_VERSION: i64 = 6;
 
 fn user_version(path: &Path) -> i64 {
     let conn = Connection::open(path).expect("opening the database directly");
