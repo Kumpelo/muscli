@@ -1297,9 +1297,7 @@ impl App {
     }
 }
 
-fn cover_layout_requires_full_repaint(
-    protocol: ratatui_image::picker::ProtocolType,
-) -> bool {
+fn cover_layout_requires_full_repaint(protocol: ratatui_image::picker::ProtocolType) -> bool {
     matches!(
         protocol,
         ratatui_image::picker::ProtocolType::Sixel | ratatui_image::picker::ProtocolType::Iterm2
@@ -1383,7 +1381,9 @@ mod tests {
         use ratatui_image::picker::ProtocolType;
 
         assert!(!cover_layout_requires_full_repaint(ProtocolType::Kitty));
-        assert!(!cover_layout_requires_full_repaint(ProtocolType::Halfblocks));
+        assert!(!cover_layout_requires_full_repaint(
+            ProtocolType::Halfblocks
+        ));
         assert!(cover_layout_requires_full_repaint(ProtocolType::Sixel));
         assert!(cover_layout_requires_full_repaint(ProtocolType::Iterm2));
     }
