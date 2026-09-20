@@ -41,7 +41,7 @@ impl DiscordPresence {
         let worker = thread::Builder::new()
             .name("muscli-discord".into())
             .spawn(move || {
-                let mut client = DiscordIpcClient::new(MUSCLI_DISCORD_APPLICATION_ID.to_owned());
+                let mut client = DiscordIpcClient::new(MUSCLI_DISCORD_APPLICATION_ID);
                 let mut connected = false;
                 while let Ok(command) = rx.recv() {
                     match command {

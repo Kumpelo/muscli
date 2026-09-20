@@ -39,9 +39,7 @@ impl Dither {
 
     /// Clear the shaper's memory.
     pub fn reset(&mut self) {
-        for channel in &mut self.error {
-            *channel = [0.0; 2];
-        }
+        self.error.fill([0.0; 2]);
     }
 
     /// xorshift64*, for one uniform value in `[-0.5, 0.5)`.

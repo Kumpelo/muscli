@@ -174,7 +174,14 @@ fn a_mono_file_reaches_both_channels_of_a_stereo_device() {
 
     let source = decoded(&path);
     let latency = (RATE as usize * 2) / 1_000;
-    for (frame, pair) in captured.chunks_exact(2).enumerate().skip(latency).take(256) {
+    for (frame, pair) in captured
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .enumerate()
+        .skip(latency)
+        .take(256)
+    {
         assert_eq!(pair[0], pair[1], "the two channels differ at frame {frame}");
         assert_eq!(pair[0], source[frame - latency]);
     }
