@@ -34,11 +34,16 @@ use crate::{
 /// scheduler looking elsewhere, short enough that a seek discards little.
 const BUFFER_MS: u64 = 500;
 
-/// Silence fed to a converter at the end of a track to walk its filter out.
-const TAIL_FRAMES: usize = 2_048;
+/// How often the engine looks at the ring while audio is playing, at most.
+/// Also how often the position is refreshed, so it is a display rate as much
+/// as a safety margin.
+const TICK: Duration = Duration::from_millis(50);
 
-/// How often the engine looks at the ring while audio is playing.
+/// The shortest the engine will wait, for when the ring is already low.
 const BUSY: Duration = Duration::from_millis(5);
+
+/// How much audio the ring must still hold when the engine looks at it again.
+const LOW_WATER_MS: u64 = 150;
 
 /// The same while paused, when the ring is not draining.
 const RESTING: Duration = Duration::from_millis(100);
@@ -127,9 +132,15 @@ struct Stream {
     state: Arc<SinkState>,
     channels: u16,
     sample_rate: u32,
+    /// A decoded block, converted to the device's rate. Kept between blocks
+    /// so the decoding path allocates nothing after the first one.
+    converted: Vec<f32>,
     /// Processed audio waiting for room in the ring. Converting changes a
     /// block's length, so how much comes out is not known until it is done.
     staging: Vec<f32>,
+    /// How much of `staging` has already gone to the ring. A cursor rather
+    /// than a drain, so a partial push does not move the rest of the buffer.
+    staged: usize,
     marks: VecDeque<Mark>,
     pushed: u64,
     /// Samples the ring holds, so the staging area knows when to stop.
@@ -152,21 +163,41 @@ struct Stream {
 }
 
 impl Stream {
-    /// Put processed audio in the queue for the ring, with a mark saying
-    /// where in the track it came from.
-    fn stage(&mut self, block: Vec<f32>, source_ms: u64) {
-        let mut block = block;
-        if self.duplicate {
-            block = block.iter().flat_map(|sample| [*sample, *sample]).collect();
-        }
-        self.chain.process(&mut block);
+    /// Samples staged and not yet handed to the ring.
+    fn pending(&self) -> usize {
+        self.staging.len() - self.staged
+    }
 
-        let ahead = self.staging.len() as u64 / u64::from(self.channels);
+    /// How long the ring can be left alone before it drains to the low-water
+    /// mark. Zero once it is at or below it.
+    fn headroom(&self) -> Duration {
+        let held = self.capacity.saturating_sub(self.producer.slots()) as u64;
+        let ms = held * 1_000 / (u64::from(self.sample_rate) * u64::from(self.channels));
+        Duration::from_millis(ms.saturating_sub(LOW_WATER_MS))
+    }
+
+    /// Put what is in `converted` in the queue for the ring, with a mark
+    /// saying where in the track it came from.
+    fn stage(&mut self, source_ms: u64) {
+        if self.converted.is_empty() {
+            return;
+        }
+        let ahead = self.pending() as u64 / u64::from(self.channels);
         self.marks.push_back(Mark {
             output_frame: self.pushed + ahead,
             source_ms,
         });
-        self.staging.extend_from_slice(&block);
+
+        let start = self.staging.len();
+        if self.duplicate {
+            for sample in &self.converted {
+                self.staging.push(*sample);
+                self.staging.push(*sample);
+            }
+        } else {
+            self.staging.extend_from_slice(&self.converted);
+        }
+        self.chain.process(&mut self.staging[start..]);
     }
 }
 
@@ -234,7 +265,9 @@ impl Engine {
         match (&self.stream, self.paused.load(Ordering::Relaxed)) {
             (None, _) => None,
             (Some(_), true) => Some(RESTING),
-            (Some(_), false) => Some(BUSY),
+            // The ring drains at a known rate, so there is no reason to look
+            // at it again before it needs more.
+            (Some(stream), false) => Some(stream.headroom().clamp(BUSY, TICK)),
         }
     }
 
@@ -410,7 +443,9 @@ impl Engine {
             state: Arc::clone(&state),
             channels,
             sample_rate,
+            converted: Vec::new(),
             staging: Vec::new(),
+            staged: 0,
             capacity,
             marks: VecDeque::new(),
             handovers: VecDeque::new(),
@@ -473,6 +508,7 @@ impl Engine {
         // counters the marks are relative to: they are rebased on the frame
         // the output reports once it has done its part.
         stream.staging.clear();
+        stream.staged = 0;
         stream.marks.clear();
         stream.handovers.clear();
         stream.pushed = 0;
@@ -531,19 +567,23 @@ impl Engine {
 
         loop {
             if holding {
-                if stream.staging.len() >= stream.capacity {
+                if stream.pending() >= stream.capacity {
                     break;
                 }
-            } else if !stream.staging.is_empty() {
-                let (_, left) = stream.producer.push_partial_slice(&stream.staging);
-                let taken = stream.staging.len() - left.len();
-                stream.staging.drain(..taken);
+            } else if stream.pending() > 0 {
+                let (_, left) = stream
+                    .producer
+                    .push_partial_slice(&stream.staging[stream.staged..]);
+                let taken = stream.pending() - left.len();
+                stream.staged += taken;
                 stream.pushed += taken as u64 / u64::from(stream.channels);
                 worked |= taken > 0;
-                if !stream.staging.is_empty() {
+                if stream.pending() > 0 {
                     // The ring is full. Everything left keeps its place.
                     break;
                 }
+                stream.staging.clear();
+                stream.staged = 0;
             }
 
             if stream.exhausted {
@@ -566,7 +606,7 @@ impl Engine {
                     // still playing the limiter's hold of the last track.
                     stream.handovers.push_back(
                         stream.pushed
-                            + stream.staging.len() as u64 / u64::from(stream.channels)
+                            + stream.pending() as u64 / u64::from(stream.channels)
                             + stream.chain.latency_frames() as u64,
                     );
                     worked = true;
@@ -576,14 +616,13 @@ impl Engine {
                 if stream.needs_flush {
                     stream.needs_flush = false;
                     let source_ms = stream.decoder.position_ms();
-                    if let Some(resampler) = &mut stream.resampler {
-                        let channels =
-                            usize::from(stream.channels) / if stream.duplicate { 2 } else { 1 };
-                        let tail = vec![0.0; TAIL_FRAMES * channels];
-                        let mut flushed = Vec::new();
-                        if resampler.process(&tail, &mut flushed).is_ok() {
-                            stream.stage(flushed, source_ms);
-                        }
+                    stream.converted.clear();
+                    let flushed = match &mut stream.resampler {
+                        Some(resampler) => resampler.flush(&mut stream.converted).is_ok(),
+                        None => false,
+                    };
+                    if flushed {
+                        stream.stage(source_ms);
                     }
                     continue;
                 }
@@ -603,8 +642,19 @@ impl Engine {
                 stream.chain.latency_frames() as u64 * 1_000 / u64::from(stream.sample_rate.max(1));
             let source_ms = stream.decoder.position_ms().saturating_sub(latency_ms);
 
-            let mut block = match stream.decoder.next_block() {
-                Ok(Some(block)) => block.to_vec(),
+            match stream.decoder.next_block() {
+                Ok(Some(block)) => {
+                    stream.converted.clear();
+                    if let Some(resampler) = &mut stream.resampler {
+                        if let Err(error) = resampler.process(block, &mut stream.converted) {
+                            let _ = self.events.send(PlayerEvent::Error(error.to_string()));
+                            stream.exhausted = true;
+                            continue;
+                        }
+                    } else {
+                        stream.converted.extend_from_slice(block);
+                    }
+                }
                 Ok(None) => {
                     stream.exhausted = true;
                     stream.needs_flush = stream.resampler.is_some();
@@ -615,7 +665,7 @@ impl Engine {
                     stream.exhausted = true;
                     continue;
                 }
-            };
+            }
 
             // A few containers change rate or channel count part way through.
             // The device was negotiated for what the file said at the start,
@@ -625,20 +675,11 @@ impl Engine {
                 break;
             }
 
-            if let Some(resampler) = &mut stream.resampler {
-                let mut converted = Vec::new();
-                if let Err(error) = resampler.process(&block, &mut converted) {
-                    let _ = self.events.send(PlayerEvent::Error(error.to_string()));
-                    stream.exhausted = true;
-                    continue;
-                }
-                block = converted;
-                if block.is_empty() {
-                    // The converter is still filling; nothing to stage yet.
-                    continue;
-                }
+            if stream.converted.is_empty() {
+                // The converter is still filling; nothing to stage yet.
+                continue;
             }
-            stream.stage(block, source_ms);
+            stream.stage(source_ms);
             worked = true;
         }
         worked

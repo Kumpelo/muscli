@@ -710,6 +710,29 @@ fn an_idle_engine_asks_to_be_left_alone() {
 }
 
 #[test]
+fn a_full_ring_is_left_alone_longer_than_a_drained_one() {
+    // The engine wakes to top the ring up. How soon it has to is how long the
+    // ring will last, so a full one means a long wait and a drained one a
+    // short one.
+    let mut harness = harness(5_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    let full = harness.engine.idle_timeout().expect("has a stream");
+
+    // Take almost everything the ring holds, without letting the engine
+    // refill in between.
+    harness.capture.pull(RATE as usize * 450 / 1_000);
+    let drained = harness.engine.idle_timeout().expect("still has a stream");
+
+    assert!(
+        drained < full,
+        "a drained ring asked to be left {drained:?}, a full one {full:?}"
+    );
+}
+
+#[test]
 fn the_position_does_not_lurch_while_a_seek_lands() {
     // Between asking for the flush and the output carrying it out, the marks
     // are counted from a frame the device has not reached. Measuring against
