@@ -61,7 +61,7 @@ impl Default for PlaybackCheckpoint {
             last_nonzero_volume: None,
             shuffle: false,
             repeat: RepeatMode::Off,
-            volume_is_position: false
+            volume_is_position: false,
         }
     }
 }
@@ -376,12 +376,12 @@ impl Database {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version == 5 {
-                let tx = self.conn.transaction()?;
-                tx.execute_batch(
-                    // El checkpoint pisa todo lo que la fila anterior al reparto traía,
-                    // menos la marca que dice en qué unidad está el volumen. Heredarla
-                    // hace que una posición se convierta por la curva una segunda vez.
-                    "INSERT INTO app_state(key,value)
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                // El checkpoint pisa todo lo que la fila anterior al reparto traía,
+                // menos la marca que dice en qué unidad está el volumen. Heredarla
+                // hace que una posición se convierta por la curva una segunda vez.
+                "INSERT INTO app_state(key,value)
                     SELECT 'playback_queue', json_extract(value,'$.queue')
                     FROM app_state
                     WHERE key='playback'
@@ -394,8 +394,8 @@ impl Database {
                         AND EXISTS (SELECT 1 FROM app_state WHERE key='playback_state');
 
                     PRAGMA user_version = 6;",
-                )?;
-                tx.commit()?;
+            )?;
+            tx.commit()?;
         }
         Ok(())
     }

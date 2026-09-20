@@ -34,6 +34,8 @@
 "action.row_next" = "Next row"
 "action.row_previous" = "Previous row"
 "action.search" = "Search"
+"action.seek_forward" = "Seek forward 5s"
+"action.seek_backward" = "Seek back 5s"
 "action.setting_decrease" = "Lower the value"
 "action.setting_increase" = "Raise the value"
 "action.setting_toggle" = "Turn on or off"
@@ -278,3 +280,4 @@
 "view.smart_playlist" = "Smart playlist"
 "view.smart_playlists" = "Smart playlists"
 "view.tracks" = "Songs"
+

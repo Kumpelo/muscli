@@ -95,7 +95,6 @@ pub enum Command {
     Pause(bool),
     Toggle,
     SeekAbsolute(u64),
-    SeekRelative(f64),
     Volume(f64),
     ReplayGain(Option<f64>),
     Equalizer(Vec<(u32, f32)>),
@@ -310,11 +309,6 @@ impl Engine {
                 self.set_paused(!paused)
             }
             Command::SeekAbsolute(position_ms) => self.seek(position_ms),
-            Command::SeekRelative(seconds) => {
-                let current = self.position.ms() as i64;
-                let wanted = (current + (seconds * 1_000.0) as i64).max(0) as u64;
-                self.seek(wanted)
-            }
             Command::Volume(volume) => {
                 self.settings.volume = volume.clamp(0.0, 1.0);
                 self.volume.set(self.settings.volume);
@@ -702,7 +696,7 @@ impl Engine {
         while stream.marks.len() > 1 && stream.marks[1].output_frame <= played {
             stream.marks.pop_front();
         }
-                if let Some(mark) = stream.marks.front()
+        if let Some(mark) = stream.marks.front()
             && mark.output_frame <= played
         {
             let reached = stream.ends_at.map_or(played, |ends_at| played.min(ends_at));

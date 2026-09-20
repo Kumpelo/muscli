@@ -138,7 +138,7 @@ impl AudioBackend for HybridPlayer {
             // be played untouched, and the interface says so when it happens.
             gapless: true,
             bit_perfect: true,
-            rolls_into_prefetch: self.on_mpv
+            rolls_into_prefetch: self.on_mpv,
         }
     }
 

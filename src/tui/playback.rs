@@ -540,8 +540,7 @@ impl App {
             // does the bookkeeping. Advancing here would reload it and
             // reintroduce the gap this exists to remove.
             PlayerEvent::EndOfFile
-                if self.prefetched.is_some()
-                    && self.player.capabilities().rolls_into_prefetch => {}
+                if self.prefetched.is_some() && self.player.capabilities().rolls_into_prefetch => {}
             PlayerEvent::EndOfFile => {
                 self.flush_history(true)?;
                 self.next()?

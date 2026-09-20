@@ -136,6 +136,16 @@ pub(super) const BINDINGS: &[Binding] = &[
     bind(KeyCode::Char('P'), Anywhere, A::AddSelectedToPlaylist),
     bind(KeyCode::Tab, In(View::GenreDetail), A::NextGenreTab),
     bind(KeyCode::Tab, Anywhere, A::ToggleFocus),
+    bind(
+        KeyCode::Char('['),
+        Anywhere,
+        A::Player(PlayerAction::SeekRelative(-5_000)),
+    ),
+    bind(
+        KeyCode::Char(']'),
+        Anywhere,
+        A::Player(PlayerAction::SeekRelative(5_000)),
+    ),
     // The settings view claims the horizontal keys and space before the
     // navigation and playback bindings below can see them.
     bind(
@@ -335,6 +345,8 @@ impl Action {
             Self::QueueSave => "action.queue_save",
             Self::QueueLoad => "action.queue_load",
             Self::EditSmartPlaylist => "action.edit_smart",
+            Self::Player(PlayerAction::SeekRelative(ms)) if ms < 0 => "action.seek_backward",
+            Self::Player(PlayerAction::SeekRelative(_)) => "action.seek_forward",
             Self::Player(PlayerAction::Toggle) => "action.play_pause",
             Self::Player(PlayerAction::Next) => "action.next_track",
             Self::Player(PlayerAction::Previous) => "action.previous_track",
@@ -479,6 +491,8 @@ fn action_name(action: Action) -> &'static str {
         Action::QueueSave => "queue_save",
         Action::QueueLoad => "queue_load",
         Action::EditSmartPlaylist => "edit_smart_playlist",
+        Action::Player(PlayerAction::SeekRelative(ms)) if ms < 0 => "seek_backward",
+        Action::Player(PlayerAction::SeekRelative(_)) => "seek_forward",
         Action::Player(PlayerAction::Toggle) => "play_pause",
         Action::Player(PlayerAction::Next) => "next_track",
         Action::Player(PlayerAction::Previous) => "previous_track",

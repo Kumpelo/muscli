@@ -34,6 +34,8 @@
 "action.row_next" = "Fila siguiente"
 "action.row_previous" = "Fila anterior"
 "action.search" = "Buscar"
+"action.seek_forward" = "Adelantar 5s"
+"action.seek_backward" = "Retroceder 5s"
 "action.setting_decrease" = "Bajar el valor"
 "action.setting_increase" = "Subir el valor"
 "action.setting_toggle" = "Activar o desactivar"

@@ -183,7 +183,7 @@ impl AudioBackend for NativePlayer {
             volume: true,
             gapless: true,
             bit_perfect: true,
-            rolls_into_prefetch: false
+            rolls_into_prefetch: false,
         }
     }
 
@@ -225,7 +225,7 @@ impl AudioBackend for NativePlayer {
     fn seek_relative(&mut self, seconds: f64) -> Result<()> {
         let wanted = (self.position.ms() as i64 + (seconds * 1_000.0) as i64).max(0) as u64;
         self.position.declare(wanted);
-        self.send(Command::SeekRelative(seconds))
+        self.send(Command::SeekAbsolute(wanted))
     }
 
     fn seek_absolute_ms(&mut self, position_ms: u64) -> Result<()> {
