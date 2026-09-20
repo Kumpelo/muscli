@@ -1,8 +1,5 @@
-//! Search benchmarks: index construction and query latency.
-//!
-//! `SearchIndex` is rebuilt from scratch on every library reload, so its build
-//! cost scales with library size and is paid far more often than a user might
-//! expect. Query latency matters because search runs on every keystroke.
+//! Search benchmarks. `SearchIndex` is rebuilt on every library reload, and
+//! queries run on every keystroke.
 
 use std::hint::black_box;
 

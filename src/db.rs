@@ -23,11 +23,8 @@ pub struct Database {
     conn: Connection,
 }
 
-/// Apply the connection settings every database uses.
-///
-/// `open_memory` previously set none of these, which meant the unit tests ran
-/// without foreign keys while production ran with them - the suite could not
-/// see a constraint violation that a user would hit.
+/// Apply the connection settings every database uses. Shared by the on-disk
+/// and in-memory openers so the tests run what a user runs.
 fn configure(conn: &Connection, on_disk: bool) -> Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -1097,6 +1094,17 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    /// Forget every resume point, leaving counts and history untouched.
+    ///
+    /// Returns how many tracks had one. Resume points are also cleared by
+    /// playing a track to its end, so this is for clearing the lot at once.
+    pub fn forget_resume_positions(&mut self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE track_stats SET resume_position_ms=0 WHERE resume_position_ms>0",
+            [],
+        )?)
     }
 
     pub fn update_history(&mut self, update: HistoryUpdate<'_>) -> Result<()> {

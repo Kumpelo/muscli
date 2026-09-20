@@ -16,13 +16,14 @@ pub(super) struct Covers {
     pub(super) picker: Picker,
     /// Art for the track being shown in the detail pane.
     pub(super) current: Option<CoverState>,
-    /// Signature of the covers drawn in the last frame, and of the ones the
-    /// next frame wants.
+    /// Signature of where covers sat in the last frame, and where the next
+    /// frame will put them.
     ///
     /// Kitty images are anchored to text cells and ratatui only rewrites cells
-    /// that changed, so a cover that moves leaves the old one smeared under the
-    /// new. Comparing signatures between frames says when a full repaint is
-    /// needed.
+    /// that changed, so a cover that moves leaves a band of the old one
+    /// behind. Comparing signatures between frames says when a full repaint is
+    /// needed. It tracks the slots, not their contents: art arriving in a slot
+    /// that already existed needs no repaint.
     pub(super) drawn_signature: u64,
     pub(super) pending_signature: u64,
     /// Decoded album-grid art, with the insertion order that bounds it.

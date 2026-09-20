@@ -1,8 +1,5 @@
-//! Derived-index benchmarks.
-//!
-//! Every library reload regroups the whole track list into albums, artists and
-//! genres. These run on the UI thread above a size threshold, so their cost is
-//! felt directly as a stall after a scan.
+//! Derived-index benchmarks. Every library reload regroups the whole track
+//! list into albums, artists and genres.
 
 use std::hint::black_box;
 

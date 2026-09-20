@@ -47,7 +47,8 @@ use workers::{
 };
 
 use crate::{
-    config::{Config, ReplayGainMode, all_sources},
+    audio::{AudioBackend, MpvPlayer, dsp::Settings as DspSettings, hybrid::HybridPlayer},
+    config::{AudioBackendChoice, Config, ReplayGainMode, all_sources},
     control::{ControlServer, RemoteCommand},
     db::{Database, HistoryUpdate, group_albums, group_artists},
     discord::DiscordPresence,
@@ -61,7 +62,6 @@ use crate::{
     },
     mpris::MprisBridge,
     paths::AppPaths,
-    player::MpvPlayer,
     replaygain::{self, GainMessage},
     t,
 };
@@ -278,7 +278,8 @@ struct App {
     playback: PlaybackState,
     muted_volume: Option<f64>,
     compact: bool,
-    mpv: MpvPlayer,
+    player: Box<dyn AudioBackend>,
+    player_events: tokio_mpsc::UnboundedReceiver<PlayerEvent>,
     mpris: Option<MprisBridge>,
     discord: Option<DiscordPresence>,
     actions: tokio_mpsc::UnboundedReceiver<PlayerAction>,
@@ -362,6 +363,46 @@ pub async fn run(
     result
 }
 
+/// Build the backend the configuration asks for.
+///
+/// A native backend that will not start falls back to mpv with the reason in
+/// the status bar. The alternative is refusing to run at all because a sound
+/// card is busy, which is not a trade anyone would choose.
+fn start_player(
+    paths: &AppPaths,
+    config: &Config,
+    volume: f64,
+    events: tokio_mpsc::UnboundedSender<PlayerEvent>,
+) -> Result<(Box<dyn AudioBackend>, Option<String>)> {
+    if config.audio_backend == AudioBackendChoice::Native {
+        let settings = DspSettings {
+            volume,
+            equalizer: config.equalizer_bands(),
+            bit_perfect: config.bit_perfect,
+            ..DspSettings::default()
+        };
+        let device = Some(config.audio_device.trim())
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        // The hybrid, not the native backend alone: a library with an Opus
+        // file in it would otherwise skip past it, and the setting the
+        // listener chose was "play this well", not "play some of this".
+        match HybridPlayer::start(device, settings, &paths.mpv_socket(), events.clone()) {
+            Ok(player) => return Ok((Box::new(player), None)),
+            Err(error) => {
+                return Ok((
+                    Box::new(MpvPlayer::start(&paths.mpv_socket(), events)?),
+                    Some(t!("status.native_unavailable", error = error)),
+                ));
+            }
+        }
+    }
+    Ok((
+        Box::new(MpvPlayer::start(&paths.mpv_socket(), events)?),
+        None,
+    ))
+}
+
 async fn run_inner(
     terminal: &mut ratatui::DefaultTerminal,
     paths: AppPaths,
@@ -372,11 +413,23 @@ async fn run_inner(
 ) -> Result<()> {
     let db = Database::open(&paths.database_file())?;
     let saved = db.load_playback()?;
-    let mpv = MpvPlayer::start(&paths.mpv_socket())?;
+    let (player_events_tx, player_events) = tokio_mpsc::unbounded_channel();
+    // Sessions saved before the control had a curve hold an amplitude; read
+    // as a position it would come back far quieter than it was left.
+    let saved_volume = if saved.volume_is_position {
+        saved.volume.clamp(0.0, 1.0)
+    } else {
+        config.volume_position(saved.volume)
+    };
+    let (mut player, backend_warning) = start_player(
+        &paths,
+        &config,
+        config.volume_gain(saved_volume),
+        player_events_tx,
+    )?;
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
-    let saved_volume = saved.volume.clamp(0.0, 1.0);
-    mpv.set_volume(saved_volume)?;
-    mpv.set_equalizer(&config.equalizer_bands())?;
+    player.set_volume(config.volume_gain(saved_volume))?;
+    player.set_equalizer(&config.equalizer_bands())?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
@@ -461,7 +514,8 @@ async fn run_inner(
         muted_volume: (saved_volume == 0.0)
             .then_some(saved.last_nonzero_volume.unwrap_or(1.0).clamp(0.01, 1.0)),
         compact,
-        mpv,
+        player,
+        player_events,
         mpris,
         discord,
         actions,
@@ -484,6 +538,7 @@ async fn run_inner(
         status: binding_problems
             .first()
             .map(|problem| t!("status.keybindings_problem", problem = problem))
+            .or(backend_warning)
             .or(mpris_warning)
             .unwrap_or_else(|| t!("status.loading_library").into()),
         should_quit: false,
@@ -537,7 +592,7 @@ async fn run_inner(
             0
         };
         app.load_current(resume_position)?;
-        app.mpv.pause(true)?;
+        app.player.pause(true)?;
         app.playback.status = PlaybackStatus::Paused;
         app.status = t!(
             "status.session_restored",
@@ -570,7 +625,7 @@ async fn run_inner(
                         app.handle_action(action)?;
                     }
                 }
-                event = app.mpv.recv_event() => {
+                event = app.player_events.recv() => {
                     if let Some(event) = event {
                         app.handle_player_event(event)?;
                     }
@@ -619,11 +674,11 @@ async fn run_inner(
                 _ = tokio::time::sleep(maintenance_delay) => {}
             }
 
-            app.playback.position_ms = app.mpv.position_ms();
+            app.playback.position_ms = app.player.position_ms();
             while let Ok(event) = terminal_events.try_recv() {
                 handle_terminal_event(&mut app, event)?;
             }
-            while let Some(event) = app.mpv.try_event() {
+            while let Ok(event) = app.player_events.try_recv() {
                 app.handle_player_event(event)?;
             }
             while let Ok(action) = app.actions.try_recv() {

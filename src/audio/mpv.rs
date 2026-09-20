@@ -15,20 +15,21 @@ use anyhow::{Context, Result};
 use interprocess::TryClone;
 use interprocess::local_socket::{GenericFilePath, Stream, ToFsName, prelude::*};
 use serde_json::{Value, json};
-use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::model::PlayerEvent;
+
+use super::{AudioBackend, Capabilities};
 
 pub struct MpvPlayer {
     child: Option<Child>,
     writer: Arc<Mutex<Stream>>,
-    events: UnboundedReceiver<PlayerEvent>,
     position_ms: Arc<AtomicU64>,
     socket: std::path::PathBuf,
 }
 
 impl MpvPlayer {
-    pub fn start(socket: &Path) -> Result<Self> {
+    pub fn start(socket: &Path, events: UnboundedSender<PlayerEvent>) -> Result<Self> {
         if socket.exists() {
             fs::remove_file(socket).ok();
         }
@@ -67,7 +68,7 @@ impl MpvPlayer {
 
         let reader = stream.try_clone()?;
         let writer = Arc::new(Mutex::new(stream));
-        let (tx, events) = tokio_mpsc::unbounded_channel();
+        let tx = events;
         let position_ms = Arc::new(AtomicU64::new(0));
         let event_position_ms = position_ms.clone();
         thread::Builder::new()
@@ -94,7 +95,6 @@ impl MpvPlayer {
         let player = Self {
             child: Some(child),
             writer,
-            events,
             position_ms,
             socket: socket.to_path_buf(),
         };
@@ -135,21 +135,16 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// Queue `path` to play straight after the current file.
-    ///
-    /// The entry is appended rather than loaded, so mpv can open and start
-    /// decoding it before the current one ends. That early open is what makes
-    /// the transition seamless; loading on end-of-file cannot be, because the
-    /// round trip through this process is itself the gap.
+    /// Queue `path` to play straight after the current file. Appended rather
+    /// than loaded, so mpv opens it early; loading on end-of-file cannot be
+    /// seamless, because the round trip through this process is the gap.
     pub fn set_prefetch(&self, path: &Path) -> Result<()> {
         self.clear_prefetch()?;
         self.command(json!(["loadfile", path.to_string_lossy(), "append"]))
     }
 
-    /// Drop anything queued after the current file.
-    ///
-    /// Failing means there was nothing queued, which is the desired state, so
-    /// the reply is ignored.
+    /// Drop anything queued after the current file. Failure means there was
+    /// nothing queued, which is the desired state.
     pub fn clear_prefetch(&self) -> Result<()> {
         let _ = self.command(json!(["playlist-remove", 1]));
         Ok(())
@@ -210,12 +205,9 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// Apply a graphic equaliser.
-    ///
-    /// Uses the same labelled-filter mechanism as the ReplayGain filter, so the
-    /// two stack without either disturbing the other. An empty set removes the
-    /// filter rather than installing a flat one, which keeps the audio path
-    /// untouched when the equaliser is off.
+    /// Apply a graphic equaliser, on the same labelled-filter mechanism as
+    /// ReplayGain so the two stack. An empty set removes the filter rather
+    /// than installing a flat one.
     pub fn set_equalizer(&self, bands: &[(u32, f32)]) -> Result<()> {
         let _ = self.command(json!(["af", "remove", "@muscli_eq"]));
         let active: Vec<String> = bands
@@ -245,13 +237,73 @@ impl MpvPlayer {
     pub fn position_ms(&self) -> u64 {
         self.position_ms.load(Ordering::Relaxed)
     }
+}
 
-    pub fn try_event(&mut self) -> Option<PlayerEvent> {
-        self.events.try_recv().ok()
+impl AudioBackend for MpvPlayer {
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            name: "mpv",
+            replay_gain: true,
+            equalizer: true,
+            volume: true,
+            gapless: true,
+            // mpv decodes and converts on its own terms; there is no way to
+            // ask it for the file's samples and nothing else.
+            bit_perfect: false,
+        }
     }
 
-    pub async fn recv_event(&mut self) -> Option<PlayerEvent> {
-        self.events.recv().await
+    fn load(&mut self, path: &Path, position_ms: u64) -> Result<()> {
+        MpvPlayer::load(self, path, position_ms)
+    }
+
+    fn set_prefetch(&mut self, path: Option<&Path>) -> Result<()> {
+        match path {
+            Some(path) => MpvPlayer::set_prefetch(self, path),
+            None => MpvPlayer::clear_prefetch(self),
+        }
+    }
+
+    fn adopt_prefetch(&mut self) -> Result<()> {
+        // mpv is playing the second playlist entry; dropping the first makes
+        // the playing one entry zero again, so the playlist never grows.
+        MpvPlayer::drop_finished_entry(self)
+    }
+
+    fn pause(&mut self, paused: bool) -> Result<()> {
+        MpvPlayer::pause(self, paused)
+    }
+
+    fn toggle(&mut self) -> Result<()> {
+        MpvPlayer::toggle(self)
+    }
+
+    fn seek_relative(&mut self, seconds: f64) -> Result<()> {
+        MpvPlayer::seek_relative(self, seconds)
+    }
+
+    fn seek_absolute_ms(&mut self, position_ms: u64) -> Result<()> {
+        MpvPlayer::seek_absolute_ms(self, position_ms)
+    }
+
+    fn set_volume(&mut self, volume: f64) -> Result<()> {
+        MpvPlayer::set_volume(self, volume)
+    }
+
+    fn set_replay_gain(&mut self, gain_db: Option<f64>) -> Result<()> {
+        MpvPlayer::set_replay_gain(self, gain_db)
+    }
+
+    fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()> {
+        MpvPlayer::set_equalizer(self, bands)
+    }
+
+    fn stop(&mut self) -> Result<()> {
+        MpvPlayer::stop(self)
+    }
+
+    fn position_ms(&self) -> u64 {
+        MpvPlayer::position_ms(self)
     }
 }
 

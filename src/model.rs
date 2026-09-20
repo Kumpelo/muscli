@@ -157,8 +157,16 @@ pub struct SavedPlayback {
     pub queue: Vec<String>,
     pub current_index: Option<usize>,
     pub position_ms: u64,
+    /// Where the volume control sits, from `0.0` to `1.0`. Not an amplitude:
+    /// the curve between the two lives in the configuration, so that changing
+    /// it moves the sound rather than the number.
     pub volume: f64,
     pub last_nonzero_volume: Option<f64>,
+    /// Whether `volume` is a control position or, from before there was a
+    /// curve, a raw amplitude. Sessions saved then are converted on the way
+    /// in so the music comes back at the loudness it was left at.
+    #[serde(default)]
+    pub volume_is_position: bool,
     pub shuffle: bool,
     pub repeat: RepeatMode,
 }
@@ -171,6 +179,7 @@ impl Default for SavedPlayback {
             position_ms: 0,
             volume: 1.0,
             last_nonzero_volume: None,
+            volume_is_position: true,
             shuffle: false,
             repeat: RepeatMode::Off,
         }
@@ -230,6 +239,10 @@ pub enum PlayerEvent {
     Paused(bool),
     Volume(f64),
     EndOfFile,
+    /// Something the listener should know that is not a failure, such as a
+    /// setting that could not be honoured for this particular file. Unlike
+    /// [`PlayerEvent::Error`] it does not skip the track.
+    Notice(String),
     Error(String),
 }
 

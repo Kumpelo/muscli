@@ -1,8 +1,6 @@
-//! Guards the test fixture generator itself.
-//!
-//! Every other integration test builds on `common::write_track`, so if the
-//! hand-rolled FLAC writer produced something a decoder rejects, those tests
-//! would fail in confusing ways. These assertions fail loudly instead.
+//! Guards the fixture generator itself. Every other integration test builds
+//! on `common::write_track`, so a FLAC writer bug would fail them all
+//! confusingly; these assertions fail clearly instead.
 
 mod common;
 

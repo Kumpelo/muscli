@@ -1,0 +1,995 @@
+//! The native playback path, end to end: a file on disk, decoded, processed,
+//! through the ring, and out of a device that hands its samples to the test
+//! instead of to a listener.
+
+mod common;
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
+};
+
+use muscli::{
+    audio::{
+        decode::Decoder,
+        dsp::Settings,
+        native::{
+            engine::{Command, Engine, Position},
+            sink::{CaptureHandle, CaptureOutput, Volume},
+        },
+    },
+    model::PlayerEvent,
+};
+use tempfile::TempDir;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+const RATE: u32 = 44_100;
+const BLOCK: usize = 1024;
+
+struct Harness {
+    engine: Engine,
+    capture: CaptureHandle,
+    events: UnboundedReceiver<PlayerEvent>,
+    position: Arc<Position>,
+    _directory: TempDir,
+    path: PathBuf,
+}
+
+fn harness(millis: u32, rates: &[u32]) -> Harness {
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, millis)),
+    )
+    .expect("write the fixture");
+
+    let (output, capture) = CaptureOutput::new(rates);
+    let (sender, events) = unbounded_channel();
+    let position = Arc::new(Position::default());
+    let engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        Arc::clone(&position),
+        Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    Harness {
+        engine,
+        capture,
+        events,
+        position,
+        _directory: directory,
+        path,
+    }
+}
+
+fn decoded(path: &Path) -> Vec<f32> {
+    let mut decoder = Decoder::open(path).expect("open the fixture");
+    let mut samples = Vec::new();
+    while let Some(block) = decoder.next_block().expect("decode") {
+        samples.extend_from_slice(block);
+    }
+    samples
+}
+
+fn errors(events: &mut UnboundedReceiver<PlayerEvent>) -> Vec<String> {
+    let mut found = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let PlayerEvent::Error(message) = event {
+            found.push(message);
+        }
+    }
+    found
+}
+
+#[test]
+fn what_reaches_the_device_is_what_was_in_the_file() {
+    // Neutral settings, so anything that differs is the path itself losing or
+    // altering samples rather than the processing doing its job.
+    let mut harness = harness(500, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    assert!(errors(&mut harness.events).is_empty());
+
+    let source = decoded(&harness.path);
+    let mut captured = Vec::new();
+    while captured.len() < source.len() {
+        harness.engine.step();
+        captured.extend(harness.capture.pull(BLOCK));
+    }
+
+    // The limiter's look-ahead delays everything by a fixed couple of
+    // milliseconds; past that the two have to agree exactly.
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = source.len() - latency - BLOCK;
+    assert_eq!(&captured[latency..latency + compared], &source[..compared]);
+}
+
+#[test]
+fn a_device_at_another_rate_gets_the_file_converted_to_it() {
+    // The device is opened at the file's rate wherever it can be; when it
+    // cannot, the conversion happens here rather than being left to whatever
+    // sound server would otherwise do it out of sight.
+    let mut harness = harness(1_000, &[48_000]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    assert!(errors(&mut harness.events).is_empty());
+
+    let mut captured = Vec::new();
+    while captured.len() < 3 * 32_768 {
+        harness.engine.step();
+        captured.extend(harness.capture.pull(BLOCK));
+    }
+
+    // A 440 Hz tone is still a 440 Hz tone at the other rate. Getting this
+    // wrong is the failure that sounds like the record being played fast.
+    let window = &captured[32_768..2 * 32_768];
+    let spectrum = muscli::audio::measure::spectrum(window, 48_000);
+    let found = spectrum.frequency(spectrum.peak_bin());
+    assert!(
+        (found - 440.0).abs() < 2.0,
+        "a 440 Hz tone came out at {found:.1} Hz"
+    );
+}
+
+#[test]
+fn a_mono_file_reaches_both_channels_of_a_stereo_device() {
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 500)),
+    )
+    .expect("write the fixture");
+
+    let (output, capture) = CaptureOutput::with_channels(&[RATE], &[2]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        position,
+        Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    engine.handle(Command::Load {
+        path: path.clone(),
+        position_ms: 0,
+    });
+    assert!(errors(&mut events).is_empty());
+    engine.step();
+
+    let captured = capture.pull(BLOCK);
+    assert_eq!(captured.len(), BLOCK * 2, "the device was not given stereo");
+
+    let source = decoded(&path);
+    let latency = (RATE as usize * 2) / 1_000;
+    for (frame, pair) in captured.chunks_exact(2).enumerate().skip(latency).take(256) {
+        assert_eq!(pair[0], pair[1], "the two channels differ at frame {frame}");
+        assert_eq!(pair[0], source[frame - latency]);
+    }
+}
+
+#[test]
+fn the_position_follows_the_device_and_not_the_decoder() {
+    // The decoder runs half a second ahead of what is being heard. A position
+    // taken from it would show the track finishing before it had.
+    let mut harness = harness(2_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    harness.engine.step();
+    assert_eq!(
+        harness.position.ms(),
+        0,
+        "the position moved before anything was played"
+    );
+
+    // Play a quarter of a second.
+    for _ in 0..(RATE as usize / 4 / BLOCK) {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+    }
+    let position = harness.position.ms();
+    assert!(
+        position.abs_diff(250) < 40,
+        "a quarter of a second in, the position reads {position} ms"
+    );
+}
+
+#[test]
+fn a_seek_keeps_the_device_and_costs_one_buffer() {
+    // The output discards what it holds instead of the stream being rebuilt
+    // around a fresh ring, so the seek costs the one buffer it was filling.
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    assert_eq!(harness.capture.starts(), 1);
+
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+    harness.engine.step();
+    assert_eq!(
+        harness.capture.starts(),
+        1,
+        "the seek reopened the device instead of flushing it"
+    );
+    assert!(errors(&mut harness.events).is_empty());
+
+    // The buffer that carries out the flush comes out silent, and only that
+    // one: the engine decoded ahead while it waited.
+    let landing = harness.capture.pull(BLOCK);
+    assert!(
+        landing.iter().all(|sample| *sample == 0.0),
+        "the old position was played after the seek"
+    );
+    harness.engine.step();
+
+    let mut captured = Vec::new();
+    for _ in 0..8 {
+        captured.extend(harness.capture.pull(BLOCK));
+        harness.engine.step();
+    }
+    assert!(
+        captured[..BLOCK].iter().any(|sample| *sample != 0.0),
+        "the seek cost more than the one buffer"
+    );
+
+    // And the samples are the ones that live there, not merely a plausible
+    // number of them.
+    let mut decoder = Decoder::open(&harness.path).expect("open the fixture");
+    decoder.seek_ms(1_500).expect("seek");
+    let mut expected = Vec::new();
+    while expected.len() < captured.len() {
+        let block = decoder.next_block().expect("decode").expect("more audio");
+        expected.extend_from_slice(block);
+    }
+
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = captured.len() - latency - BLOCK;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+
+    // A seek is not the decoder falling behind, so it is not reported as one.
+    let notices: Vec<String> = std::iter::from_fn(|| harness.events.try_recv().ok())
+        .filter_map(|event| match event {
+            PlayerEvent::Notice(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert!(notices.is_empty(), "the seek complained: {notices:?}");
+}
+
+#[test]
+fn a_seek_moves_the_reported_position() {
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+
+    // Reported straight away, before a single frame has been played: the
+    // interface should not show the old position while the seek lands.
+    let landed = harness.position.ms();
+    assert!(
+        landed.abs_diff(1_500) < 100,
+        "a seek to 1500 ms reported {landed} ms"
+    );
+
+    harness.engine.step();
+    let mut played = 0u64;
+    for _ in 0..8 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+        played += BLOCK as u64;
+    }
+
+    // One buffer of that went on the flush itself.
+    let elapsed = (played - BLOCK as u64) * 1_000 / u64::from(RATE);
+    let position = harness.position.ms();
+    assert!(
+        position.abs_diff(1_500 + elapsed) < 60,
+        "after seeking to 1500 ms and playing {elapsed} ms the position reads {position} ms"
+    );
+}
+
+#[test]
+fn the_end_is_announced_when_it_is_heard_and_not_when_it_is_decoded() {
+    let mut harness = harness(200, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // Decode the whole track without playing any of it.
+    for _ in 0..8 {
+        harness.engine.step();
+    }
+    assert!(
+        !harness
+            .events
+            .try_recv()
+            .is_ok_and(|event| matches!(event, PlayerEvent::EndOfFile)),
+        "the track ended before a single frame had been played"
+    );
+
+    let frames = (RATE as u64 * 200 / 1_000) as usize;
+    let mut ends = 0;
+    for _ in 0..(frames / BLOCK + 4) {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+    }
+    while let Ok(event) = harness.events.try_recv() {
+        if matches!(event, PlayerEvent::EndOfFile) {
+            ends += 1;
+        }
+    }
+    assert_eq!(ends, 1, "the end of the track was announced {ends} times");
+}
+
+#[test]
+fn a_device_asking_for_more_than_there_is_gets_silence_and_it_is_counted() {
+    // The one thing a callback must never do is wait. Running dry has to
+    // cost a gap and a number, not a stall.
+    let mut harness = harness(50, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    harness.engine.step();
+
+    let mut pulled = Vec::new();
+    for _ in 0..200 {
+        pulled.extend(harness.capture.pull(BLOCK));
+    }
+
+    assert!(harness.engine.starved_frames() > 0, "nothing was reported");
+    assert_eq!(
+        pulled[pulled.len() - BLOCK..],
+        vec![0.0; BLOCK],
+        "an empty ring produced something other than silence"
+    );
+}
+
+#[test]
+fn the_backend_plays_a_file_through_its_own_thread() {
+    use muscli::audio::{AudioBackend, native::player::NativePlayer};
+    use std::{thread, time::Duration};
+
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 1_000)),
+    )
+    .expect("write the fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let mut player = NativePlayer::start_with(
+        move |_| Ok(Box::new(output) as Box<dyn muscli::audio::native::sink::Output>),
+        Settings::default(),
+        sender,
+    )
+    .expect("start the backend");
+    assert_eq!(player.device(), "capture");
+
+    player.load(&path, 0).expect("load the fixture");
+    // The engine tops the ring up every few milliseconds; a quarter of a
+    // second is a hundred times what decoding this takes.
+    thread::sleep(Duration::from_millis(250));
+    assert!(errors(&mut events).is_empty());
+
+    let captured = capture.pull(4 * BLOCK);
+    let source = decoded(&path);
+    let latency = (RATE as usize * 2) / 1_000;
+    assert_eq!(
+        &captured[latency..],
+        &source[..captured.len() - latency],
+        "what the device was handed is not what is in the file"
+    );
+
+    // And the position has to have followed the device rather than the
+    // decoder, which by now is most of a second ahead.
+    thread::sleep(Duration::from_millis(50));
+    let position = player.position_ms();
+    let played = 4 * BLOCK as u64 * 1_000 / u64::from(RATE);
+    assert!(
+        position.abs_diff(played) < 30,
+        "after {played} ms of audio the position reads {position} ms"
+    );
+}
+
+#[test]
+fn a_queued_track_joins_the_one_playing_without_a_gap() {
+    // The whole point of prefetching: an album side that was mastered to run
+    // together has to run together, with no silence and no restart of the
+    // device at the join.
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 200)),
+    )
+    .expect("write the first fixture");
+    fs::write(
+        &second,
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 200)),
+    )
+    .expect("write the second fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        Arc::clone(&position),
+        Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    engine.handle(Command::Prefetch(Some(second.clone())));
+    assert!(errors(&mut events).is_empty());
+
+    let expected: Vec<f32> = decoded(&first)
+        .into_iter()
+        .chain(decoded(&second))
+        .collect();
+    let mut captured = Vec::new();
+    while captured.len() < expected.len() {
+        engine.step();
+        captured.extend(capture.pull(BLOCK));
+    }
+
+    // One continuous stream: the second file's samples follow the first's
+    // with nothing inserted between them.
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = expected.len() - latency;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+
+    // And the application is told exactly once that it has moved on, so its
+    // queue index and its history follow the audio.
+    let mut handovers = 0;
+    let mut ends = 0;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            PlayerEvent::PlaylistPosition(position) if position >= 1 => handovers += 1,
+            PlayerEvent::EndOfFile => ends += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(handovers, 1, "the handover was announced {handovers} times");
+    assert_eq!(ends, 0, "the stream ended when it should have carried on");
+}
+
+#[test]
+fn a_queued_track_of_another_shape_is_not_forced_to_join() {
+    // Joining a stream at one rate to a file at another would play the second
+    // at the wrong speed. Better a gap, and an ordinary end of file, so the
+    // application reloads and the device reopens.
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 100)),
+    )
+    .expect("write the first fixture");
+    fs::write(
+        &second,
+        common::flac_bytes(48_000, &common::sine(48_000, 440.0, 100)),
+    )
+    .expect("write the second fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE, 48_000]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        position,
+        Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    engine.handle(Command::Prefetch(Some(second)));
+
+    let frames = RATE as usize / 10;
+    for _ in 0..(frames / BLOCK + 8) {
+        engine.step();
+        capture.pull(BLOCK);
+    }
+
+    let mut ends = 0;
+    let mut handovers = 0;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            PlayerEvent::EndOfFile => ends += 1,
+            PlayerEvent::PlaylistPosition(position) if position >= 1 => handovers += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(handovers, 0, "a file at another rate was joined anyway");
+    assert_eq!(ends, 1, "the end of the first track was not announced");
+}
+
+#[test]
+fn the_device_is_not_started_before_there_is_anything_to_play() {
+    // The device begins asking for samples the moment it is opened. If the
+    // ring is still empty then, the first thing every track produces is a
+    // dropout -- on every play, and again on every seek.
+    let mut harness = harness(500, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // No step: this is the device asking first, which is what really happens.
+    let first = harness.capture.pull(BLOCK);
+    assert_eq!(
+        harness.engine.starved_frames(),
+        0,
+        "the device was left with nothing to play"
+    );
+    assert!(
+        first.iter().any(|sample| *sample != 0.0),
+        "the track began with silence"
+    );
+}
+
+#[test]
+fn a_track_queued_late_still_joins() {
+    // The buffer holds half a second, so a short track is decoded to its end
+    // long before it is played. Latching "finished" at that moment would lose
+    // the join to whatever the application queued a moment later.
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 150)),
+    )
+    .expect("write the first fixture");
+    fs::write(
+        &second,
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 150)),
+    )
+    .expect("write the second fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        position,
+        Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    // By now the whole of the first track is decoded and waiting.
+    engine.step();
+    engine.handle(Command::Prefetch(Some(second.clone())));
+
+    let expected: Vec<f32> = decoded(&first)
+        .into_iter()
+        .chain(decoded(&second))
+        .collect();
+    let mut captured = Vec::new();
+    while captured.len() < expected.len() {
+        engine.step();
+        captured.extend(capture.pull(BLOCK));
+    }
+
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = expected.len() - latency;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+
+    let mut ends = 0;
+    while let Ok(event) = events.try_recv() {
+        if matches!(event, PlayerEvent::EndOfFile) {
+            ends += 1;
+        }
+    }
+    assert_eq!(ends, 0, "the first track ended instead of joining");
+}
+
+#[test]
+fn running_dry_in_the_middle_of_a_track_is_reported() {
+    // A dropout is audible, and a listener who hears one deserves to be told
+    // why rather than left wondering whether the file is damaged.
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // Drain far past what the buffer holds without letting the engine refill.
+    for _ in 0..40 {
+        harness.capture.pull(BLOCK);
+    }
+    harness.engine.step();
+
+    let mut notices = Vec::new();
+    while let Ok(event) = harness.events.try_recv() {
+        if let PlayerEvent::Notice(message) = event {
+            notices.push(message);
+        }
+    }
+    assert_eq!(notices.len(), 1, "expected one complaint, got {notices:?}");
+    assert!(harness.engine.starved_frames() > 0);
+}
+
+#[test]
+fn running_dry_after_the_last_note_is_not_reported() {
+    // The ring empties at the end of every track while the application loads
+    // the next one. Calling that a fault would cry wolf once per track.
+    let mut harness = harness(100, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    for _ in 0..60 {
+        harness.engine.step();
+        harness.capture.pull(BLOCK);
+    }
+
+    let notices: Vec<String> = std::iter::from_fn(|| harness.events.try_recv().ok())
+        .filter_map(|event| match event {
+            PlayerEvent::Notice(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        notices.is_empty(),
+        "the end of a track complained: {notices:?}"
+    );
+}
+
+#[test]
+fn an_idle_engine_asks_to_be_left_alone() {
+    let mut harness = harness(500, &[RATE]);
+    assert_eq!(
+        harness.engine.idle_timeout(),
+        None,
+        "an engine with nothing to play still wanted waking"
+    );
+
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    assert!(harness.engine.idle_timeout().is_some());
+
+    harness.engine.handle(Command::Pause(true));
+    let resting = harness.engine.idle_timeout().expect("still has a stream");
+    assert!(
+        resting >= std::time::Duration::from_millis(50),
+        "a paused engine still wanted waking every {resting:?}"
+    );
+}
+
+#[test]
+fn a_full_ring_is_left_alone_longer_than_a_drained_one() {
+    // The engine wakes to top the ring up. How soon it has to is how long the
+    // ring will last, so a full one means a long wait and a drained one a
+    // short one.
+    let mut harness = harness(5_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    let full = harness.engine.idle_timeout().expect("has a stream");
+
+    // Take almost everything the ring holds, without letting the engine
+    // refill in between.
+    harness.capture.pull(RATE as usize * 450 / 1_000);
+    let drained = harness.engine.idle_timeout().expect("still has a stream");
+
+    assert!(
+        drained < full,
+        "a drained ring asked to be left {drained:?}, a full one {full:?}"
+    );
+}
+
+#[test]
+fn the_position_does_not_lurch_while_a_seek_lands() {
+    // Between asking for the flush and the output carrying it out, the marks
+    // are counted from a frame the device has not reached. Measuring against
+    // them there would put the position wherever the track happened to be.
+    let mut harness = harness(5_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // Play a while, so the device's frame counter is well past zero.
+    for _ in 0..40 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+    }
+
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+    harness.engine.step();
+
+    let position = harness.position.ms();
+    assert!(
+        position.abs_diff(1_500) < 60,
+        "while the seek was landing the position read {position} ms"
+    );
+}
+
+#[test]
+fn a_seek_while_paused_lands_when_playing_resumes() {
+    // Nothing carries out the flush while the device is stopped, so the
+    // engine waits rather than pushing audio that would be thrown away. The
+    // seek has to take effect the moment playing resumes.
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    harness.engine.handle(Command::Pause(true));
+    harness.engine.handle(Command::SeekAbsolute(1_500));
+    for _ in 0..4 {
+        harness.engine.step();
+    }
+
+    // A paused device is asked for nothing, so nothing comes out.
+    assert!(harness.capture.pull(BLOCK).iter().all(|s| *s == 0.0));
+
+    harness.engine.handle(Command::Pause(false));
+    let landing = harness.capture.pull(BLOCK);
+    assert!(
+        landing.iter().all(|sample| *sample == 0.0),
+        "the old position was played after the seek"
+    );
+    harness.engine.step();
+
+    let mut captured = Vec::new();
+    for _ in 0..4 {
+        captured.extend(harness.capture.pull(BLOCK));
+        harness.engine.step();
+    }
+
+    let mut decoder = Decoder::open(&harness.path).expect("open the fixture");
+    decoder.seek_ms(1_500).expect("seek");
+    let mut expected = Vec::new();
+    while expected.len() < captured.len() {
+        let block = decoder.next_block().expect("decode").expect("more audio");
+        expected.extend_from_slice(block);
+    }
+
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = captured.len() - latency - BLOCK;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared]
+    );
+    assert_eq!(harness.capture.starts(), 1, "the device was reopened");
+}
+
+#[test]
+fn loading_a_track_does_not_report_the_last_one_s_position() {
+    // The application reads the position back inside the same tick it asked
+    // for a track. If the answer is still the previous track's, it stores it
+    // as this one's resume point and the next play starts a minute in.
+    use muscli::audio::{AudioBackend, native::player::NativePlayer};
+    use std::{thread, time::Duration};
+
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    for (path, hz) in [(&first, 440.0), (&second, 660.0)] {
+        fs::write(
+            path,
+            common::flac_bytes(RATE, &common::sine(RATE, hz, 4_000)),
+        )
+        .expect("write a fixture");
+    }
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, _events) = unbounded_channel();
+    let mut player = NativePlayer::start_with(
+        move |_| Ok(Box::new(output) as Box<dyn muscli::audio::native::sink::Output>),
+        Settings::default(),
+        sender,
+    )
+    .expect("start the backend");
+
+    player.load(&first, 0).expect("load the first");
+    thread::sleep(Duration::from_millis(100));
+    for _ in 0..40 {
+        capture.pull(BLOCK);
+    }
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        player.position_ms() > 500,
+        "the first track never got going"
+    );
+
+    player.load(&second, 0).expect("load the second");
+    let straight_away = player.position_ms();
+    assert_eq!(
+        straight_away, 0,
+        "a track just loaded reported {straight_away} ms, which belongs to the one before it"
+    );
+}
+
+#[test]
+fn a_configured_equaliser_reaches_the_device() {
+    // Measured at the far end of the whole path rather than on the filter in
+    // isolation, so a band that is configured but never wired up cannot pass.
+    use muscli::config::EQUALIZER_BANDS;
+
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    // A tone sitting on the 1 kHz band, which is EQUALIZER_BANDS[3].
+    let band = EQUALIZER_BANDS[3] as f64;
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, band, 4_000)),
+    )
+    .expect("write the fixture");
+
+    let level = |gain_db: f32| {
+        let settings = Settings {
+            equalizer: EQUALIZER_BANDS
+                .iter()
+                .enumerate()
+                .map(|(index, hz)| (*hz, if index == 3 { gain_db } else { 0.0 }))
+                .collect(),
+            ..Settings::default()
+        };
+        let (output, capture) = CaptureOutput::new(&[RATE]);
+        let (sender, _events) = unbounded_channel();
+        let mut engine = Engine::new(
+            Box::new(output),
+            settings,
+            sender,
+            Arc::new(Position::default()),
+            Arc::new(Volume::default()),
+            Arc::new(AtomicBool::new(false)),
+        );
+        engine.handle(Command::Load {
+            path: path.clone(),
+            position_ms: 0,
+        });
+
+        let mut captured = Vec::new();
+        while captured.len() < 3 * 32_768 {
+            engine.step();
+            captured.extend(capture.pull(BLOCK));
+        }
+        // Past the filter's start-up, and measured through a window because
+        // the tone is not coherent with the analysis length.
+        muscli::audio::measure::windowed_amplitude(
+            &captured[32_768..2 * 32_768],
+            RATE,
+            band - 100.0,
+            band + 100.0,
+        )
+    };
+
+    let flat = level(0.0);
+    let lifted = level(6.0);
+    let moved = muscli::audio::measure::db(lifted / flat);
+    assert!(
+        (moved - 6.0).abs() < 0.5,
+        "a band set to +6 dB moved the device's audio by {moved:.2} dB"
+    );
+}
+
+#[test]
+fn pausing_silences_the_device_and_stops_the_clock() {
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    for _ in 0..8 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+    }
+    let before = harness.position.ms();
+    assert!(before > 0, "nothing played");
+
+    harness.engine.handle(Command::Pause(true));
+    let quiet = harness.capture.pull(BLOCK);
+    harness.engine.step();
+
+    assert!(
+        quiet.iter().all(|sample| *sample == 0.0),
+        "the device kept playing after being paused"
+    );
+    assert_eq!(
+        harness.position.ms(),
+        before,
+        "the position moved while paused"
+    );
+    assert!(errors(&mut harness.events).is_empty(), "pausing failed");
+
+    // And resuming picks up where it stopped rather than skipping ahead.
+    harness.engine.handle(Command::Pause(false));
+    let resumed = harness.capture.pull(BLOCK);
+    assert!(resumed.iter().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn a_pause_already_in_force_is_respected_by_a_device_just_started() {
+    // Restoring a session loads the track, which starts the device, and pauses
+    // it on top of that. If the pause is not already in force when the device
+    // opens, the music begins on its own every time muscli starts.
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 2_000)),
+    )
+    .expect("write the fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let paused = Arc::new(AtomicBool::new(true));
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        Arc::new(Position::default()),
+        Arc::new(Volume::default()),
+        Arc::clone(&paused),
+    );
+
+    engine.handle(Command::Load {
+        path,
+        position_ms: 0,
+    });
+
+    // The very first thing the device asks for, with no step in between.
+    let first = capture.pull(BLOCK);
+    assert!(
+        first.iter().all(|sample| *sample == 0.0),
+        "the music started on its own"
+    );
+    assert!(errors(&mut events).is_empty());
+}

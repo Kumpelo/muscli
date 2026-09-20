@@ -9,7 +9,11 @@
 use super::*;
 use crate::t;
 
-/// Mix which image is drawn, and where, into the signature.
+/// Mix a place an image can be drawn into the signature.
+///
+/// Where, not what: an image appearing in a slot that was already reserved
+/// changes nothing, because the cells it lands on are wiped and rewritten on
+/// their own. Only a slot that moved leaves a band of the old image behind.
 fn note_cover_placement(signature: &mut u64, key: &str, area: Rect) {
     let mut h = DefaultHasher::new();
     key.hash(&mut h);
@@ -644,20 +648,18 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let inner = card.inner(rect);
         frame.render_widget(card, rect);
         let rows = Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
+        let cover_area = rows[0].inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        });
+        // Noted whether or not the art has finished decoding, so one arriving
+        // does not count as the covers having moved.
+        note_cover_placement(&mut app.covers.pending_signature, "grid", cover_area);
         if let Some(path) = cover_path
             && let Some(protocol) = app.covers.grid.get_mut(&path)
         {
-            let area = rows[0].inner(Margin {
-                horizontal: 1,
-                vertical: 0,
-            });
-            note_cover_placement(
-                &mut app.covers.pending_signature,
-                &path.to_string_lossy(),
-                area,
-            );
-            frame.render_widget(Clear, area); // same reason as the detail panel
-            frame.render_stateful_widget(StatefulImage::new(), area, protocol);
+            frame.render_widget(Clear, cover_area); // same reason as the detail panel
+            frame.render_stateful_widget(StatefulImage::new(), cover_area, protocol);
         } else {
             frame.render_widget(
                 Paragraph::new("󰀥").alignment(Alignment::Center).style(
@@ -881,17 +883,17 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         Constraint::Length(7),
     ])
     .split(inner);
+    let cover_area = parts[0].inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    note_cover_placement(&mut app.covers.pending_signature, "panel", cover_area);
     if let Some(cover) = app.covers.current.as_mut() {
-        let area = parts[0].inner(Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
         // Clear before drawing: with the kitty image protocol the previous
         // cover leaves a band of itself behind unless the cells are wiped
         // first.
-        note_cover_placement(&mut app.covers.pending_signature, "panel", area);
-        frame.render_widget(Clear, area);
-        frame.render_stateful_widget(StatefulImage::new(), area, &mut cover.protocol);
+        frame.render_widget(Clear, cover_area);
+        frame.render_stateful_widget(StatefulImage::new(), cover_area, &mut cover.protocol);
     } else {
         frame.render_widget(
             Paragraph::new("\n\n󰀥\nSin portada")
@@ -996,13 +998,20 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{}\n󰕾 {:>3}%",
+            "{}\n󰕾 {:>3}% {}",
             t!(
                 "label.shuffle_repeat",
                 shuffle = if app.shuffle { "󰒟" } else { "󰒞" },
                 repeat = repeat
             ),
-            (app.playback.volume * 100.0) as u8
+            (app.playback.volume * 100.0).round() as u8,
+            // The decibels as well as the percentage: the control moves in
+            // decibels now, and the number that says how loud it is should
+            // be the one that means something.
+            match app.config.volume_db(app.playback.volume) {
+                Some(db) => t!("label.decibels", value = format!("{db:.0}")),
+                None => t!("label.silent").to_owned(),
+            }
         ))
         .alignment(Alignment::Right),
         columns[2],
@@ -1194,5 +1203,57 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
             area,
         ),
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signature(slots: &[(&str, Rect)]) -> u64 {
+        let mut signature = 0;
+        for (key, area) in slots {
+            note_cover_placement(&mut signature, key, *area);
+        }
+        signature
+    }
+
+    fn slot(x: u16, y: u16) -> Rect {
+        Rect::new(x, y, 20, 10)
+    }
+
+    #[test]
+    fn the_same_slots_give_the_same_signature() {
+        // What makes the signature useful: art arriving, or a different album
+        // landing in a slot that was already there, must not read as the
+        // covers having moved. A full repaint on every decoded thumbnail is
+        // what made the album grid flicker.
+        let before = signature(&[("grid", slot(0, 0)), ("grid", slot(22, 0))]);
+        let after = signature(&[("grid", slot(0, 0)), ("grid", slot(22, 0))]);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn a_slot_that_moved_gives_a_different_signature() {
+        let before = signature(&[("grid", slot(0, 0)), ("grid", slot(22, 0))]);
+        let moved = signature(&[("grid", slot(0, 0)), ("grid", slot(22, 1))]);
+        assert_ne!(before, moved, "a cover moved down a row went unnoticed");
+    }
+
+    #[test]
+    fn a_slot_appearing_or_leaving_gives_a_different_signature() {
+        let two = signature(&[("grid", slot(0, 0)), ("grid", slot(22, 0))]);
+        let three = signature(&[
+            ("grid", slot(0, 0)),
+            ("grid", slot(22, 0)),
+            ("grid", slot(44, 0)),
+        ]);
+        assert_ne!(two, three, "a slot appearing went unnoticed");
+    }
+
+    #[test]
+    fn the_panel_and_the_grid_do_not_cancel_out() {
+        let area = slot(0, 0);
+        assert_ne!(signature(&[("panel", area)]), signature(&[("grid", area)]));
     }
 }

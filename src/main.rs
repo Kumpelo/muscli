@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use muscli::t;
+use muscli::{t, tn};
 
 use muscli::{
     cli::{
@@ -88,6 +88,11 @@ fn main() -> Result<()> {
                     eprintln!("warning: {error}");
                 }
             }
+            LibraryCommand::ForgetPositions => {
+                let mut db = Database::open(&paths.database_file())?;
+                let cleared = db.forget_resume_positions()?;
+                println!("{}", tn!("library.positions_forgotten", cleared));
+            }
             LibraryCommand::Prune => {
                 if control::send(&paths.control_socket(), RemoteCommand::Prune)? {
                     println!("{}", t!("cli.prune_requested"));
@@ -153,6 +158,20 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Some(Command::Devices) => {
+            let devices = muscli::audio::native::device::CpalOutput::devices()?;
+            if devices.is_empty() {
+                println!("{}", t!("devices.none"));
+            } else {
+                let chosen = config.audio_device.trim();
+                for name in devices {
+                    let marker = if name == chosen { "*" } else { " " };
+                    println!("{marker} {name}");
+                }
+                println!();
+                println!("{}", t!("devices.hint"));
+            }
+        }
         Some(Command::Keys) => {
             let overrides = keys::KeyOverrides::load(&paths.keybindings_file());
             for problem in &overrides.problems {

@@ -1,3 +1,4 @@
+pub mod audio;
 pub mod cli;
 pub mod config;
 pub mod control;
@@ -30,7 +31,6 @@ pub mod omarchy {
     }
 }
 pub mod paths;
-pub mod player;
 pub mod profiling;
 pub mod replaygain;
 pub mod tui;

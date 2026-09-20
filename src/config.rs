@@ -8,6 +8,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{fsutil::atomic_replace, paths::AppPaths};
 
+/// Which player actually makes the sound.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioBackendChoice {
+    /// mpv, driven over its IPC socket. Plays everything, including the
+    /// formats the native path has no decoder for.
+    #[default]
+    Mpv,
+    /// The built-in path: decode, process and write to the device here, so
+    /// the equaliser, the gain and the conversion are this program's own
+    /// arithmetic rather than somebody else's.
+    Native,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayGainMode {
@@ -31,6 +45,13 @@ pub struct Config {
     pub compact_default: bool,
     pub show_covers: bool,
     pub volume_step: u8,
+    /// How far below unity the volume control reaches at the bottom of its
+    /// travel, in decibels.
+    ///
+    /// The control moves in decibels, so every step is the same size to the
+    /// ear: three decibels a press at the default 5%. -60 rather than a mixing
+    /// desk's -80, since music is already inaudible at -60.
+    pub volume_range_db: f64,
     /// Worker threads for library scanning. `0` derives a value from the
     /// machine, capped so a spinning disk is not thrashed by seeks.
     pub scan_threads: usize,
@@ -49,6 +70,14 @@ pub struct Config {
     /// Equaliser gains in decibels, one per band of `EQUALIZER_BANDS`. Empty
     /// or all zero means no equaliser at all.
     pub equalizer: Vec<f32>,
+    /// Which player makes the sound.
+    pub audio_backend: AudioBackendChoice,
+    /// Output device for the native backend, by the name `muscli devices`
+    /// prints. Empty means the system default.
+    pub audio_device: String,
+    /// Hand the decoder's samples to the device untouched, giving up the
+    /// volume, ReplayGain and the equaliser. The settings view says so.
+    pub bit_perfect: bool,
 }
 
 /// Centre frequencies of the equaliser bands, an octave apart.
@@ -70,17 +99,53 @@ impl Default for Config {
             compact_default: false,
             show_covers: true,
             volume_step: 5,
+            volume_range_db: -60.0,
             scan_threads: 0,
             gapless: true,
             language: "auto".into(),
             theme: "light".into(),
             audio_extensions: Vec::new(),
             equalizer: Vec::new(),
+            audio_backend: AudioBackendChoice::default(),
+            audio_device: String::new(),
+            bit_perfect: false,
         }
     }
 }
 
 impl Config {
+    /// The usable span of the volume control, guarded against a setting that
+    /// would make it either pointless or unusable.
+    fn volume_range(&self) -> f64 {
+        self.volume_range_db.clamp(-120.0, -6.0)
+    }
+
+    /// The amplitude a control position asks for.
+    ///
+    /// The bottom of the travel is true silence rather than merely very
+    /// quiet: a volume control that cannot reach zero is a broken one.
+    pub fn volume_gain(&self, position: f64) -> f64 {
+        let position = position.clamp(0.0, 1.0);
+        if position <= 0.0 {
+            return 0.0;
+        }
+        10.0f64.powf((1.0 - position) * self.volume_range() / 20.0)
+    }
+
+    /// Where an amplitude sits on the control. The inverse of
+    /// [`volume_gain`](Self::volume_gain).
+    pub fn volume_position(&self, gain: f64) -> f64 {
+        if gain <= 0.0 {
+            return 0.0;
+        }
+        (1.0 - 20.0 * gain.clamp(0.0, 1.0).log10() / self.volume_range()).clamp(0.0, 1.0)
+    }
+
+    /// What the control is set to, in decibels, or `None` at silence.
+    pub fn volume_db(&self, position: f64) -> Option<f64> {
+        (position > 0.0).then(|| (1.0 - position.clamp(0.0, 1.0)) * self.volume_range())
+    }
+
     pub fn load(paths: &AppPaths) -> Result<Self> {
         let path = paths.config_file();
         if !path.exists() {
@@ -239,6 +304,68 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ends_of_the_volume_control_are_where_they_should_be() {
+        let config = Config::default();
+        assert_eq!(config.volume_gain(1.0), 1.0, "the top is not unity");
+        // Not merely very quiet: a volume control that cannot reach zero is
+        // a broken one.
+        assert_eq!(config.volume_gain(0.0), 0.0, "the bottom is not silence");
+        assert_eq!(config.volume_db(0.0), None);
+        assert_eq!(config.volume_db(1.0), Some(0.0));
+    }
+
+    #[test]
+    fn every_step_is_the_same_size_in_decibels() {
+        // The point of the whole thing. Applied as an amplitude, five per
+        // cent of travel is 0.4 dB at the top and 6 dB at the bottom, so the
+        // same key does something different depending on where you are.
+        let config = Config::default();
+        let step = f64::from(config.volume_step) / 100.0;
+
+        let mut previous: Option<f64> = None;
+        let mut position = step;
+        while position <= 1.0 + f64::EPSILON {
+            let db = config.volume_db(position).expect("above silence");
+            if let Some(previous) = previous {
+                let moved = db - previous;
+                assert!(
+                    (moved - 3.0).abs() < 0.01,
+                    "a step at {position:.2} moved {moved:.3} dB instead of 3"
+                );
+            }
+            previous = Some(db);
+            position += step;
+        }
+    }
+
+    #[test]
+    fn a_position_and_an_amplitude_convert_back_and_forth() {
+        // What the migration of an old saved session rests on.
+        let config = Config::default();
+        for position in [0.0, 0.05, 0.25, 0.5, 0.75, 1.0] {
+            let round_trip = config.volume_position(config.volume_gain(position));
+            assert!(
+                (round_trip - position).abs() < 1e-9,
+                "{position} came back as {round_trip}"
+            );
+        }
+        // Half amplitude is 6 dB down, which is a tenth of the way down a
+        // sixty decibel control.
+        assert!((config.volume_position(0.5) - 0.8997).abs() < 0.001);
+    }
+
+    #[test]
+    fn an_absurd_range_is_brought_back_to_something_usable() {
+        let config = Config {
+            volume_range_db: 0.0,
+            ..Config::default()
+        };
+        // A range of nothing would make the control inert; it is clamped to
+        // the smallest span that still does something.
+        assert!(config.volume_gain(0.5) < 1.0);
+    }
 
     #[test]
     fn an_unset_equalizer_is_flat() {

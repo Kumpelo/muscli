@@ -57,11 +57,9 @@ pub struct ScanOptions {
     /// too many readers spend their time seeking rather than reading.
     pub threads: usize,
     pub cover_cache_bytes: u64,
-    /// Whether this pass covers every source.
-    ///
-    /// Only a full pass may conclude that a source has gone missing. A partial
-    /// scan that marked absent sources unavailable would take the whole library
-    /// offline because one folder changed.
+    /// Whether this pass covers every source. Only a full pass may conclude
+    /// that a source has gone missing; a partial one would take the whole
+    /// library offline because one folder changed.
     pub full: bool,
     /// File extensions to index. Configurable so a library can be narrowed
     /// back to one format.
@@ -86,13 +84,9 @@ const PARALLEL_THRESHOLD: usize = 64;
 /// Past this, extra readers contend for the same device more than they help.
 const MAX_SCAN_THREADS: usize = 8;
 
-/// Files claimed per trip to the shared cursor.
-///
-/// A compromise between two opposite pressures, both measured. Claiming one at
-/// a time makes the atomic cost more than the work on a rescan, where nearly
-/// every file is dismissed after a single stat. Claiming many unbalances a cold
-/// scan instead: neighbouring files share album art, so a large batch hands one
-/// thread every expensive decode while the others idle.
+/// Files claimed per trip to the shared cursor. Measured: one at a time makes
+/// the atomic cost more than the work on a rescan, while a large batch hands
+/// one thread every expensive cover decode and idles the rest.
 const CLAIM_BATCH: usize = 4;
 
 fn worker_count(configured: usize, work: usize) -> usize {
@@ -124,14 +118,11 @@ enum ScanOutcome {
     },
 }
 
-/// Work shared between scan threads.
+/// Work shared between scan threads: artwork decoded once per album rather
+/// than per track, a directory listed once, a cached cover validated once.
 ///
-/// Each cache turns a repeated expensive operation into a lookup: decoding the
-/// same embedded artwork once per album rather than once per track, listing a
-/// directory for an external cover once, and validating a cached cover once.
-/// The lock is only held around the lookup and the insert, never around the
-/// decode, so threads duplicating work on a race is possible and harmless -
-/// the same key always yields the same file.
+/// The lock is held around the lookup and the insert, never the decode, so a
+/// race duplicates work harmlessly -- the same key yields the same file.
 #[derive(Default)]
 struct ScanCaches {
     artwork: Mutex<HashMap<String, Option<PathBuf>>>,
@@ -395,15 +386,12 @@ fn read_candidates(
             .collect();
     }
 
-    // A shared cursor rather than fixed slices: per-file cost varies enormously
-    // (a track with 2 MB of embedded art against one with none), so static
-    // partitioning would leave threads idle.
+    // A shared cursor rather than fixed slices: per-file cost varies far too
+    // much (2 MB of embedded art against none) for static partitioning.
     //
-    // Claims are batched because the cheap case dominates the common one. On a
-    // rescan almost every file is dismissed by its fingerprint after one stat,
-    // and taking the cursor once per file made the atomic traffic cost more
-    // than the work itself - four threads came out slower than one. A small
-    // batch amortises that away while still balancing the expensive files.
+    // Claims are batched because on a rescan almost every file is dismissed
+    // after one stat, and taking the cursor per file made the atomic traffic
+    // cost more than the work -- four threads came out slower than one.
     let cursor = AtomicUsize::new(0);
     let mut collected: Vec<Vec<(usize, ScanOutcome)>> = thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
@@ -666,12 +654,11 @@ fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Resul
     Ok(cached)
 }
 
-/// Distinguishes concurrent writes of the same cover.
+/// A scratch name no other writer will use.
 ///
 /// Covers are keyed by artwork content, so two tracks sharing art race for the
-/// same cache entry. A shared scratch name would have them interleave writes
-/// into one file and produce a truncated image; the process id and counter make
-/// each attempt write somewhere of its own before the atomic rename.
+/// same entry. A shared scratch name would interleave their writes into one
+/// truncated image.
 fn scratch_name(key: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     format!(
@@ -691,11 +678,8 @@ fn cover_target(paths: &AppPaths, key: &str) -> PathBuf {
     paths.cover_cache_dir().join(format!("{key}.jpg"))
 }
 
-/// An already-cached cover for this key, in either format.
-///
-/// Caches written by older versions hold PNGs. They decode perfectly well, so
-/// there is nothing to migrate: they stay valid and the byte-budget pass
-/// retires them as new art arrives.
+/// An already-cached cover for this key, in either format. Older caches hold
+/// PNGs; they stay valid and the byte-budget pass retires them in time.
 fn existing_cover(paths: &AppPaths, key: &str) -> Option<PathBuf> {
     [
         cover_target(paths, key),

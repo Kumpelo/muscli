@@ -54,20 +54,84 @@ muscli library remove PATH
 muscli library list
 muscli library rescan
 muscli library prune
+muscli library forget-positions
 muscli library analyze-gain
 muscli library write-gain --yes
 muscli doctor
 muscli playlist export NAME playlist.m3u8
 muscli playlist import playlist.m3u8
 muscli summary --days 30
+muscli devices
 ```
 
 `muscli summary` reports what you have been listening to from the local index.
 Like everything else here, it sends nothing anywhere.
 
+## Audio backends
+
+Playback goes through mpv by default. Setting `audio_backend = "native"` in
+`config.toml` uses the built-in path instead: the file is decoded to floating
+point here, processed here, and written straight to the device, with
+`muscli devices` listing what is available and `audio_device` choosing one.
+
+The native path opens the device at the file's own sample rate whenever the
+device will take it, so nothing is converted that did not need converting.
+When it will not, the conversion is done here with a 256-tap sinc filter
+rather than left to a sound server: measured against a tone, 15 kHz survives
+44.1 to 48 kHz within 0.1 dB and the conversion's own images stay below
+-80 dB.
+
+What it does, in order, is ReplayGain, then the equaliser, then a look-ahead
+limiter that keeps an equaliser boost from clipping. The volume is applied at
+the device, so a change is heard on the next callback instead of behind the
+half second already buffered, and on an integer device the samples are
+dithered after it. With all of them neutral the samples that reach the device
+are the samples that were in the file, bit for bit; with all of them working
+the arithmetic adds distortion at -144.8 dB, which is below what a 24-bit
+recording can hold, and costs 2.6 ms of one core per second of stereo.
+
+`bit_perfect = true` hands the decoder's output over untouched, which means
+giving up the volume control, ReplayGain and the equaliser to do it; the
+settings view says so rather than leaving those controls looking as though
+they still work. What it promises is that muscli changes nothing. Whether the
+samples reach the converter unchanged is then up to the device: an exclusive
+or hardware device gets them as they are, while a shared one on PulseAudio,
+PipeWire or WASAPI Shared may still be mixed and resampled after muscli is
+done with them.
+
+Album sides that were mastered to run together do: the next track is opened
+early and joined to the one playing inside the same device stream, so the
+samples of the second follow the samples of the first with nothing between
+them. A track at a different sample rate cannot be joined that way and gets
+its own stream, which is a gap — there is no way around that.
+
+Seeking keeps the device open. The half second of audio already buffered is
+discarded by the output on its way through rather than by rebuilding the
+stream around it, so a seek costs the one buffer the device was filling
+instead of asking the driver for the card again.
+
+The native decoder does not read Opus, WavPack or Monkey's Audio, so files it
+cannot read are handed to mpv automatically, chosen by opening the file
+rather than by trusting its extension. mpv is started only if some file needs
+it.
+
 An eight-band equaliser is configured with `equalizer` in `config.toml`, as
-gains in decibels from low to high; all zero means the filter is not installed
-at all.
+gains in decibels from low to high — the bands are 60, 150, 400, 1000, 2400,
+6000, 12000 and 16000 Hz, each an octave wide:
+
+```toml
+equalizer = [4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 3.0]
+```
+
+There is no default: an unset or all-zero list means the filter is not
+installed at all, so nothing is coloured and nothing is heard. It works on
+both backends and is designed to sound the same on each.
+
+The volume control moves in decibels, not in amplitude, so every step is the
+same size to the ear: with the default 5% step, each press is 3 dB wherever
+you are in the range. `volume_range_db` sets how far down the bottom of the
+travel reaches, -60 dB by default; zero is true silence rather than merely
+very quiet. The status bar shows both the position and the decibels.
 
 FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
 indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and
@@ -111,6 +175,13 @@ Run `muscli remote volume up|down|set PERCENT` or
 commands exit silently and never change the system volume.
 
 ## Development
+
+Building on Linux needs the ALSA headers, which is what the native audio
+backend links against:
+
+```bash
+omarchy pkg add alsa-lib      # Debian and Ubuntu: apt install libasound2-dev
+```
 
 ```bash
 cargo fmt --all --check

@@ -1,15 +1,8 @@
 //! The settings view.
 //!
-//! Label, displayed value and behaviour used to be three arrays lined up by
-//! index, in three different files, with nothing keeping them in step:
-//! inserting a row anywhere but the end silently attached every later label to
-//! the wrong setting. They are keyed by `SettingId` now, so a row carries its
-//! own meaning and the order of the table is the only thing that decides
-//! position.
-//!
-//! The rows are grouped by what they affect — interface, then playback, then
-//! the library, then integrations, with the two rows that run something at the
-//! bottom.
+//! Label, displayed value and behaviour are keyed by [`SettingId`] rather than
+//! lined up by index across three tables, so inserting a row cannot silently
+//! attach the later labels to the wrong setting.
 
 use super::keys::SettingInput;
 use super::*;
@@ -21,6 +14,8 @@ use crate::t;
 pub(super) enum SettingId {
     Theme,
     Language,
+    AudioBackend,
+    BitPerfect,
     CompactDefault,
     ShowCovers,
     VolumeStep,
@@ -55,12 +50,14 @@ const fn band(index: usize) -> SettingRow {
     row(SettingId::EqualizerBand(index), "setting.equalizer_band")
 }
 
-pub(super) const SETTINGS: [SettingRow; 26] = [
+pub(super) const SETTINGS: [SettingRow; 28] = [
     row(SettingId::Theme, "setting.theme"),
     row(SettingId::Language, "setting.language"),
     row(SettingId::CompactDefault, "setting.compact_default"),
     row(SettingId::ShowCovers, "setting.show_covers"),
     row(SettingId::VolumeStep, "setting.volume_step"),
+    row(SettingId::AudioBackend, "setting.audio_backend"),
+    row(SettingId::BitPerfect, "setting.bit_perfect"),
     row(SettingId::Gapless, "setting.gapless"),
     row(SettingId::ReplayGain, "setting.replaygain"),
     row(SettingId::ReplayGainMode, "setting.replaygain_mode"),
@@ -83,6 +80,14 @@ pub(super) const SETTINGS: [SettingRow; 26] = [
     row(SettingId::Rescan, "setting.rescan"),
     row(SettingId::AnalyzeGain, "setting.analyze_gain"),
 ];
+
+impl App {
+    /// Whether the processing is being bypassed, so the rows that control it
+    /// can say so rather than looking as though they still work.
+    pub(super) fn bypassed(&self) -> bool {
+        self.config.bit_perfect && self.player.capabilities().bit_perfect
+    }
+}
 
 fn switch(enabled: bool) -> String {
     t!(if enabled {
@@ -169,6 +174,19 @@ impl App {
             SettingId::ShowCovers => switch(self.config.show_covers),
             SettingId::VolumeStep => t!("setting.value.percent", value = self.config.volume_step),
             SettingId::Gapless => switch(self.config.gapless),
+            SettingId::AudioBackend => t!(match self.config.audio_backend {
+                AudioBackendChoice::Mpv => "setting.value.mpv",
+                AudioBackendChoice::Native => "setting.value.native",
+            })
+            .to_owned(),
+            SettingId::BitPerfect => {
+                if !self.player.capabilities().bit_perfect {
+                    t!("setting.value.unavailable").to_owned()
+                } else {
+                    switch(self.config.bit_perfect)
+                }
+            }
+            SettingId::ReplayGain if self.bypassed() => t!("setting.value.bypassed").to_owned(),
             SettingId::ReplayGain => switch(self.config.replaygain_enabled),
             SettingId::ReplayGainMode => t!(match self.config.replaygain_mode {
                 ReplayGainMode::Album => "setting.value.album",
@@ -248,6 +266,26 @@ impl App {
                 }
             }
             SettingId::Gapless => self.config.gapless = !self.config.gapless,
+            SettingId::AudioBackend => {
+                self.config.audio_backend = match self.config.audio_backend {
+                    AudioBackendChoice::Mpv => AudioBackendChoice::Native,
+                    AudioBackendChoice::Native => AudioBackendChoice::Mpv,
+                };
+                self.config.save(&self.paths)?;
+                // Swapping the player under a track that is playing would
+                // mean closing a device and opening another mid-sentence.
+                self.status = t!("status.backend_on_restart").into();
+                self.dirty = true;
+                return Ok(());
+            }
+            SettingId::BitPerfect => {
+                if !self.player.capabilities().bit_perfect {
+                    self.status = t!("status.bit_perfect_unavailable").into();
+                    return Ok(());
+                }
+                self.config.bit_perfect = !self.config.bit_perfect;
+                self.player.set_bit_perfect(self.config.bit_perfect)?;
+            }
             SettingId::ReplayGain => {
                 self.config.replaygain_enabled = !self.config.replaygain_enabled
             }
@@ -271,14 +309,14 @@ impl App {
                 }
                 let gain = self.config.equalizer_gain(index) + if increase { 1.0 } else { -1.0 };
                 self.config.set_equalizer_gain(index, gain);
-                self.mpv.set_equalizer(&self.config.equalizer_bands())?;
+                self.player.set_equalizer(&self.config.equalizer_bands())?;
             }
             SettingId::ResetEqualizer => {
                 if horizontal {
                     return Ok(());
                 }
                 self.config.equalizer.clear();
-                self.mpv.set_equalizer(&self.config.equalizer_bands())?;
+                self.player.set_equalizer(&self.config.equalizer_bands())?;
             }
             SettingId::Resume => self.config.resume_enabled = !self.config.resume_enabled,
             SettingId::History => self.config.history_enabled = !self.config.history_enabled,

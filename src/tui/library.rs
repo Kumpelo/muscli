@@ -47,11 +47,9 @@ impl PendingScan {
     }
 }
 
-/// Everything the views read, as a pure function of the database.
-///
-/// Built away from `App` so it can be assembled on a worker thread: a rescan of
-/// a large library otherwise froze the render loop while every track was read
-/// and regrouped.
+/// Everything the views read, as a pure function of the database. Kept apart
+/// from `App` so a worker thread can build it while the render loop carries
+/// on.
 pub(super) struct LibrarySnapshot {
     tracks: Vec<Track>,
     stats: HashMap<String, TrackStats>,
@@ -147,11 +145,8 @@ impl LibrarySnapshot {
 }
 
 impl App {
-    /// Adopt a freshly built snapshot.
-    ///
-    /// Only the parts that depend on live application state - the search query,
-    /// the open detail views, the cursor - are recomputed here; everything else
-    /// was prepared off-thread.
+    /// Adopt a freshly built snapshot. Only what depends on live state -- the
+    /// query, the open detail views, the cursor -- is recomputed here.
     pub(super) fn install_snapshot(&mut self, snapshot: LibrarySnapshot) {
         self.tracks = snapshot.tracks;
         self.stats = snapshot.stats;

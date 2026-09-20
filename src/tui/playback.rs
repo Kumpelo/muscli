@@ -7,11 +7,9 @@
 use super::*;
 use crate::t;
 
-/// Listening accounting for the track currently loaded.
-///
-/// These seven values only make sense together: loading a track resets all of
-/// them, and a flush has to clear the pending delta and restart the flush clock
-/// in the same breath. As separate fields on App nothing said so.
+/// Listening accounting for the track currently loaded. Grouped because they
+/// move together: a load resets all of them, and a flush has to clear the
+/// pending delta and restart the clock in the same breath.
 pub(super) struct HistoryTally {
     /// The in-progress history row, when history recording is enabled.
     pub(super) entry: Option<i64>,
@@ -86,15 +84,15 @@ impl App {
         if !track.available || !track.path.exists() {
             self.status = t!("status.unavailable", title = track.title);
             self.playback.status = PlaybackStatus::Stopped;
-            self.mpv.stop()?;
+            self.player.stop()?;
             self.dirty = true;
             return Ok(());
         }
         self.apply_replay_gain(&track)?;
-        self.mpv.load(&track.path, position_ms)?;
+        self.player.load(&track.path, position_ms)?;
         // A replace wipes mpv's playlist, so whatever was queued behind is gone.
         self.prefetched = None;
-        self.mpv.pause(false)?;
+        self.player.pause(false)?;
         self.playback.status = PlaybackStatus::Playing;
         self.playback.position_ms = position_ms;
         self.playback.duration_ms = track.duration_ms;
@@ -118,7 +116,7 @@ impl App {
             None
         };
         let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
-        self.mpv.set_replay_gain(gain)
+        self.player.set_replay_gain(gain)
     }
 
     /// The queue index `next` would move to, without moving there.
@@ -174,13 +172,11 @@ impl App {
         self.dirty = true;
     }
 
-    /// Keep mpv's queued entry in step with whatever would play next.
+    /// Keep the backend's queued track in step with whatever plays next.
     ///
-    /// Driven from the event loop rather than from each mutation, because the
-    /// queue changes from a dozen places - reorder, remove, clear, enqueue,
-    /// load a saved queue, toggle shuffle or repeat - and missing one would
-    /// either lose the gapless transition or play the wrong track. Comparing
-    /// against what is already armed means no IPC when nothing moved.
+    /// Driven from the event loop rather than from each mutation, since the
+    /// queue changes from a dozen places. Comparing against what is already
+    /// armed means no work when nothing moved.
     pub(super) fn sync_prefetch(&mut self) -> Result<()> {
         let wanted = if self.config.gapless
             && self.repeat != RepeatMode::Track
@@ -195,11 +191,11 @@ impl App {
         }
         match wanted.and_then(|index| self.queue_track_path(index)) {
             Some(path) => {
-                self.mpv.set_prefetch(&path)?;
+                self.player.set_prefetch(Some(&path))?;
                 self.prefetched = wanted;
             }
             None => {
-                self.mpv.clear_prefetch()?;
+                self.player.set_prefetch(None)?;
                 self.prefetched = None;
             }
         }
@@ -231,7 +227,7 @@ impl App {
         }
         // Make the playing file entry 0 again, so the next one can be queued
         // behind it and the playlist never grows.
-        self.mpv.drop_finished_entry()?;
+        self.player.adopt_prefetch()?;
         self.status.clear();
         self.dirty = true;
         self.persist_playback()?;
@@ -245,7 +241,7 @@ impl App {
         }
         self.playback.status = PlaybackStatus::Stopped;
         self.status = t!("status.queue_exhausted").into();
-        self.mpv.stop()?;
+        self.player.stop()?;
         self.dirty = true;
         Ok(())
     }
@@ -311,14 +307,16 @@ impl App {
     }
 
     pub(super) fn handle_remote_action(&mut self, action: RemoteCommand) -> Result<()> {
-        let step = f64::from(self.config.volume_step.clamp(1, 20)) / 100.0;
+        // Stepped in whole percent rather than by adding to what is already
+        // there: adding 0.05 to an f64 nine times lands on 0.4499999999999999,
+        // which reads back as 44 rather than 45.
+        let step = i32::from(self.config.volume_step.clamp(1, 20));
+        let percent = (self.playback.volume * 100.0).round() as i32;
+        let stepped =
+            |by: i32| PlayerAction::SetVolume(f64::from((percent + by).clamp(0, 100)) / 100.0);
         match action {
-            RemoteCommand::VolumeUp => self.handle_action(PlayerAction::SetVolume(
-                (self.playback.volume + step).min(1.0),
-            ))?,
-            RemoteCommand::VolumeDown => self.handle_action(PlayerAction::SetVolume(
-                (self.playback.volume - step).max(0.0),
-            ))?,
+            RemoteCommand::VolumeUp => self.handle_action(stepped(step))?,
+            RemoteCommand::VolumeDown => self.handle_action(stepped(-step))?,
             RemoteCommand::VolumeSet(percent) => {
                 self.handle_action(PlayerAction::SetVolume(f64::from(percent.min(100)) / 100.0))?
             }
@@ -452,12 +450,12 @@ impl App {
                 {
                     self.next()?;
                 } else {
-                    self.mpv.pause(false)?;
+                    self.player.pause(false)?;
                     self.playback.status = PlaybackStatus::Playing;
                 }
             }
             PlayerAction::Pause => {
-                self.mpv.pause(true)?;
+                self.player.pause(true)?;
                 self.playback.status = PlaybackStatus::Paused;
                 self.flush_history(false)?;
             }
@@ -470,22 +468,23 @@ impl App {
                 {
                     self.next()?;
                 } else {
-                    self.mpv.toggle()?;
+                    self.player.toggle()?;
                 }
             }
             PlayerAction::Stop => {
-                self.mpv.stop()?;
+                self.player.stop()?;
                 self.playback.status = PlaybackStatus::Stopped;
             }
             PlayerAction::Next => self.next()?,
             PlayerAction::Previous => self.previous()?,
             PlayerAction::SeekRelative(offset_ms) => {
-                self.mpv.seek_relative(offset_ms as f64 / 1000.0)?
+                self.player.seek_relative(offset_ms as f64 / 1000.0)?
             }
-            PlayerAction::SeekAbsolute(position) => self.mpv.seek_absolute_ms(position)?,
+            PlayerAction::SeekAbsolute(position) => self.player.seek_absolute_ms(position)?,
             PlayerAction::SetVolume(volume) => {
                 self.playback.volume = volume.clamp(0.0, 1.0);
-                self.mpv.set_volume(self.playback.volume)?;
+                self.player
+                    .set_volume(self.config.volume_gain(self.playback.volume))?;
                 if self.playback.volume > 0.0 {
                     self.muted_volume = None;
                 }
@@ -497,7 +496,8 @@ impl App {
                 } else {
                     self.playback.volume = self.muted_volume.take().unwrap_or(1.0);
                 }
-                self.mpv.set_volume(self.playback.volume)?;
+                self.player
+                    .set_volume(self.config.volume_gain(self.playback.volume))?;
             }
             PlayerAction::SetShuffle(value) => self.shuffle = value,
             PlayerAction::SetRepeat(value) => self.repeat = value,
@@ -521,7 +521,10 @@ impl App {
                 self.playback.status = PlaybackStatus::Playing
             }
             PlayerEvent::Paused(false) => {}
-            PlayerEvent::Volume(value) => self.playback.volume = value,
+            // mpv reports an amplitude; the control is a position on a
+            // curve, and showing one as the other would make it jump every
+            // time mpv echoed back what it was told.
+            PlayerEvent::Volume(gain) => self.playback.volume = self.config.volume_position(gain),
             PlayerEvent::PlaylistPosition(position) => {
                 // Anything past the first entry means mpv rolled into the track
                 // queued behind this one.
@@ -541,6 +544,7 @@ impl App {
                 self.flush_history(true)?;
                 self.next()?
             }
+            PlayerEvent::Notice(message) => self.status = message,
             PlayerEvent::Error(error) => {
                 self.status = error;
                 self.next()?;
@@ -620,6 +624,7 @@ impl App {
             position_ms: self.playback.position_ms,
             volume: self.playback.volume,
             last_nonzero_volume: self.muted_volume,
+            volume_is_position: true,
             shuffle: self.shuffle,
             repeat: self.repeat,
         }
