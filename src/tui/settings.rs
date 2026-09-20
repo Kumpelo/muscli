@@ -316,14 +316,14 @@ impl App {
                 }
                 let gain = self.config.equalizer_gain(index) + if increase { 1.0 } else { -1.0 };
                 self.config.set_equalizer_gain(index, gain);
-                self.mpv.set_equalizer(&self.config.equalizer_bands())?;
+                self.player.set_equalizer(&self.config.equalizer_bands())?;
             }
             SettingId::ResetEqualizer => {
                 if horizontal {
                     return Ok(());
                 }
                 self.config.equalizer.clear();
-                self.mpv.set_equalizer(&self.config.equalizer_bands())?;
+                self.player.set_equalizer(&self.config.equalizer_bands())?;
             }
             SettingId::Resume => self.config.resume_enabled = !self.config.resume_enabled,
             SettingId::History => self.config.history_enabled = !self.config.history_enabled,
