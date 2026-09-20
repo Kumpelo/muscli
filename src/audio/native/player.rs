@@ -54,9 +54,10 @@ impl NativePlayer {
         settings: Settings,
         events: UnboundedSender<PlayerEvent>,
     ) -> Result<Self> {
+        let noise_shaping = settings.noise_shaping;
         Self::start_with(
             move |events| {
-                CpalOutput::open(device.as_deref(), events)
+                CpalOutput::open(device.as_deref(), noise_shaping, events)
                     .map(|output| Box::new(output) as Box<dyn Output>)
             },
             settings,

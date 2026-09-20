@@ -22,9 +22,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     audio::{
-        decode::Decoder,
+        decode::{Decoder, StreamSpec},
         dsp::{Chain, Settings, resample::Resampler},
-        native::sink::{Output, SinkState, Volume, choose_channels, choose_rate},
+        native::sink::{Output, OutputFormat, SinkState, Volume},
     },
     model::PlayerEvent,
     t,
@@ -111,6 +111,13 @@ struct Mark {
 
 struct Stream {
     decoder: Decoder,
+    /// What was opened, so the stream can be rebuilt where it stands when a
+    /// setting changes what the device negotiation would decide.
+    path: PathBuf,
+    /// The shape the stream was negotiated for. A container that changes rate
+    /// or channels part way through has to be renegotiated, not carried on
+    /// with, or it plays at the wrong speed.
+    source_spec: StreamSpec,
     chain: Chain,
     /// Present only when the device would not take the file's own rate.
     resampler: Option<Resampler>,
@@ -182,6 +189,9 @@ pub struct Engine {
     /// Read by the output on every callback; the engine keeps a copy to decide
     /// how long it may sleep.
     paused: Arc<AtomicBool>,
+    /// Set when the stream has to be rebuilt where it stands, because the
+    /// file turned out to be a different shape than it was opened as.
+    needs_reload: bool,
     /// Frames already announced as missed, so a shortfall is reported once.
     reported_starved: u64,
     last_starve_notice: Option<Instant>,
@@ -207,6 +217,7 @@ impl Engine {
             paused,
             stream: None,
             prefetch: None,
+            needs_reload: false,
             reported_starved: 0,
             last_starve_notice: None,
         }
@@ -292,10 +303,12 @@ impl Engine {
             }
             Command::BitPerfect(on) => {
                 self.settings.bit_perfect = on;
-                if let Some(stream) = &mut self.stream {
-                    stream.chain.set_bit_perfect(on);
-                }
-                Ok(())
+                // Rebuilt rather than switched: whether the samples can reach
+                // the device untouched was decided when the stream was opened,
+                // from the rate and channel count the device would take. A
+                // flag on the chain would leave a resampler running underneath
+                // a setting that says nothing is being converted.
+                self.reload_in_place()
             }
             Command::Stop => {
                 self.stop();
@@ -311,6 +324,14 @@ impl Engine {
     /// Fill whatever room the ring has and report where the device has got
     /// to. Returns whether anything happened.
     pub fn step(&mut self) -> bool {
+        if self.needs_reload {
+            self.needs_reload = false;
+            if let Err(error) = self.reload_in_place() {
+                let _ = self.events.send(PlayerEvent::Error(error.to_string()));
+            }
+            return true;
+        }
+
         let mut worked = self.fill();
         worked |= self.report();
         worked
@@ -324,12 +345,21 @@ impl Engine {
         let source_channels = spec.channels.max(1);
 
         // The device follows the file wherever it can; only when it will not
-        // is anything converted.
-        let channels = choose_channels(source_channels, &self.output.channel_counts())
-            .ok_or_else(|| anyhow!("the output cannot play {source_channels} channels"))?;
+        // is anything converted. One answer rather than three questions,
+        // because the rate, the channel count and the sample format constrain
+        // each other.
+        let format = self.output.negotiate(spec).ok_or_else(|| {
+            anyhow!(
+                "the output cannot play {} Hz in {source_channels} channels",
+                spec.sample_rate
+            )
+        })?;
+        let OutputFormat {
+            sample_rate,
+            channels,
+            ..
+        } = format;
         let duplicate = channels == 2 && source_channels == 1;
-        let sample_rate = choose_rate(spec.sample_rate, &self.output.rates(channels))
-            .ok_or_else(|| anyhow!("the output offers no sample rate at all"))?;
         // Converting the rate or the channel count is what bit-perfect exists
         // to rule out, so a device that will not match the file turns it off
         // for this track and says so.
@@ -371,6 +401,8 @@ impl Engine {
         self.reported_starved = 0;
         self.stream = Some(Stream {
             decoder,
+            path: path.to_path_buf(),
+            source_spec: spec,
             chain,
             resampler,
             duplicate,
@@ -395,11 +427,24 @@ impl Engine {
         // means every track and every seek begins with a dropout.
         self.fill();
 
-        if let Err(error) = self.output.start(sample_rate, channels, consumer, state) {
+        if let Err(error) = self.output.start(format, consumer, state) {
             self.stream = None;
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Open the current track again where it is playing, renegotiating the
+    /// device.
+    fn reload_in_place(&mut self) -> Result<()> {
+        let Some((path, position_ms)) = self
+            .stream
+            .as_ref()
+            .map(|stream| (stream.path.clone(), self.position.ms()))
+        else {
+            return Ok(());
+        };
+        self.load(&path, position_ms)
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<()> {
@@ -571,6 +616,14 @@ impl Engine {
                     continue;
                 }
             };
+
+            // A few containers change rate or channel count part way through.
+            // The device was negotiated for what the file said at the start,
+            // so carrying on would play the rest at the wrong speed.
+            if stream.decoder.spec() != stream.source_spec {
+                self.needs_reload = true;
+                break;
+            }
 
             if let Some(resampler) = &mut stream.resampler {
                 let mut converted = Vec::new();

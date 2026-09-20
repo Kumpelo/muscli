@@ -7,11 +7,12 @@
 //!    it was meant to match never reaches.
 //! 2. **Equaliser**.
 //! 3. **Limiter**, catching whatever the two pushed over full scale.
-//! 4. **Dither**, only when the device takes fixed point.
 //!
 //! The listener's volume is not here: this chain runs half a second ahead of
 //! what is heard, so a change made here would arrive with the buffer. It is
-//! applied by the output instead (see [`native::sink`](crate::audio::native::sink)).
+//! applied by the output instead (see [`native::sink`](crate::audio::native::sink)),
+//! and dither comes after it, in the output, because quantising and then
+//! scaling would undo it.
 //!
 //! With everything neutral the chain returns the decoded samples unchanged,
 //! bit for bit.
@@ -23,7 +24,6 @@ pub mod gain;
 pub mod limiter;
 pub mod resample;
 
-use dither::Dither;
 use equalizer::Equalizer;
 use gain::Gain;
 use limiter::Limiter;
@@ -40,8 +40,8 @@ pub struct Settings {
     pub equalizer: Vec<(u32, f32)>,
     /// Where the limiter holds peaks, at or below `0.0`.
     pub ceiling_db: f64,
-    /// Bit depth of the device, or `None` when it takes floats.
-    pub output_bits: Option<u32>,
+    /// Whether dither on an integer output is shaped away from the band the
+    /// ear is most sensitive in. Applied by the output, not by the chain.
     pub noise_shaping: bool,
     /// Bypass every stage. Gives up ReplayGain and the equaliser.
     pub bit_perfect: bool,
@@ -54,7 +54,6 @@ impl Default for Settings {
             replay_gain_db: None,
             equalizer: Vec::new(),
             ceiling_db: 0.0,
-            output_bits: None,
             noise_shaping: true,
             bit_perfect: false,
         }
@@ -67,7 +66,6 @@ pub struct Chain {
     replay_gain: Gain,
     equalizer: Equalizer,
     limiter: Limiter,
-    dither: Option<Dither>,
     bit_perfect: bool,
 }
 
@@ -84,9 +82,6 @@ impl Chain {
             replay_gain,
             equalizer: Equalizer::new(sample_rate, channels, &settings.equalizer),
             limiter: Limiter::new(sample_rate, channels, settings.ceiling_db),
-            dither: settings
-                .output_bits
-                .map(|bits| Dither::new(bits, channels, settings.noise_shaping)),
             bit_perfect: settings.bit_perfect,
         }
     }
@@ -132,9 +127,6 @@ impl Chain {
     pub fn reset(&mut self) {
         self.equalizer.reset();
         self.limiter.reset();
-        if let Some(dither) = &mut self.dither {
-            dither.reset();
-        }
     }
 
     /// Process a block of interleaved samples in place.
@@ -145,9 +137,6 @@ impl Chain {
         self.replay_gain.process(interleaved, self.channels);
         self.equalizer.process(interleaved);
         self.limiter.process(interleaved);
-        if let Some(dither) = &mut self.dither {
-            dither.process(interleaved, self.channels);
-        }
     }
 }
 

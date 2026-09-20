@@ -54,20 +54,6 @@ fn chain(criterion: &mut Criterion) {
         });
     });
 
-    group.bench_function("with dither", |bencher| {
-        let settings = Settings {
-            equalizer: bands(3.0),
-            output_bits: Some(24),
-            ..Settings::default()
-        };
-        let mut chain = Chain::new(RATE, 2, &settings);
-        bencher.iter(|| {
-            let mut block = audio.clone();
-            chain.process(black_box(&mut block));
-            black_box(block);
-        });
-    });
-
     group.finish();
 }
 

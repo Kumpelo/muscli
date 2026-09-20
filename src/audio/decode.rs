@@ -125,7 +125,8 @@ impl Decoder {
     }
 
     /// What the stream currently is. Read it after every block, not once:
-    /// some containers change rate or channel count mid-stream.
+    /// some containers change rate or channel count mid-stream, and the
+    /// engine renegotiates the device when they do.
     pub fn spec(&self) -> StreamSpec {
         self.spec
     }

@@ -12,7 +12,17 @@ use std::sync::{
 use anyhow::Result;
 use rtrb::Consumer;
 
-use crate::audio::dsp::gain::Gain;
+use crate::audio::{decode::StreamSpec, dsp::gain::Gain};
+
+/// What a device will actually take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputFormat {
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Bits a device sample carries, or `None` when it takes floats. What
+    /// dither has to be sized for.
+    pub bits: Option<u32>,
+}
 
 /// The listener's volume, shared between the interface and the output.
 ///
@@ -85,22 +95,18 @@ pub trait Output {
     /// A name for the interface and for `muscli doctor`.
     fn name(&self) -> String;
 
-    /// Whether this stream can be played without converting it.
-    fn supports(&self, sample_rate: u32, channels: u16) -> bool;
-
-    /// Rates this device will take, for a given channel count.
-    fn rates(&self, channels: u16) -> Vec<u32>;
-
-    /// Channel counts this device will take.
-    fn channel_counts(&self) -> Vec<u16>;
-
-    /// Start the output on a stream, pulling from `frames`.
+    /// Decide what this device will play `source` as.
     ///
-    /// Starting again replaces whatever was playing.
+    /// One answer rather than three questions: the rate, the channel count and
+    /// the sample format constrain each other, and asking about them
+    /// separately can pick a combination the device does not actually offer.
+    fn negotiate(&self, source: StreamSpec) -> Option<OutputFormat>;
+
+    /// Start the output, pulling from `frames`. Starting again replaces
+    /// whatever was playing.
     fn start(
         &mut self,
-        sample_rate: u32,
-        channels: u16,
+        format: OutputFormat,
         frames: Consumer<f32>,
         state: Arc<SinkState>,
     ) -> Result<()>;
@@ -220,25 +226,26 @@ impl Output for CaptureOutput {
         "capture".to_string()
     }
 
-    fn supports(&self, sample_rate: u32, channels: u16) -> bool {
-        self.rates.contains(&sample_rate) && self.channels.contains(&channels)
-    }
-
-    fn rates(&self, _channels: u16) -> Vec<u32> {
-        self.rates.clone()
-    }
-
-    fn channel_counts(&self) -> Vec<u16> {
-        self.channels.clone()
+    fn negotiate(&self, source: StreamSpec) -> Option<OutputFormat> {
+        let channels = choose_channels(source.channels.max(1), &self.channels)?;
+        Some(OutputFormat {
+            sample_rate: choose_rate(source.sample_rate, &self.rates)?,
+            channels,
+            bits: None,
+        })
     }
 
     fn start(
         &mut self,
-        sample_rate: u32,
-        channels: u16,
+        format: OutputFormat,
         frames: Consumer<f32>,
         state: Arc<SinkState>,
     ) -> Result<()> {
+        let OutputFormat {
+            sample_rate,
+            channels,
+            ..
+        } = format;
         let mut capture = self
             .shared
             .lock()
