@@ -702,10 +702,11 @@ impl Engine {
         while stream.marks.len() > 1 && stream.marks[1].output_frame <= played {
             stream.marks.pop_front();
         }
-        if let Some(mark) = stream.marks.front()
+                if let Some(mark) = stream.marks.front()
             && mark.output_frame <= played
         {
-            let elapsed = (played - mark.output_frame) * 1_000 / u64::from(stream.sample_rate);
+            let reached = stream.ends_at.map_or(played, |ends_at| played.min(ends_at));
+            let elapsed = (reached - mark.output_frame) * 1_000 / u64::from(stream.sample_rate);
             self.position.report(self.epoch, mark.source_ms + elapsed);
         }
 

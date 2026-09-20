@@ -29,6 +29,7 @@ pub struct Capabilities {
     pub gapless: bool,
     /// Whether samples can reach the device untouched.
     pub bit_perfect: bool,
+    pub rolls_into_prefetch: bool,
 }
 
 pub trait AudioBackend: Send {

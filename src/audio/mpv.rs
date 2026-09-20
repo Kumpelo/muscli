@@ -250,6 +250,7 @@ impl AudioBackend for MpvPlayer {
             // mpv decodes and converts on its own terms; there is no way to
             // ask it for the file's samples and nothing else.
             bit_perfect: false,
+            rolls_into_prefetch: true
         }
     }
 

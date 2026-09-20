@@ -183,6 +183,7 @@ impl AudioBackend for NativePlayer {
             volume: true,
             gapless: true,
             bit_perfect: true,
+            rolls_into_prefetch: false
         }
     }
 
