@@ -1,23 +1,16 @@
-//! A measuring bench for the audio path.
+//! Measurement used by the audio tests: tone generation, an FFT, distortion
+//! and frequency response.
 //!
-//! This exists before the processing it measures, on purpose. Claims about
-//! audio quality are cheap to make and easy to get wrong by ear, so every
-//! filter, every gain and every dither added later is checked here first: a
-//! frequency response that matches the design, and a distortion floor that
-//! stays where it belongs.
-//!
-//! Everything works on coherently sampled tones — a tone whose period divides
-//! the analysis length exactly. That is what lets the transform run without a
-//! window: the tone lands in a single bin and leaks nothing. A windowed
-//! measurement would put its own skirt at roughly -90 dB, above the distortion
-//! this bench is meant to catch.
+//! Most of it works on coherently sampled tones, whose period divides the
+//! analysis length exactly. That lets the transform run unwindowed, so the
+//! tone occupies one bin and leaks nothing; a window would put its own skirt
+//! near -90 dB and hide what is being looked for. [`windowed_amplitude`] is
+//! the exception, for signals that cannot be coherent.
 
 use std::f64::consts::TAU;
 
-/// A linear amplitude ratio in decibels.
-///
-/// Zero is clamped to the smallest positive `f64` rather than returning
-/// negative infinity, so an exactly silent measurement still compares.
+/// A linear amplitude ratio in decibels. Zero clamps to the smallest positive
+/// `f64` instead of returning negative infinity.
 pub fn db(ratio: f64) -> f64 {
     20.0 * ratio.abs().max(f64::MIN_POSITIVE).log10()
 }
@@ -43,19 +36,15 @@ pub fn tone_frequency(sample_rate: u32, frames: usize, cycles: usize) -> f64 {
     cycles as f64 * sample_rate as f64 / frames as f64
 }
 
-/// The cycle count whose frequency lands nearest `hz`.
-///
-/// The result is clamped away from zero and from Nyquist, both of which are
-/// degenerate: a tone at either is not a tone.
+/// The cycle count whose frequency lands nearest `hz`, clamped away from DC
+/// and Nyquist.
 pub fn cycles_for(sample_rate: u32, frames: usize, hz: f64) -> usize {
     let exact = hz * frames as f64 / sample_rate as f64;
     (exact.round() as usize).clamp(1, frames / 2 - 1)
 }
 
-/// A sine of exactly `cycles` periods over `frames` samples.
-///
-/// Because the period divides the buffer, the tone can be analysed without a
-/// window and repeats seamlessly if the buffer is played back to back.
+/// A sine of exactly `cycles` periods over `frames` samples, so it can be
+/// analysed without a window.
 pub fn tone(frames: usize, cycles: usize, amplitude: f64) -> Vec<f32> {
     (0..frames)
         .map(|n| {
@@ -65,11 +54,8 @@ pub fn tone(frames: usize, cycles: usize, amplitude: f64) -> Vec<f32> {
         .collect()
 }
 
-/// In-place radix-2 Cooley-Tukey transform.
-///
-/// Written out rather than pulled in: the bench needs one transform of a power
-/// of two, and a dependency that exists only for tests is a dependency the
-/// release binary still has to resolve.
+/// In-place radix-2 Cooley-Tukey transform. Written out to avoid a dependency
+/// that only the tests would use.
 pub fn fft(real: &mut [f64], imaginary: &mut [f64]) {
     let n = real.len();
     assert_eq!(n, imaginary.len(), "the two halves must be the same length");
@@ -119,11 +105,8 @@ pub fn fft(real: &mut [f64], imaginary: &mut [f64]) {
     }
 }
 
-/// The one-sided amplitude spectrum of a real signal.
-///
-/// Magnitudes are scaled so that a sine of amplitude `a` reads back as `a` in
-/// its own bin, which makes every number here directly comparable to the
-/// signal that produced it.
+/// The one-sided amplitude spectrum of a real signal, scaled so a sine of
+/// amplitude `a` reads back as `a` in its own bin.
 #[derive(Debug, Clone)]
 pub struct Spectrum {
     sample_rate: u32,
@@ -172,10 +155,8 @@ pub fn spectrum(signal: &[f32], sample_rate: u32) -> Spectrum {
     let mut imaginary = vec![0.0; frames];
     fft(&mut real, &mut imaginary);
 
-    // A real sine of amplitude a splits its energy between the positive and
-    // negative frequency bins, so the positive one holds a*n/2; doubling and
-    // dividing by n reads the amplitude straight off. DC and Nyquist have no
-    // mirror image and take the undoubled scaling.
+    // A real sine splits its energy between the positive and negative bins,
+    // so doubling reads the amplitude back. DC and Nyquist have no mirror.
     let magnitude = (0..=frames / 2)
         .map(|bin| {
             let size = real[bin].hypot(imaginary[bin]);
@@ -196,29 +177,22 @@ pub fn spectrum(signal: &[f32], sample_rate: u32) -> Spectrum {
 }
 
 /// Total harmonic distortion plus noise, in decibels below the fundamental.
+/// Everything that is not the fundamental counts, noise included.
 ///
-/// Everything that is not the fundamental counts: harmonics, intermodulation,
-/// quantisation noise, dither. That is the honest number — a THD figure that
-/// counts only the first few harmonics can hide a noise floor entirely.
-///
-/// The signal must be coherently sampled; use [`tone`] to generate one. DC is
-/// excluded because a filter with a gain at zero hertz is not distorting.
+/// The signal must be coherently sampled; use [`tone`]. DC is excluded.
 pub fn thd_n(signal: &[f32], sample_rate: u32, fundamental_hz: f64) -> f64 {
     let spectrum = spectrum(signal, sample_rate);
     let fundamental_bin = spectrum.bin_for(fundamental_hz);
     let magnitudes = spectrum.magnitudes();
 
-    // The residual is accumulated directly rather than as total minus
-    // fundamental. Subtracting two sums that differ by fifteen orders of
-    // magnitude cancels away every digit of the answer: the first version of
-    // this function reported a clean tone as -inf dB, which is not a
-    // measurement, it is the subtraction failing.
+    // Accumulated directly rather than as total minus fundamental: those two
+    // differ by fifteen orders of magnitude, and subtracting them cancels
+    // away every digit of the answer.
     let mut residual = 0.0;
     let mut fundamental = 0.0;
     for (bin, magnitude) in magnitudes.iter().enumerate().skip(1) {
         let power = magnitude * magnitude;
-        // One bin either side absorbs the rounding in bin_for; with coherent
-        // sampling the neighbours are empty anyway.
+        // One bin either side absorbs the rounding in bin_for.
         if bin.abs_diff(fundamental_bin) <= 1 {
             fundamental += power;
         } else {
@@ -232,17 +206,12 @@ pub fn thd_n(signal: &[f32], sample_rate: u32, fundamental_hz: f64) -> f64 {
     10.0 * (residual / fundamental).log10()
 }
 
-/// How far the harmonics of `fundamental_hz` stand above the noise beside them.
+/// How far the harmonics of `fundamental_hz` stand above the noise beside
+/// them. Zero means there are none: the harmonic bins hold no more than their
+/// neighbours.
 ///
-/// Zero decibels means the harmonic bins hold no more than their neighbours,
-/// which is to say there are no harmonics -- only noise. That is the question
-/// dither is an answer to, and comparing each harmonic against its own
-/// surroundings rather than against the fundamental keeps the answer
-/// independent of how loud the noise happens to be.
-///
-/// Infinity is a real result: a tone whose period divides the buffer exactly,
-/// quantised without dither, puts every last bit of its error on harmonics
-/// and leaves the bins between them empty.
+/// Infinity is a real result, from a signal whose error lands entirely on
+/// harmonics and leaves the bins between them empty.
 pub fn harmonics_above_noise(signal: &[f32], sample_rate: u32, fundamental_hz: f64) -> f64 {
     /// Bins either side of a harmonic, skipping the few it might smear into.
     const REFERENCE: std::ops::Range<usize> = 8..40;
@@ -287,10 +256,8 @@ pub fn harmonics_above_noise(signal: &[f32], sample_rate: u32, fundamental_hz: f
     10.0 * (harmonic / noise).log10()
 }
 
-/// The power between two frequencies, as an amplitude in decibels.
-///
-/// Used to ask where a noise floor sits rather than how big it is overall,
-/// which is the only way to tell a noise shaper apart from a noise generator.
+/// The power between two frequencies, as an amplitude in decibels. Says where
+/// a noise floor sits rather than how big it is overall.
 pub fn band_level(signal: &[f32], sample_rate: u32, low: f64, high: f64) -> f64 {
     let spectrum = spectrum(signal, sample_rate);
     let first = spectrum.bin_for(low).max(1);
@@ -302,17 +269,12 @@ pub fn band_level(signal: &[f32], sample_rate: u32, low: f64, high: f64) -> f64 
     db(power.sqrt())
 }
 
-/// Amplitude in a frequency band, measured through a window.
+/// Amplitude in a frequency band, measured through a Blackman-Harris window
+/// so a signal that is not coherently sampled still reads correctly. Its
+/// sidelobes put a floor at about -92 dB.
 ///
-/// [`spectrum`] needs a coherently sampled signal; anything that has been
-/// through a sample-rate converter is not one, and analysing it unwindowed
-/// spreads the tone across every bin. A four-term Blackman-Harris window
-/// confines it again, at the cost of a floor around -92 dB where its
-/// sidelobes sit.
-///
-/// The number carries the window's gain, so it is not a level. What it is for
-/// is comparing two measurements made the same way -- the same tone before
-/// and after a converter, or a tone against the alias beside it.
+/// The result carries the window's gain, so it is a number to compare against
+/// another taken the same way, not an absolute level.
 pub fn windowed_amplitude(signal: &[f32], sample_rate: u32, low: f64, high: f64) -> f64 {
     const BLACKMAN_HARRIS: [f64; 4] = [0.35875, -0.48829, 0.14128, -0.01168];
 

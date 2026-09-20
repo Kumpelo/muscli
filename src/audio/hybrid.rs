@@ -1,14 +1,11 @@
-//! The native path where it works, mpv where it does not.
+//! Routes each track to the native path or to mpv.
 //!
-//! The native decoder reads FLAC, MP3, AAC, ALAC, Vorbis, WAV and AIFF. It
-//! does not read Opus, WavPack or Monkey's Audio, and pretending otherwise
-//! would mean a library that mostly plays. mpv reads all of them, so the two
-//! sit behind one interface and each track goes to whichever can play it.
+//! The native decoder reads FLAC, MP3, AAC, ALAC, Vorbis, WAV and AIFF but not
+//! Opus, WavPack or Monkey's Audio; mpv reads all of them.
 //!
-//! Which one that is comes from opening the file, not from its extension: an
-//! Opus stream inside an `.ogg` container looks exactly like a Vorbis one
-//! from the outside, and only the decoder knows the difference. The extra
-//! open costs about a millisecond per track change.
+//! The choice comes from opening the file, not from its extension: an Opus
+//! stream inside an `.ogg` container looks like a Vorbis one from outside.
+//! The extra open costs about a millisecond per track change.
 
 use std::path::{Path, PathBuf};
 
@@ -158,10 +155,8 @@ impl AudioBackend for HybridPlayer {
     }
 
     fn set_prefetch(&mut self, path: Option<&Path>) -> Result<()> {
-        // A track that would play on the other backend cannot be joined to
-        // this one, so nothing is armed and the ordinary end of file moves
-        // the queue on. Losing the seamless join between, say, a FLAC and an
-        // Opus is not a loss: they were never one recording.
+        // A track bound for the other backend cannot be joined to this one,
+        // so nothing is armed and the ordinary end of file moves the queue on.
         let armed = path.filter(|path| Self::native_can_play(path) != self.on_mpv);
         self.active().set_prefetch(armed)
     }

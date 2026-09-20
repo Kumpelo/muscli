@@ -1,16 +1,10 @@
-//! Sample-rate conversion, for when the device will not take the file's rate.
-//!
-//! The first answer to a rate mismatch is not to have one: the device is
-//! opened at the file's rate wherever it can be, and this never runs. When it
-//! cannot -- a card fixed at 48 kHz, a shared server that will not budge --
-//! the alternative to converting here is letting something else do it, and
-//! what usually does is a desktop sound server converting with a filter
+//! Sample-rate conversion, used only when the device will not take the file's
+//! own rate. The alternative is letting a sound server do it with a filter
 //! chosen for latency rather than for the top octave.
 //!
-//! Conversion happens before the rest of the chain, so the equaliser, the
-//! limiter and the dither all run at the rate the device will actually play.
-//! In particular the limiter then sees the overshoot that conversion itself
-//! can produce, which it would not if it ran first.
+//! Runs before the rest of the chain, so the equaliser, limiter and dither all
+//! work at the rate the device will play -- and the limiter sees the overshoot
+//! that conversion itself produces.
 
 use anyhow::{Context, Result, anyhow};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
@@ -22,12 +16,8 @@ use rubato::{
 /// Input frames handed to the converter at a time.
 const CHUNK: usize = 1024;
 
-/// Length of the interpolation filter.
-///
-/// 256 taps is where rubato's own guidance starts. `benches/audio.rs` puts
-/// the cost at 6.7 ms per second of stereo -- under one per cent of a core --
-/// and only tracks the device will not take at their own rate pay it at all.
-/// Shorter filters buy back time nobody needs at the price of the top octave.
+/// Length of the interpolation filter. `benches/audio.rs` puts 256 taps at
+/// 6.7 ms per second of stereo; shorter filters cost the top octave.
 const TAPS: usize = 256;
 
 pub struct Resampler {
@@ -67,10 +57,8 @@ impl Resampler {
         })
     }
 
-    /// Convert interleaved input, appending interleaved output.
-    ///
-    /// Input that does not fill a chunk is held until the rest arrives, so a
-    /// caller may hand over blocks of any size.
+    /// Convert interleaved input, appending interleaved output. Input that
+    /// does not fill a chunk is held, so blocks may be any size.
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<()> {
         self.pending.extend_from_slice(input);
 

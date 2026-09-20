@@ -1,10 +1,8 @@
-//! The real device.
+//! The cpal output.
 //!
-//! Nothing in here can be exercised by a test in this repository -- there is
-//! no sound card in a build container -- which is exactly why it contains as
-//! little logic as possible. Deciding what to do with a short ring lives in
-//! [`super::sink::fill`], which the capture output uses too; what is left here
-//! is opening a device and copying.
+//! Untestable here, since a build container has no sound card, so it holds as
+//! little logic as possible: what to do with a short ring lives in
+//! [`super::sink::fill`], which the capture output shares.
 
 use std::sync::{Arc, atomic::Ordering};
 
@@ -25,21 +23,16 @@ use crate::{
     model::PlayerEvent,
 };
 
-/// The rates worth asking a device about.
-///
-/// A device advertises ranges, not a list, and a range says nothing about
-/// what is actually useful. These are the rates music is distributed at,
-/// which is the only list that matters here.
+/// The rates worth asking a device about. cpal advertises ranges, so these
+/// are the points within them that music is actually distributed at.
 const KNOWN_RATES: [u32; 12] = [
     8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000,
     384_000,
 ];
 
-/// Scratch space for formats that are not `f32`, in frames.
-///
-/// Sized once, when the stream opens, because the callback may not allocate.
-/// A device asking for more than a second in one call does not exist; if one
-/// did, it would get silence and a starvation count rather than a malloc.
+/// Scratch space for formats that are not `f32`, in frames. Sized once at
+/// open, because the callback may not allocate; a device asking for more than
+/// this gets silence rather than a reallocation.
 const SCRATCH_FRAMES: usize = 48_000;
 
 pub struct CpalOutput {
@@ -89,11 +82,9 @@ impl CpalOutput {
             .collect())
     }
 
-    /// The best format this device offers for a stream.
-    ///
-    /// `f32` first: it is what the chain already holds, so taking it means no
-    /// conversion and no rounding at all. Failing that, the widest integer,
-    /// because the wider the destination the less the rounding costs.
+    /// The best format this device offers for a stream: `f32` first, since
+    /// that is what the chain holds and needs no conversion, then the widest
+    /// integer.
     fn pick(&self, sample_rate: u32, channels: u16) -> Option<SampleFormat> {
         let mut best: Option<SampleFormat> = None;
         for config in &self.configs {

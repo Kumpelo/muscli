@@ -42,10 +42,9 @@ pub struct NativePlayer {
 impl NativePlayer {
     /// Open a device and start the engine that feeds it.
     ///
-    /// The device is opened on the engine's own thread, because a platform
-    /// stream handle frequently may not be moved to another one. The result of
-    /// opening it comes back here, so a missing or busy device is an error
-    /// from this call rather than a player that silently never plays.
+    /// The device is opened on the engine's own thread, since a platform
+    /// stream handle often may not move between threads, but the result comes
+    /// back here so a busy device is an error rather than silence.
     pub fn start(
         device: Option<String>,
         settings: Settings,
@@ -97,11 +96,9 @@ impl NativePlayer {
                 drop(opened);
 
                 loop {
-                    // The engine says how long it can be left alone: a few
-                    // milliseconds while audio is draining out of the ring,
-                    // and not at all when there is nothing playing, so an
-                    // idle muscli is an idle thread rather than one waking
-                    // two hundred times a second to find the same nothing.
+                    // The engine says how long it can be left alone, so a
+                    // player with nothing to play blocks instead of waking
+                    // two hundred times a second.
                     let waited = match engine.idle_timeout() {
                         Some(timeout) => inbox.recv_timeout(timeout),
                         None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),

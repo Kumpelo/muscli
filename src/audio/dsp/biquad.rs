@@ -2,19 +2,12 @@
 
 use std::f64::consts::{LN_2, TAU};
 
-/// A biquad in Direct Form II transposed.
+/// A biquad in Direct Form II transposed: two state words, and better error
+/// behaviour at low frequencies than direct form I.
 ///
-/// Transposed direct form II is the form to use in floating point: it keeps
-/// only two state words, and its error behaviour at low frequencies -- where a
-/// bass band's poles sit very close to the unit circle -- is markedly better
-/// than direct form I.
-///
-/// The state is `f64` even though the audio is `f32`, because the recursion
-/// feeds its own rounding error back. The test at the bottom of this file
-/// measures what that is worth: a 60 Hz band leaves -152.8 dB of distortion
-/// with `f64` state and -82.6 dB with `f32`, and -82.6 dB of hiss under a
-/// bass lift is a thing a listener can hear. It costs about a quarter of one
-/// per cent of a core to run all eight bands in stereo.
+/// The state is `f64` although the audio is `f32`, because the recursion feeds
+/// its rounding error back. The `precision` test measures the difference: at
+/// 60 Hz, -152.8 dB against -82.6 dB.
 #[derive(Debug, Clone, Copy)]
 pub struct Biquad {
     b0: f64,
@@ -46,13 +39,11 @@ impl Biquad {
         }
     }
 
-    /// A peaking band: `gain_db` at `frequency`, tapering away either side over
-    /// `bandwidth` octaves.
+    /// A peaking band: `gain_db` at `frequency`, tapering over `bandwidth`
+    /// octaves. Audio EQ Cookbook forms.
     ///
-    /// These are the Audio EQ Cookbook forms. The width is given in octaves
-    /// rather than as a Q so that a fixed set of bands sounds evenly spaced:
-    /// an octave is an octave whether it sits at 60 Hz or at 12 kHz, while a
-    /// constant Q would make the low bands far narrower than the high ones.
+    /// The width is in octaves rather than Q so a fixed set of bands is evenly
+    /// spaced; a constant Q would make the low bands far narrower.
     pub fn peaking(sample_rate: u32, frequency: f64, gain_db: f64, bandwidth: f64) -> Self {
         // A band whose centre approaches Nyquist has nowhere to taper into,
         // and the width term divides by sin(w0), which goes to zero there.
@@ -92,11 +83,9 @@ impl Biquad {
         self.s2 = 0.0;
     }
 
-    /// The gain this section applies at `hz`, in decibels.
-    ///
-    /// This is the algebra rather than a measurement, which is the point: the
-    /// tests compare it against what the bench measures coming out of
-    /// [`process`](Self::process), so a mistake in either one shows up.
+    /// The gain this section applies at `hz`, in decibels, from the transfer
+    /// function. The tests compare it against what [`process`](Self::process)
+    /// actually does.
     pub fn gain_db_at(&self, sample_rate: u32, hz: f64) -> f64 {
         let w = TAU * hz / sample_rate as f64;
         let (sin1, cos1) = w.sin_cos();
@@ -179,10 +168,8 @@ mod tests {
 
     #[test]
     fn the_bandwidth_is_measured_where_the_cookbook_says() {
-        // The width is the span between the half-gain points, so a one-octave
-        // band reaches half its gain half an octave either side of centre --
-        // not a full octave, which is the mistake that makes a fixed band set
-        // sound narrower than it reads.
+        // The width spans the half-gain points, so a one-octave band reaches
+        // half its gain half an octave either side of centre, not a full one.
         let design = Biquad::peaking(RATE, 1_000.0, 12.0, 1.0);
         for edge in [
             1_000.0 / std::f64::consts::SQRT_2,
@@ -217,11 +204,8 @@ mod precision {
     const RATE: u32 = 48_000;
     const FRAMES: usize = 1 << 16;
 
-    /// The same section with its state kept in `f32`.
-    ///
-    /// Not used by anything that ships. It is here so the choice of `f64` is
-    /// a measurement rather than an opinion, and so that anyone who decides
-    /// the state looks wasteful finds out what it costs before changing it.
+    /// The same section with `f32` state. Not used in the player; it is here
+    /// so the test can show what the wider state is worth.
     fn narrow(design: Biquad, signal: &mut [f32]) {
         let (b0, b1, b2, a1, a2) = (
             design.b0 as f32,

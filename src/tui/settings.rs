@@ -1,15 +1,8 @@
 //! The settings view.
 //!
-//! Label, displayed value and behaviour used to be three arrays lined up by
-//! index, in three different files, with nothing keeping them in step:
-//! inserting a row anywhere but the end silently attached every later label to
-//! the wrong setting. They are keyed by `SettingId` now, so a row carries its
-//! own meaning and the order of the table is the only thing that decides
-//! position.
-//!
-//! The rows are grouped by what they affect — interface, then playback, then
-//! the library, then integrations, with the two rows that run something at the
-//! bottom.
+//! Label, displayed value and behaviour are keyed by [`SettingId`] rather than
+//! lined up by index across three tables, so inserting a row cannot silently
+//! attach the later labels to the wrong setting.
 
 use super::keys::SettingInput;
 use super::*;

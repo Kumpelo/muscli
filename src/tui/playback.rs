@@ -7,11 +7,9 @@
 use super::*;
 use crate::t;
 
-/// Listening accounting for the track currently loaded.
-///
-/// These seven values only make sense together: loading a track resets all of
-/// them, and a flush has to clear the pending delta and restart the flush clock
-/// in the same breath. As separate fields on App nothing said so.
+/// Listening accounting for the track currently loaded. Grouped because they
+/// move together: a load resets all of them, and a flush has to clear the
+/// pending delta and restart the clock in the same breath.
 pub(super) struct HistoryTally {
     /// The in-progress history row, when history recording is enabled.
     pub(super) entry: Option<i64>,
@@ -174,13 +172,11 @@ impl App {
         self.dirty = true;
     }
 
-    /// Keep mpv's queued entry in step with whatever would play next.
+    /// Keep the backend's queued track in step with whatever plays next.
     ///
-    /// Driven from the event loop rather than from each mutation, because the
-    /// queue changes from a dozen places - reorder, remove, clear, enqueue,
-    /// load a saved queue, toggle shuffle or repeat - and missing one would
-    /// either lose the gapless transition or play the wrong track. Comparing
-    /// against what is already armed means no IPC when nothing moved.
+    /// Driven from the event loop rather than from each mutation, since the
+    /// queue changes from a dozen places. Comparing against what is already
+    /// armed means no work when nothing moved.
     pub(super) fn sync_prefetch(&mut self) -> Result<()> {
         let wanted = if self.config.gapless
             && self.repeat != RepeatMode::Track
@@ -311,11 +307,9 @@ impl App {
     }
 
     pub(super) fn handle_remote_action(&mut self, action: RemoteCommand) -> Result<()> {
-        // Stepped in whole percent rather than by adding a fraction to what
-        // is already there. Adding 0.05 to an f64 nine times lands on
-        // 0.4499999999999999, which reads back as 44 rather than 45, and from
-        // then on every step looks like a different size than the one asked
-        // for.
+        // Stepped in whole percent rather than by adding to what is already
+        // there: adding 0.05 to an f64 nine times lands on 0.4499999999999999,
+        // which reads back as 44 rather than 45.
         let step = i32::from(self.config.volume_step.clamp(1, 20));
         let percent = (self.playback.volume * 100.0).round() as i32;
         let stepped =

@@ -1,8 +1,5 @@
-//! What the native path costs, in time rather than in quality.
-//!
-//! The quality claims are checked by the tests; this is the other half of the
-//! question. A chain that is transparent and takes a core to run is not a
-//! chain anyone can use on a laptop.
+//! What the native path costs in time. The quality side is covered by the
+//! tests in `src/audio`.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use muscli::{

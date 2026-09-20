@@ -403,12 +403,8 @@ pub(super) struct HelpEntry {
     pub(super) scope: Option<&'static str>,
 }
 
-/// The help screen, derived from the bindings themselves.
-///
-/// Written by hand it drifted: `c`, `e`, Home/End and Ctrl+C were bound but
-/// undocumented, and the smart-playlist editor hints listed two keys fewer than
-/// the editor implements. Deriving it means a binding cannot be added without
-/// appearing here.
+/// The help screen, derived from [`BINDINGS`] so a binding cannot be added
+/// without appearing in it.
 pub(super) fn help_sections(bindings: &[Binding]) -> Vec<(&'static str, Vec<HelpEntry>)> {
     Category::ORDER
         .into_iter()

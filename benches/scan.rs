@@ -1,12 +1,8 @@
-//! Library scan benchmarks.
-//!
-//! The scan is the slowest operation muscli performs and the one under active
-//! optimisation, so it needs a repeatable measurement. Two cases matter and
-//! behave very differently:
+//! Library scan benchmarks. Two cases behave very differently:
 //!
 //! * a cold scan, where every file has its tags parsed, and
-//! * a warm rescan, where nearly every file should be dismissed by the
-//!   fingerprint fast path.
+//! * a warm rescan, where nearly every file is dismissed by the fingerprint
+//!   fast path.
 
 // The fixture generator lives with the integration tests; share it rather than
 // keeping a second copy in sync.

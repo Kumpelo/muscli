@@ -1,18 +1,12 @@
-//! The eight-band equaliser.
-//!
-//! The bands are fixed, at the frequencies `config::EQUALIZER_BANDS` lists, and
-//! each is one octave wide. That is the same shape the mpv path asks lavfi
-//! for, so moving a slider sounds the same whichever backend is playing --
-//! which is the only way the two can be compared at all.
+//! The eight-band equaliser: fixed centres from `config::EQUALIZER_BANDS`,
+//! one octave wide each. The same shape the mpv path asks lavfi for, so both
+//! backends sound alike.
 
 use super::biquad::Biquad;
 
-/// Width of every band, in octaves.
-///
-/// One octave with eight bands leaves gaps between the centres rather than
-/// overlapping them heavily. That is deliberate: overlapping bands interact,
-/// and two adjacent sliders at +6 dB would give far more than +6 dB between
-/// them.
+/// Width of every band, in octaves. Narrow enough that eight bands do not
+/// overlap much; heavily overlapping bands would interact, and two adjacent
+/// ones at +6 dB would give far more than +6 dB between them.
 const BANDWIDTH: f64 = 1.0;
 
 /// Below this the band is dropped rather than built, so a slider parked at
@@ -29,10 +23,8 @@ pub struct Equalizer {
 }
 
 impl Equalizer {
-    /// Build the active bands for a stream.
-    ///
-    /// `bands` is (centre frequency, gain in decibels); anything at zero is
-    /// left out entirely.
+    /// Build the active bands for a stream, as (centre frequency, gain in
+    /// decibels). A band at zero is left out entirely.
     pub fn new(sample_rate: u32, channels: usize, bands: &[(u32, f32)]) -> Self {
         let wanted: Vec<&(u32, f32)> = bands
             .iter()

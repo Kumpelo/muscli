@@ -209,10 +209,8 @@ fn the_position_follows_the_device_and_not_the_decoder() {
 
 #[test]
 fn a_seek_keeps_the_device_and_costs_one_buffer() {
-    // The ring holds half a second belonging to where the track used to be.
-    // Rebuilding it would mean asking the driver for the device again, which
-    // is milliseconds at best and a refusal at worst. Instead the output
-    // throws away what it holds, which costs the one buffer it was filling.
+    // The output discards what it holds instead of the stream being rebuilt
+    // around a fresh ring, so the seek costs the one buffer it was filling.
     let mut harness = harness(3_000, &[RATE]);
     harness.engine.handle(Command::Load {
         path: harness.path.clone(),

@@ -1,15 +1,8 @@
-//! Dither, for the paths that end in fixed point.
+//! Dither, used only when the output is fixed point.
 //!
-//! Rounding a float to an integer without dither makes the rounding error a
-//! function of the signal, and an error that tracks the signal is distortion,
-//! not noise -- audible on a fade-out long before it is audible anywhere else.
-//! Adding a small amount of noise before rounding breaks the correlation: the
-//! error becomes ordinary hiss, and the tone survives below the level of a
-//! single step. Noise shaping then moves most of that hiss to where the ear is
-//! least sensitive.
-//!
-//! None of this applies to a float output, which is why the chain only uses
-//! this when it is asked for a fixed-point one.
+//! Rounding to an integer without it makes the error a function of the signal,
+//! which is distortion rather than noise. Adding noise first breaks that
+//! correlation; noise shaping then moves the hiss out of the audible band.
 
 /// Error-feedback coefficients giving a noise transfer function of
 /// `(1 - z^-1)^2`: a double zero at DC, so the noise is pulled down across the
@@ -61,19 +54,16 @@ impl Dither {
         (value >> 11) as f64 / (1u64 << 53) as f64 - 0.5
     }
 
-    /// Dither and quantise a block of interleaved samples in place.
-    ///
-    /// The result is still `f32`, but every value now lands exactly on one of
-    /// the output's steps, so the conversion that follows cannot round again.
+    /// Dither and quantise a block in place. Still `f32`, but every value now
+    /// sits exactly on an output step, so the conversion cannot round again.
     pub fn process(&mut self, interleaved: &mut [f32], channels: usize) {
         let channels = channels.max(1);
         for frame in interleaved.chunks_mut(channels) {
             for (channel, sample) in frame.iter_mut().enumerate() {
-                // Two independent uniforms summed give a triangular
-                // distribution two steps wide, which is the one that makes
-                // both the mean and the variance of the error independent of
-                // the signal. One uniform leaves the variance modulated, which
-                // is audible as breathing on quiet passages.
+                // Two uniforms summed give a triangular distribution, which
+                // makes both the mean and the variance of the error
+                // independent of the signal. One uniform leaves the variance
+                // modulated, audible as breathing on quiet passages.
                 let noise = (self.uniform() + self.uniform()) * self.step;
 
                 let history = &mut self.error[channel];
@@ -107,11 +97,9 @@ mod tests {
     const RATE: u32 = 48_000;
     const FRAMES: usize = 1 << 15;
     const BITS: u32 = 8;
-    /// 750 Hz at 48 kHz, and 64 samples to the cycle. A whole number of
-    /// samples per cycle makes the quantisation error exactly periodic, so
-    /// undithered it lands entirely on harmonics and the bins between them
-    /// are empty -- which is what makes the difference dither makes visible
-    /// rather than merely numerical.
+    /// 750 Hz at 48 kHz: 64 samples to the cycle. A whole number of samples
+    /// per cycle makes the quantisation error exactly periodic, so undithered
+    /// it lands entirely on harmonics.
     const CYCLES: usize = 512;
 
     fn quantised(dither: Option<&mut Dither>) -> Vec<f32> {

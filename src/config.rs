@@ -48,15 +48,9 @@ pub struct Config {
     /// How far below unity the volume control reaches at the bottom of its
     /// travel, in decibels.
     ///
-    /// The control moves in decibels rather than in amplitude, so a step is
-    /// the same size wherever it is taken: with the default 5% step, every
-    /// press is three decibels. Using the position straight as an amplitude
-    /// makes the top of the range nearly inert -- 5% of travel is 0.4 dB
-    /// there -- and the bottom violent, where the same 5% is 6 dB.
-    ///
-    /// -60 rather than the -80 a mixing desk offers: music is already
-    /// inaudible at -60, and the extra twenty decibels would spend a third of
-    /// the travel on differences nobody can hear.
+    /// The control moves in decibels, so every step is the same size to the
+    /// ear: three decibels a press at the default 5%. -60 rather than a mixing
+    /// desk's -80, since music is already inaudible at -60.
     pub volume_range_db: f64,
     /// Worker threads for library scanning. `0` derives a value from the
     /// machine, capped so a spinning disk is not thrashed by seeks.
@@ -81,11 +75,8 @@ pub struct Config {
     /// Output device for the native backend, by the name `muscli devices`
     /// prints. Empty means the system default.
     pub audio_device: String,
-    /// Hand the decoder's samples to the device untouched.
-    ///
-    /// Nothing is applied on the way: no volume, no ReplayGain, no equaliser.
-    /// That is the whole point of it, and the interface says so rather than
-    /// leaving the controls looking as though they still work.
+    /// Hand the decoder's samples to the device untouched, giving up the
+    /// volume, ReplayGain and the equaliser. The settings view says so.
     pub bit_perfect: bool,
 }
 

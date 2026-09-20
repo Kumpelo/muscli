@@ -30,10 +30,9 @@ const BLOCK: usize = 4096;
 
 /// Encode 16-bit mono samples as a FLAC stream.
 ///
-/// Every subframe is VERBATIM (raw samples), which makes the file larger than a
-/// real encoder would but keeps the writer small and, more importantly, exactly
-/// byte-aligned: the frame header, the subframe header and the samples all land
-/// on byte boundaries, so no bit-level writer is needed.
+/// Every subframe is VERBATIM, so the file is larger than a real encoder would
+/// make it but everything lands on a byte boundary and no bit writer is
+/// needed.
 pub fn flac_bytes(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
     assert!(
         !samples.is_empty(),
@@ -46,10 +45,9 @@ pub fn flac_bytes(sample_rate: u32, samples: &[i16]) -> Vec<u8> {
 
     let blocks: Vec<&[i16]> = samples.chunks(BLOCK).collect();
     // A fixed-block-size stream declares the same minimum and maximum even
-    // though its last frame is usually short; declaring the short one makes it
-    // a variable-block-size stream, whose frame headers carry sample numbers
-    // rather than frame numbers, and a decoder that believes the header loses
-    // sync on the second frame.
+    // though its last frame is short. Declaring the short one makes it a
+    // variable-block-size stream, whose frame headers carry sample numbers,
+    // and a decoder that believes the header loses sync on the second frame.
     let block = blocks.iter().map(|b| b.len()).max().unwrap_or(BLOCK) as u16;
 
     let mut out = Vec::with_capacity(samples.len() * 2 + 128);

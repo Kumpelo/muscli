@@ -1,9 +1,7 @@
 //! End-to-end coverage for the incremental library scanner.
 //!
-//! The scanner is the most intricate part of muscli and the part most recently
-//! optimised, yet it had no test above the unit level. These tests drive the
-//! real pipeline — walk, tag read, cover cache, database upsert, prune — against
-//! generated fixtures on a throwaway directory tree.
+//! Drives the real pipeline -- walk, tag read, cover cache, database upsert,
+//! prune -- against generated fixtures in a throwaway directory tree.
 
 mod common;
 

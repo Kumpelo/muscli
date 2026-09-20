@@ -1,8 +1,5 @@
-//! Schema migration coverage.
-//!
-//! `Database::migrate` walks user_version 0 through 4 and refuses anything
-//! newer, but nothing exercised those paths: a broken upgrade would only show
-//! up on a user's existing library, which is the worst place to find it.
+//! Schema migration coverage: `Database::migrate` walks user_version 0
+//! through 4 and refuses anything newer.
 
 mod common;
 

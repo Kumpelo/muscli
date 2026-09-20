@@ -1,14 +1,9 @@
 //! The navigation stack.
 //!
-//! Detail views open on top of whatever you were looking at, and more than one
-//! can be open at a time: an album reached from an artist reached from a genre
-//! is three levels deep, and closing each one has to land back where it came
-//! from. A stack says that directly.
-//!
-//! Each level used to be three parallel fields (`opened_*`, `*_return_selection`,
-//! `*_parent_view`), one set per kind of detail view. That only ever remembered
-//! one level per kind, so opening an album from an artist reached from an album
-//! overwrote the first album's return path.
+//! Detail views open on top of each other -- an album reached from an artist
+//! reached from a genre is three levels deep -- and closing each has to land
+//! back where it came from, including when the same kind of view appears twice
+//! in the path.
 
 use super::*;
 
@@ -123,11 +118,9 @@ impl App {
         }
     }
 
-    /// Drop levels whose target no longer exists.
-    ///
-    /// A rescan can delete the album that is currently open. Unwinding from the
-    /// top means a deep path collapses only as far as it has to: an album that
-    /// vanished closes back to its artist, not all the way home.
+    /// Drop levels whose target no longer exists, as a rescan can delete the
+    /// open album. Unwound from the top, so a deep path collapses only as far
+    /// as it must.
     pub(super) fn prune_nav(&mut self) {
         let invalid = first_invalid_frame(&self.nav, |target| match target {
             NavTarget::Album(key) => self.album_index.contains_key(key),

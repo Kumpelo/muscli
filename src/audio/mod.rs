@@ -1,14 +1,7 @@
 //! Audio playback backends.
 //!
-//! Playback sits behind a trait so a second backend can be built alongside the
-//! working one instead of replacing it in a single step. mpv has twenty years
-//! of handling truncated files, lying headers and devices that vanish on
-//! suspend; a native pipeline earns its place by being measured against that,
-//! not by being declared better.
-//!
-//! The trait carries no `async`. Events are pushed into a channel the
-//! application owns, which keeps a backend usable behind `dyn` and puts the
-//! event loop in one place rather than one per backend.
+//! The trait is deliberately not `async`: backends push events into a channel
+//! the application owns, so they stay usable behind `dyn`.
 
 use std::path::Path;
 
@@ -23,23 +16,18 @@ pub mod native;
 
 pub use mpv::MpvPlayer;
 
-/// What a backend can actually do.
-///
-/// The interface asks rather than assumes. A backend that cannot apply a gain
-/// says so, and the settings view greys the row out with a reason, instead of
-/// offering a control that silently does nothing.
+/// What a backend supports. The interface asks before offering a control, so
+/// a setting it cannot honour is shown as unavailable rather than ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities {
     /// Shown in the interface and in `muscli doctor`.
     pub name: &'static str,
-    /// Whether a ReplayGain adjustment can be applied at all.
     pub replay_gain: bool,
     pub equalizer: bool,
-    /// Whether the volume can be changed. A bit-perfect path may refuse.
     pub volume: bool,
     /// Whether the next track can begin without a gap.
     pub gapless: bool,
-    /// Whether the samples can be handed to the device untouched.
+    /// Whether samples can reach the device untouched.
     pub bit_perfect: bool,
 }
 
@@ -49,16 +37,12 @@ pub trait AudioBackend: Send {
     /// Start playing `path`, seeking to `position_ms` first.
     fn load(&mut self, path: &Path, position_ms: u64) -> Result<()>;
 
-    /// Hand over what should play next, or `None` to withdraw it.
-    ///
-    /// The backend is free to open and begin decoding it early; that early
-    /// open is what makes the transition seamless.
+    /// Hand over what should play next, or `None` to withdraw it. The backend
+    /// may open and decode it early; that is what makes the join seamless.
     fn set_prefetch(&mut self, path: Option<&Path>) -> Result<()>;
 
-    /// Acknowledge that the backend moved to the prefetched track by itself.
-    ///
-    /// Called after the application has caught up, so the backend can retire
-    /// whatever bookkeeping the finished track needed.
+    /// Called once the application has caught up with a prefetched track the
+    /// backend moved to on its own, so it can retire the finished one.
     fn adopt_prefetch(&mut self) -> Result<()>;
 
     fn pause(&mut self, paused: bool) -> Result<()>;
@@ -76,10 +60,7 @@ pub trait AudioBackend: Send {
     fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()>;
 
     /// Hand the decoder's samples to the device untouched, or stop doing so.
-    ///
-    /// Only called on a backend whose capabilities say it can; the default
-    /// exists so that one which cannot does not have to write a refusal it
-    /// will never be asked for.
+    /// Only called when [`Capabilities::bit_perfect`] is set.
     fn set_bit_perfect(&mut self, _on: bool) -> Result<()> {
         Ok(())
     }

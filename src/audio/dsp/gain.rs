@@ -1,18 +1,12 @@
-//! A gain that slides instead of jumping.
+//! A gain that slides to its target instead of jumping to it.
 //!
-//! Both the volume control and ReplayGain are this, applied here rather than
-//! handed to the device. That is the choice that makes everything else
-//! possible: a hardware mixer is shared with the rest of the desktop,
-//! quantises to whatever the driver feels like, and cannot be combined with a
-//! track's ReplayGain without one of the two fighting the other. In `f32`
-//! there is no quantisation to speak of -- a 24-bit signal attenuated by
-//! 40 dB still has more resolution left than the recording ever had.
+//! Used for ReplayGain in the chain and for the listener's volume at the
+//! output. Both are applied in `f32` here rather than by a hardware mixer,
+//! which is shared with the rest of the desktop and cannot be combined with
+//! ReplayGain without one fighting the other.
 
-/// How long a volume change takes to arrive.
-///
-/// A gain that jumps between two blocks is a step in the waveform, and a step
-/// is a click. Twenty milliseconds is long enough to be inaudible and short
-/// enough that holding a volume key still feels immediate.
+/// How long a change takes to arrive. A gain that jumps is a step in the
+/// waveform, and a step is a click.
 const RAMP_MS: f64 = 20.0;
 
 /// A gain that slides to where it was sent.
@@ -38,11 +32,8 @@ impl Gain {
         }
     }
 
-    /// Slide to a linear gain.
-    ///
-    /// Asking for the target it is already heading to does nothing, so a
-    /// caller that sets it on every block does not restart the ramp on every
-    /// block and leave it never arriving.
+    /// Slide to a linear gain. Asking for the target it is already heading to
+    /// does nothing, so setting it every block does not restart the ramp.
     pub fn set(&mut self, target: f64) {
         if self.target == target {
             return;
@@ -66,11 +57,8 @@ impl Gain {
         self.step = (self.target - self.current) / self.ramp_frames as f64;
     }
 
-    /// Arrive at the current target immediately.
-    ///
-    /// Used when playback starts or jumps: there is no previous audio for the
-    /// ramp to be continuous with, so sliding would only fade the first
-    /// twenty milliseconds in for no reason.
+    /// Arrive at the target immediately, for when playback starts or jumps
+    /// and there is no previous audio to be continuous with.
     pub fn settle(&mut self) {
         self.current = self.target;
         self.remaining = 0;

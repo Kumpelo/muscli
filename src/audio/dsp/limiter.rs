@@ -1,22 +1,15 @@
-//! The last thing between the chain and the device.
+//! A look-ahead peak limiter, catching what the equaliser or an upward
+//! ReplayGain pushed past full scale.
 //!
-//! An equaliser that boosts, or a ReplayGain adjustment upwards, can push a
-//! track that was mastered to full scale past it. Something has to catch that,
-//! and the alternatives are worse: clipping is audible distortion, and leaving
-//! headroom permanently turns every track down for the sake of a few.
-//!
-//! The design is a look-ahead peak limiter. The gain starts coming down
-//! before the loud sample arrives, which is what lets the reduction be gradual
-//! instead of instantaneous -- an instantaneous gain change is itself a click.
+//! Looking ahead lets the gain start coming down before the loud sample
+//! arrives, so the reduction is gradual; an instantaneous one is itself a
+//! click.
 
 use std::collections::VecDeque;
 
 use crate::audio::measure::db;
 
-/// How far ahead the limiter looks, in milliseconds.
-///
-/// This is also the latency it adds. Two milliseconds is long enough to bring
-/// the gain down smoothly and short enough that nothing downstream notices.
+/// How far ahead the limiter looks, and therefore the latency it adds.
 const LOOKAHEAD_MS: f64 = 2.0;
 
 /// How long the gain takes to come back, in milliseconds.
@@ -94,11 +87,8 @@ impl Limiter {
         self.worst = 1.0;
     }
 
-    /// Limit a block of interleaved samples in place.
-    ///
-    /// Output is delayed by [`latency_frames`](Self::latency_frames); the
-    /// first block of a stream therefore begins with that much of whatever the
-    /// delay held, which is silence after a reset.
+    /// Limit a block of interleaved samples in place. Output is delayed by
+    /// [`latency_frames`](Self::latency_frames), which is silence at first.
     pub fn process(&mut self, interleaved: &mut [f32]) {
         for frame in interleaved.chunks_exact_mut(self.channels) {
             let peak = frame
@@ -199,14 +189,12 @@ mod tests {
 
     #[test]
     fn holding_a_steady_tone_down_does_not_distort_it() {
-        // Sustained material is where a badly smoothed limiter modulates the
-        // gain at the signal's own rate and turns the reduction into
-        // distortion. This measures -64.5 dB while holding a tone 3 dB over
-        // full scale, and the residual is not smoothing but peak detection:
-        // the sample nearest each crest lands in a slightly different place
-        // each cycle, so the detected peak ripples. Catching that would take
-        // an oversampled true-peak detector. For comparison, letting the same
-        // tone clip instead measures -17.7 dB.
+        // A badly smoothed limiter modulates the gain at the signal's own
+        // rate, turning the reduction into distortion. This measures -64.5 dB
+        // holding a tone 3 dB over full scale; letting it clip instead
+        // measures -17.7 dB. The residual is peak detection rather than
+        // smoothing, and removing it would take an oversampled true-peak
+        // detector.
         let mut limiter = Limiter::new(RATE, 1, 0.0);
         let cycles = 683;
         let mut signal = tone(4 * FRAMES, 4 * cycles, 1.4);

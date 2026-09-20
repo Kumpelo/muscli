@@ -1,11 +1,8 @@
 //! Where processed audio goes.
 //!
-//! The device is behind a trait for one reason: a real one cannot be opened
-//! in a test, and a playback path that is only ever exercised by listening to
-//! it is a path where the first report of a bug is a listener. The capture
-//! output here takes exactly the same samples the device callback would, on
-//! demand, so the engine can be driven a block at a time and what comes out
-//! compared against what went in.
+//! The device is behind a trait because a real one cannot be opened in a test.
+//! [`CaptureOutput`] takes exactly the samples a device callback would, on
+//! demand, so the whole path can be driven a block at a time.
 
 use std::sync::{
     Arc, Mutex,
@@ -19,11 +16,8 @@ use crate::audio::dsp::gain::Gain;
 
 /// The listener's volume, shared between the interface and the output.
 ///
-/// It lives here rather than in the processing chain because the chain runs
-/// half a second ahead of what is being heard: a volume applied there is a
-/// volume that arrives when the buffer does, and holding a key would feel
-/// like pushing something heavy. Applied on the way out, it lands in the time
-/// it takes to fill one device buffer.
+/// Here rather than in the chain, which runs half a second ahead of what is
+/// heard: applied there, a change would arrive with the buffer.
 #[derive(Debug)]
 pub struct Volume(AtomicU64);
 
@@ -44,11 +38,8 @@ impl Volume {
     }
 }
 
-/// What the output reports back, shared with whoever is interested.
-///
-/// Both counters are in frames and only ever increase, which is what lets the
-/// engine read them from another thread without a lock and still get an answer
-/// that means something.
+/// What the output reports back. The counters are in frames and only ever
+/// increase, so the engine can read them from another thread without a lock.
 #[derive(Debug)]
 pub struct SinkState {
     /// What the listener asked for, shared across every stream this player
@@ -56,18 +47,12 @@ pub struct SinkState {
     pub volume: Arc<Volume>,
     /// Frames handed to the device since the stream was started.
     pub played: AtomicU64,
-    /// Frames the device asked for and did not get.
-    ///
-    /// Non-zero means the decoder could not keep up and the listener heard a
-    /// gap. It is counted rather than logged because the callback cannot log.
+    /// Frames the device asked for and did not get: the decoder fell behind
+    /// and the listener heard a gap. Counted because a callback cannot log.
     pub starved: AtomicU64,
     /// Bumped by the engine when what is still in the ring belongs to
-    /// somewhere else in the track and must not be played.
-    ///
-    /// A single-producer ring gives the side that fills it no way to take
-    /// anything back, and the side that can is the one that must never wait.
-    /// So the engine asks, the output does it on its way through, and says
-    /// where it happened.
+    /// somewhere else in the track. A single-producer ring gives the filling
+    /// side no way to take anything back, so the output does it instead.
     pub flush: AtomicU64,
     /// The request the output has carried out.
     pub flushed: AtomicU64,
@@ -88,11 +73,8 @@ impl SinkState {
     }
 }
 
-/// An output device.
-///
-/// Deliberately not `Send`: a platform stream handle often may not cross
-/// threads, so the device is opened on the thread that will feed it. The
-/// engine is built there too, which is where it belongs anyway.
+/// An output device. Deliberately not `Send`: a platform stream handle often
+/// may not cross threads, so it is opened on the thread that feeds it.
 pub trait Output {
     /// A name for the interface and for `muscli doctor`.
     fn name(&self) -> String;
@@ -122,12 +104,10 @@ pub trait Output {
     fn stop(&mut self);
 }
 
-/// Fill a device buffer from the ring, exactly as a callback must.
+/// Fill a device buffer from the ring, as a callback must: no waiting, no
+/// allocating, no locking. A short ring yields silence and a count.
 ///
-/// This is the only place that decides what happens on a starved ring, so
-/// both the real device and the test see the same behaviour: what is there is
-/// played, the rest is silence, and the shortfall is counted. Anything else --
-/// waiting, allocating, locking -- would be a glitch rather than a gap.
+/// Shared by the real device and the capture output so both behave alike.
 pub fn fill(
     buffer: &mut [f32],
     frames: &mut Consumer<f32>,
@@ -204,10 +184,8 @@ pub struct CaptureHandle {
 }
 
 impl CaptureOutput {
-    /// An output accepting `rates`, and the handle to pull from it.
-    ///
-    /// Listing the rates rather than accepting everything is what lets a test
-    /// ask what happens when a device cannot play a file.
+    /// An output accepting `rates`, and the handle to pull from it. Listing
+    /// the rates lets a test cover a device that cannot play a file.
     pub fn new(rates: &[u32]) -> (Self, CaptureHandle) {
         Self::with_channels(rates, &[1, 2])
     }
@@ -332,14 +310,9 @@ impl CaptureHandle {
     }
 }
 
-/// Pick the rate to play a file at on a device offering `available`.
-///
-/// The file's own rate first, always: converting a stream that did not need
-/// converting is the one avoidable loss in the whole path. Failing that, a
-/// whole multiple of it, which a converter handles with the least work and
-/// the least error. Failing that, the highest rate above the file's, because
-/// converting downwards throws away the top of the band for nothing. Only if
-/// there is nothing higher does a lower rate get used.
+/// Pick the rate to play a file at on a device offering `available`, in order
+/// of preference: the file's own rate, a whole multiple of it, the lowest rate
+/// above it, and only then a lower one.
 pub fn choose_rate(wanted: u32, available: &[u32]) -> Option<u32> {
     if available.contains(&wanted) {
         return Some(wanted);
@@ -359,11 +332,8 @@ pub fn choose_rate(wanted: u32, available: &[u32]) -> Option<u32> {
         .copied()
 }
 
-/// Pick the channel count to play a file in.
-///
-/// A mono file on a stereo-only device is played to both channels; anything
-/// else is refused rather than folded, because a fold is a mix, and mixing
-/// somebody's recording without being asked is not this player's business.
+/// Pick the channel count to play a file in. Mono on a stereo-only device
+/// goes to both channels; anything else is refused rather than folded.
 pub fn choose_channels(wanted: u16, available: &[u16]) -> Option<u16> {
     if available.contains(&wanted) {
         return Some(wanted);

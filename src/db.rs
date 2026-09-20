@@ -23,11 +23,8 @@ pub struct Database {
     conn: Connection,
 }
 
-/// Apply the connection settings every database uses.
-///
-/// `open_memory` previously set none of these, which meant the unit tests ran
-/// without foreign keys while production ran with them - the suite could not
-/// see a constraint violation that a user would hit.
+/// Apply the connection settings every database uses. Shared by the on-disk
+/// and in-memory openers so the tests run what a user runs.
 fn configure(conn: &Connection, on_disk: bool) -> Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;

@@ -135,21 +135,16 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// Queue `path` to play straight after the current file.
-    ///
-    /// The entry is appended rather than loaded, so mpv can open and start
-    /// decoding it before the current one ends. That early open is what makes
-    /// the transition seamless; loading on end-of-file cannot be, because the
-    /// round trip through this process is itself the gap.
+    /// Queue `path` to play straight after the current file. Appended rather
+    /// than loaded, so mpv opens it early; loading on end-of-file cannot be
+    /// seamless, because the round trip through this process is the gap.
     pub fn set_prefetch(&self, path: &Path) -> Result<()> {
         self.clear_prefetch()?;
         self.command(json!(["loadfile", path.to_string_lossy(), "append"]))
     }
 
-    /// Drop anything queued after the current file.
-    ///
-    /// Failing means there was nothing queued, which is the desired state, so
-    /// the reply is ignored.
+    /// Drop anything queued after the current file. Failure means there was
+    /// nothing queued, which is the desired state.
     pub fn clear_prefetch(&self) -> Result<()> {
         let _ = self.command(json!(["playlist-remove", 1]));
         Ok(())
@@ -210,12 +205,9 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// Apply a graphic equaliser.
-    ///
-    /// Uses the same labelled-filter mechanism as the ReplayGain filter, so the
-    /// two stack without either disturbing the other. An empty set removes the
-    /// filter rather than installing a flat one, which keeps the audio path
-    /// untouched when the equaliser is off.
+    /// Apply a graphic equaliser, on the same labelled-filter mechanism as
+    /// ReplayGain so the two stack. An empty set removes the filter rather
+    /// than installing a flat one.
     pub fn set_equalizer(&self, bands: &[(u32, f32)]) -> Result<()> {
         let _ = self.command(json!(["af", "remove", "@muscli_eq"]));
         let active: Vec<String> = bands

@@ -1,26 +1,20 @@
 //! The processing between the decoder and the device.
 //!
-//! The order the stages run in is the whole design, so it is worth stating:
+//! The stage order is load-bearing:
 //!
-//! 1. **ReplayGain**, first, because it is a correction to the recording. Put
-//!    it after the equaliser and a quiet track would be boosted into the
-//!    limiter that the loud one it was meant to match never reaches.
-//! 2. **Equaliser**, on a signal that is now at a sensible level.
-//! 3. **Limiter**, catching whatever the two of them pushed over full scale.
-//! 4. **Dither**, if and only if the device takes fixed point.
+//! 1. **ReplayGain**, first, so the equaliser works on a levelled signal.
+//!    After it, a quiet track would be boosted into a limiter the loud track
+//!    it was meant to match never reaches.
+//! 2. **Equaliser**.
+//! 3. **Limiter**, catching whatever the two pushed over full scale.
+//! 4. **Dither**, only when the device takes fixed point.
 //!
-//! The listener's volume is deliberately not here. This chain runs half a
-//! second ahead of what is being heard, and a volume applied here arrives
-//! when the buffer does; it belongs at the point the samples leave for the
-//! device. That also puts it after the limiter, which is where it should be:
-//! whether a sample would clip is a property of the recording, the ReplayGain
-//! and the equaliser, not of how loud somebody is listening.
+//! The listener's volume is not here: this chain runs half a second ahead of
+//! what is heard, so a change made here would arrive with the buffer. It is
+//! applied by the output instead (see [`native::sink`](crate::audio::native::sink)).
 //!
-//! Every stage does nothing, exactly, when it has nothing to do: a flat
-//! equaliser, unity gain and a signal under the ceiling give back the samples
-//! that were decoded, bit for bit. That is not an optimisation, it is the
-//! promise -- a player that quietly rounds every sample it touches has no
-//! business claiming to be faithful.
+//! With everything neutral the chain returns the decoded samples unchanged,
+//! bit for bit.
 
 pub mod biquad;
 pub mod dither;
@@ -49,8 +43,7 @@ pub struct Settings {
     /// Bit depth of the device, or `None` when it takes floats.
     pub output_bits: Option<u32>,
     pub noise_shaping: bool,
-    /// Hand the decoder's samples to the device untouched, giving up the
-    /// volume control, ReplayGain and the equaliser to do it.
+    /// Bypass every stage. Gives up ReplayGain and the equaliser.
     pub bit_perfect: bool,
 }
 
@@ -98,11 +91,8 @@ impl Chain {
         }
     }
 
-    /// Apply a track's ReplayGain, or remove it with `None`.
-    ///
-    /// This slides like the volume does. At a track change the caller should
-    /// [`settle`](Self::settle) instead, so the new track starts at its own
-    /// level rather than arriving at it twenty milliseconds late.
+    /// Apply a track's ReplayGain, or remove it with `None`. Slides; at a
+    /// track change call [`settle`](Self::settle) so it applies at once.
     pub fn set_replay_gain(&mut self, gain_db: Option<f64>) {
         self.replay_gain.set_db(gain_db);
     }
@@ -209,9 +199,8 @@ mod tests {
 
     #[test]
     fn replay_gain_runs_before_the_equaliser() {
-        // A track eight decibels down with a six decibel boost has four
-        // decibels of headroom left, so the limiter must never engage. In the
-        // other order it would be boosted first and clipped back.
+        // Eight decibels down with a six decibel boost leaves headroom, so
+        // the limiter must not engage. The other order would clip it back.
         let settings = Settings {
             replay_gain_db: Some(-8.0),
             equalizer: bands([0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0]),
@@ -236,9 +225,8 @@ mod tests {
 
     #[test]
     fn the_listeners_volume_is_not_applied_here() {
-        // It is applied at the output instead. Applying it here as well would
-        // turn the music down twice, and applying it only here would make a
-        // volume change wait for the buffer to drain.
+        // Applied at the output instead. Here it would be applied twice, and
+        // a change would have to wait for the buffer to drain.
         let settings = Settings {
             volume: 0.25,
             ..Settings::default()
@@ -272,10 +260,8 @@ mod tests {
 
     #[test]
     fn a_working_chain_adds_nothing_audible() {
-        // Everything on, nothing near the ceiling: the distortion left over
-        // is the equaliser's arithmetic and the volume's ramp. It measures
-        // -144.8 dB, which is under the f32 output's own floor -- the chain
-        // is not what anyone will be hearing.
+        // Everything on, nothing near the ceiling, so what is left is the
+        // chain's own arithmetic: -144.8 dB, under the f32 floor itself.
         let settings = Settings {
             volume: 0.7,
             replay_gain_db: Some(-4.0),

@@ -1,13 +1,10 @@
 //! The thread that decodes, processes and fills the ring.
 //!
-//! The split is the point. Everything that can block -- opening a file,
-//! decoding, allocating -- happens here. The device callback does one thing:
-//! copy out of a lock-free ring and, if the ring is short, output silence and
-//! count it. A callback that waits for anything is a callback that misses its
-//! deadline, and a missed deadline is a click.
+//! Everything that can block -- opening a file, decoding, allocating --
+//! happens here, so the device callback only ever copies out of the ring.
 //!
-//! The engine is driven by [`Engine::step`] rather than by an internal loop,
-//! so a test can advance it a block at a time and inspect what came out.
+//! Driven by [`Engine::step`] rather than an internal loop, so a test can
+//! advance it a block at a time.
 
 use std::{
     collections::VecDeque,
@@ -33,11 +30,8 @@ use crate::{
     t,
 };
 
-/// How much audio the ring holds.
-///
-/// Long enough that an ordinary hitch -- a page fault, the scanner taking a
-/// lock, the scheduler looking elsewhere -- passes unnoticed, and short enough
-/// that a seek does not have to throw much away.
+/// How much audio the ring holds: long enough to ride out a page fault or the
+/// scheduler looking elsewhere, short enough that a seek discards little.
 const BUFFER_MS: u64 = 500;
 
 /// Silence fed to a converter at the end of a track to walk its filter out.
@@ -46,23 +40,18 @@ const TAIL_FRAMES: usize = 2_048;
 /// How often the engine looks at the ring while audio is playing.
 const BUSY: Duration = Duration::from_millis(5);
 
-/// The same while paused. The device is not consuming, so the ring stays as
-/// it is and there is nothing to wake up for except a command.
+/// The same while paused, when the ring is not draining.
 const RESTING: Duration = Duration::from_millis(100);
 
-/// How often a device that keeps running short is allowed to say so. One that
-/// is struggling struggles continuously, and a message per dropout would bury
-/// everything else in the status bar.
+/// How often a device that keeps running short is allowed to say so.
 const STARVE_NOTICE_EVERY: Duration = Duration::from_secs(5);
 
-/// The playing position, and a stamp saying whose position it is.
+/// The playing position, and a stamp saying which track it belongs to.
 ///
-/// The application asks for a track and then reads the position back from
-/// here. In between, the engine is still playing the previous one, and a
-/// reading taken then is the old track's -- which the application stores as
-/// the new track's resume point, so the next time it is played it starts a
-/// minute in. The stamp is what makes a reading from before the change
-/// recognisable as one, so it can be dropped instead of written.
+/// The application reads the position back in the same tick it asks for a
+/// track, while the engine is still playing the previous one. The stamp marks
+/// a reading from before the change so it can be dropped rather than stored
+/// as the new track's resume point.
 #[derive(Debug, Default)]
 pub struct Position {
     ms: AtomicU64,
@@ -110,11 +99,10 @@ pub enum Command {
 }
 
 /// Ties a frame the device has played to the place in the track it came from.
+/// One per block, kept until the device is past it.
 ///
-/// One mark per block, kept until the device is past it. The position is held
-/// in milliseconds of the source rather than in source frames, so that a
-/// stream being converted to another rate needs no arithmetic to undo: a
-/// second of playing is a second of the track whatever rate it came at.
+/// Held in milliseconds of the source rather than source frames, so a stream
+/// being converted needs no arithmetic to undo.
 #[derive(Debug, Clone, Copy)]
 struct Mark {
     output_frame: u64,
@@ -132,9 +120,8 @@ struct Stream {
     state: Arc<SinkState>,
     channels: u16,
     sample_rate: u32,
-    /// Processed audio waiting for room in the ring. Converting changes the
-    /// length of a block, so how much comes out cannot be known before the
-    /// work is done; holding it here is what lets the ring fill exactly.
+    /// Processed audio waiting for room in the ring. Converting changes a
+    /// block's length, so how much comes out is not known until it is done.
     staging: Vec<f32>,
     marks: VecDeque<Mark>,
     pushed: u64,
@@ -142,18 +129,15 @@ struct Stream {
     capacity: usize,
     /// Output frames at which a following track begins, in order.
     handovers: VecDeque<u64>,
-    /// The flush the output has been asked for and has not yet carried out.
-    ///
-    /// While this is set the engine decodes but does not push: anything it
-    /// wrote now would be thrown away with the audio it is replacing.
+    /// A flush the output has been asked for and not yet carried out. While
+    /// set, the engine decodes but does not push: what it wrote would be
+    /// thrown away with the audio it is replacing.
     awaiting_flush: Option<u64>,
     /// Set when the decoder has no more to give. Not final: a track queued
-    /// after this point can still join, because nothing has been announced
-    /// and the audio would still be continuous.
+    /// after this point can still join, since nothing has been announced.
     exhausted: bool,
     /// Whether a converter still has a tail to walk out. Deferred until the
-    /// end is certain, because that tail is silence and silence in the middle
-    /// of a join is the gap this is all here to avoid.
+    /// end is certain, because that tail is silence.
     needs_flush: bool,
     /// Output frame the audio runs out at, once everything has been staged.
     ends_at: Option<u64>,
@@ -230,11 +214,8 @@ impl Engine {
         self.output.name()
     }
 
-    /// How long the thread may wait before looking at the ring again.
-    ///
-    /// `None` means there is nothing to top up at all, so it can block until
-    /// a command arrives rather than waking two hundred times a second to
-    /// find the same nothing.
+    /// How long the thread may wait before looking at the ring again. `None`
+    /// means nothing is playing, so it can block until a command arrives.
     pub fn idle_timeout(&self) -> Option<Duration> {
         match (&self.stream, self.paused) {
             (None, _) => None,
@@ -321,11 +302,8 @@ impl Engine {
         }
     }
 
-    /// Do one unit of work: fill whatever room the ring has, and report where
-    /// the device has got to.
-    ///
-    /// Returns whether anything happened, so a caller looping on this knows
-    /// when there is nothing to do but wait.
+    /// Fill whatever room the ring has and report where the device has got
+    /// to. Returns whether anything happened.
     pub fn step(&mut self) -> bool {
         let mut worked = self.fill();
         worked |= self.report();
@@ -339,20 +317,16 @@ impl Engine {
         let spec = decoder.spec();
         let source_channels = spec.channels.max(1);
 
-        // The device follows the file wherever it can. Only when it will not
-        // is anything converted, and then the conversion happens here rather
-        // than being left to whatever sound server would otherwise do it, out
-        // of sight and with a filter chosen for latency.
+        // The device follows the file wherever it can; only when it will not
+        // is anything converted.
         let channels = choose_channels(source_channels, &self.output.channel_counts())
             .ok_or_else(|| anyhow!("the output cannot play {source_channels} channels"))?;
         let duplicate = channels == 2 && source_channels == 1;
         let sample_rate = choose_rate(spec.sample_rate, &self.output.rates(channels))
             .ok_or_else(|| anyhow!("the output offers no sample rate at all"))?;
-        // Bit-perfect means the device gets the file's samples and nothing
-        // else. Converting the rate or the channel count is exactly what it
-        // exists to rule out, so when the device will not match the file the
-        // honest thing is to say so and play it properly instead of quietly
-        // converting under a setting that promises the opposite.
+        // Converting the rate or the channel count is what bit-perfect exists
+        // to rule out, so a device that will not match the file turns it off
+        // for this track and says so.
         let untouched = !self.settings.bit_perfect
             || (sample_rate == spec.sample_rate && channels == source_channels);
         if !untouched {
@@ -407,10 +381,9 @@ impl Engine {
             announced_end: false,
         });
 
-        // Decode into the ring before the device is told about it. A device
-        // starts asking for samples the instant it is opened, and a ring that
-        // is still empty then makes the first thing every track produces a
-        // dropout -- on every play, and again on every seek.
+        // Decode into the ring before the device is told about it: a device
+        // asks for samples the instant it is opened, and an empty ring then
+        // means every track and every seek begins with a dropout.
         self.fill();
 
         if let Err(error) = self.output.start(sample_rate, channels, consumer, state) {
@@ -428,14 +401,11 @@ impl Engine {
         Ok(())
     }
 
-    /// Seek without disturbing the device.
+    /// Seek without rebuilding the output stream.
     ///
-    /// The ring holds up to half a second of audio belonging to where the
-    /// track used to be. Rebuilding the ring would mean rebuilding the output
-    /// stream around it, which means asking the driver for the device again --
-    /// a few milliseconds at best, a refusal at worst if something else took
-    /// it in between. Instead the output is asked to throw away what it is
-    /// holding, and says which frame the music resumes at.
+    /// The ring holds up to half a second belonging to the old position.
+    /// Rebuilding it would mean asking the driver for the device again, so the
+    /// output discards it instead and reports the frame playing resumes at.
     fn seek(&mut self, position_ms: u64) -> Result<()> {
         let Some(stream) = &mut self.stream else {
             return Ok(());
@@ -540,10 +510,8 @@ impl Engine {
                     stream.exhausted = false;
                     stream.needs_flush = false;
                     stream.ends_at = None;
-                    // Plus the chain's own delay: the samples staged from
-                    // here on are the next track's, but what the device is
-                    // playing at that frame is still the limiter's hold of
-                    // the last one.
+                    // Plus the chain's delay: at that frame the device is
+                    // still playing the limiter's hold of the last track.
                     stream.handovers.push_back(
                         stream.pushed
                             + stream.staging.len() as u64 / u64::from(stream.channels)
@@ -622,10 +590,8 @@ impl Engine {
             return false;
         };
         if stream.awaiting_flush.is_some() {
-            // Everything here is measured in frames of the output, and until
-            // the flush lands there is no frame to measure against: the marks
-            // are counted from zero while the device is somewhere else
-            // entirely. The position the seek set already stands.
+            // The marks are counted from zero until the flush lands, while
+            // the device is somewhere else. The seek already set the position.
             return false;
         }
         let played = stream.state.played.load(Ordering::Relaxed);

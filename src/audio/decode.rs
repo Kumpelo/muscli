@@ -1,11 +1,8 @@
-//! Decoding audio files to floating point.
+//! Decoding audio files to interleaved `f32`.
 //!
-//! Everything downstream of here works in `f32`, which is the only sane common
-//! ground: the library holds 16-, 24- and 32-bit material at several sample
-//! rates, and a chain that had to know which was which would branch in every
-//! stage. Converting once, at the source, costs nothing measurable and makes
-//! the rest of the path exact — see the round-trip test, which decodes a
-//! generated 16-bit stream and gets every sample back unchanged.
+//! Converting once here means nothing downstream has to know whether the file
+//! was 16, 24 or 32 bit. The conversion is exact: `tests/audio.rs` decodes a
+//! generated 16-bit stream and compares every sample.
 
 use std::{fs::File, path::Path};
 
@@ -19,11 +16,8 @@ use symphonia::core::{
     units::Time,
 };
 
-/// What a decoded stream is, as the file itself declares it.
-///
-/// `bits_per_sample` is carried even though the samples are floats by this
-/// point: dither has to know how many bits the output will be squeezed into,
-/// and a bit-perfect path has to know what it is claiming to be perfect about.
+/// What a decoded stream is, as the file declares it. `bits_per_sample`
+/// survives the conversion to float because dither and bit-perfect need it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamSpec {
     pub sample_rate: u32,
@@ -37,10 +31,9 @@ pub struct Decoder {
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
     spec: StreamSpec,
-    /// The track's timebase, as a fraction of a second per tick. Positions are
-    /// kept in frames rather than milliseconds because a seek lands on a frame
-    /// and rounding it to the nearest millisecond loses up to 44 samples --
-    /// enough to make "carry on from here" read the wrong ones.
+    /// Numerator and denominator of the track's timebase, in seconds per tick.
+    /// Positions are kept in frames: a seek lands on a frame, and rounding to
+    /// the nearest millisecond loses up to 44 samples.
     time_base: (u64, u64),
     block: Vec<f32>,
     duration_ms: Option<u64>,
@@ -131,10 +124,8 @@ impl Decoder {
         })
     }
 
-    /// What the stream currently is.
-    ///
-    /// Read this after every block rather than once: a few containers change
-    /// rate or channel count mid-stream, and the chain has to follow.
+    /// What the stream currently is. Read it after every block, not once:
+    /// some containers change rate or channel count mid-stream.
     pub fn spec(&self) -> StreamSpec {
         self.spec
     }
@@ -149,11 +140,8 @@ impl Decoder {
         self.position_frames() * 1_000 / u64::from(self.spec.sample_rate.max(1))
     }
 
-    /// Decode the next block, or `None` at the end of the stream.
-    ///
-    /// The samples are interleaved by channel. Packets that fail to decode are
-    /// skipped rather than fatal: a single corrupt frame in the middle of an
-    /// album should cost a click, not the rest of the track.
+    /// Decode the next block of interleaved samples, or `None` at the end.
+    /// A packet that fails to decode is skipped, not fatal.
     pub fn next_block(&mut self) -> Result<Option<&[f32]>> {
         loop {
             let packet = match self.reader.next_packet() {
