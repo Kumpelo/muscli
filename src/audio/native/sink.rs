@@ -6,7 +6,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use anyhow::Result;
@@ -45,6 +45,11 @@ pub struct SinkState {
     /// What the listener asked for, shared across every stream this player
     /// opens so that changing it needs no round trip through the engine.
     pub volume: Arc<Volume>,
+    /// Pausing is done here rather than by asking the device to stop, because
+    /// most of them cannot: ALSA reports `can_pause` false for PulseAudio,
+    /// PipeWire and dmix alike. A paused output keeps running and emits
+    /// silence.
+    pub paused: Arc<AtomicBool>,
     /// Frames handed to the device since the stream was started.
     pub played: AtomicU64,
     /// Frames the device asked for and did not get: the decoder fell behind
@@ -61,9 +66,10 @@ pub struct SinkState {
 }
 
 impl SinkState {
-    pub fn new(volume: Arc<Volume>) -> Self {
+    pub fn new(volume: Arc<Volume>, paused: Arc<AtomicBool>) -> Self {
         Self {
             volume,
+            paused,
             played: AtomicU64::new(0),
             starved: AtomicU64::new(0),
             flush: AtomicU64::new(0),
@@ -99,8 +105,6 @@ pub trait Output {
         state: Arc<SinkState>,
     ) -> Result<()>;
 
-    fn set_paused(&mut self, paused: bool) -> Result<()>;
-
     fn stop(&mut self);
 }
 
@@ -117,6 +121,14 @@ pub fn fill(
 ) {
     let wanted = buffer.len();
     let channel_count = u64::from(channels.max(1));
+
+    // Paused: silence, and nothing moves. The ring keeps what it holds, the
+    // played count stands still so the position does not drift, and a short
+    // ring is not a shortfall because nothing was asked of it.
+    if state.paused.load(Ordering::Relaxed) {
+        buffer.fill(0.0);
+        return;
+    }
 
     // A flush is a few index updates, so it is safe here; refilling is not,
     // which is why this buffer comes out silent and the engine takes over
@@ -174,7 +186,6 @@ struct Capture {
     frames: Option<Consumer<f32>>,
     state: Option<Arc<SinkState>>,
     channels: u16,
-    paused: bool,
 }
 
 /// The test's end of a [`CaptureOutput`].
@@ -236,16 +247,7 @@ impl Output for CaptureOutput {
         capture.frames = Some(frames);
         capture.state = Some(state);
         capture.channels = channels;
-        capture.paused = false;
         capture.starts += 1;
-        Ok(())
-    }
-
-    fn set_paused(&mut self, paused: bool) -> Result<()> {
-        self.shared
-            .lock()
-            .expect("the capture lock is never poisoned")
-            .paused = paused;
         Ok(())
     }
 
@@ -273,7 +275,6 @@ impl CaptureHandle {
             frames: Some(ring),
             state: Some(state),
             volume: Some(volume),
-            paused: false,
             ..
         } = &mut *capture
         else {
@@ -397,7 +398,10 @@ mod volume_tests {
         std::mem::forget(producer);
         (
             consumer,
-            Arc::new(SinkState::new(Arc::new(Volume::default()))),
+            Arc::new(SinkState::new(
+                Arc::new(Volume::default()),
+                Arc::new(AtomicBool::new(false)),
+            )),
         )
     }
 

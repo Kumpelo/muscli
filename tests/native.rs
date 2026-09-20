@@ -7,7 +7,7 @@ mod common;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use muscli::{
@@ -54,6 +54,7 @@ fn harness(millis: u32, rates: &[u32]) -> Harness {
         sender,
         Arc::clone(&position),
         Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
     );
 
     Harness {
@@ -158,6 +159,7 @@ fn a_mono_file_reaches_both_channels_of_a_stereo_device() {
         sender,
         position,
         Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
     );
 
     engine.handle(Command::Load {
@@ -442,6 +444,7 @@ fn a_queued_track_joins_the_one_playing_without_a_gap() {
         sender,
         Arc::clone(&position),
         Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
     );
 
     engine.handle(Command::Load {
@@ -513,6 +516,7 @@ fn a_queued_track_of_another_shape_is_not_forced_to_join() {
         sender,
         position,
         Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
     );
 
     engine.handle(Command::Load {
@@ -592,6 +596,7 @@ fn a_track_queued_late_still_joins() {
         sender,
         position,
         Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
     );
 
     engine.handle(Command::Load {
@@ -861,6 +866,7 @@ fn a_configured_equaliser_reaches_the_device() {
             sender,
             Arc::new(Position::default()),
             Arc::new(Volume::default()),
+            Arc::new(AtomicBool::new(false)),
         );
         engine.handle(Command::Load {
             path: path.clone(),
@@ -889,4 +895,78 @@ fn a_configured_equaliser_reaches_the_device() {
         (moved - 6.0).abs() < 0.5,
         "a band set to +6 dB moved the device's audio by {moved:.2} dB"
     );
+}
+
+#[test]
+fn pausing_silences_the_device_and_stops_the_clock() {
+    let mut harness = harness(3_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    for _ in 0..8 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+    }
+    let before = harness.position.ms();
+    assert!(before > 0, "nothing played");
+
+    harness.engine.handle(Command::Pause(true));
+    let quiet = harness.capture.pull(BLOCK);
+    harness.engine.step();
+
+    assert!(
+        quiet.iter().all(|sample| *sample == 0.0),
+        "the device kept playing after being paused"
+    );
+    assert_eq!(
+        harness.position.ms(),
+        before,
+        "the position moved while paused"
+    );
+    assert!(errors(&mut harness.events).is_empty(), "pausing failed");
+
+    // And resuming picks up where it stopped rather than skipping ahead.
+    harness.engine.handle(Command::Pause(false));
+    let resumed = harness.capture.pull(BLOCK);
+    assert!(resumed.iter().any(|sample| *sample != 0.0));
+}
+
+#[test]
+fn a_pause_already_in_force_is_respected_by_a_device_just_started() {
+    // Restoring a session loads the track, which starts the device, and pauses
+    // it on top of that. If the pause is not already in force when the device
+    // opens, the music begins on its own every time muscli starts.
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 2_000)),
+    )
+    .expect("write the fixture");
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let paused = Arc::new(AtomicBool::new(true));
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        Arc::new(Position::default()),
+        Arc::new(Volume::default()),
+        Arc::clone(&paused),
+    );
+
+    engine.handle(Command::Load {
+        path,
+        position_ms: 0,
+    });
+
+    // The very first thing the device asks for, with no step in between.
+    let first = capture.pull(BLOCK);
+    assert!(
+        first.iter().all(|sample| *sample == 0.0),
+        "the music started on its own"
+    );
+    assert!(errors(&mut events).is_empty());
 }

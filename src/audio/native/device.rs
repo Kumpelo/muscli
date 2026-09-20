@@ -237,17 +237,6 @@ impl Output for CpalOutput {
         Ok(())
     }
 
-    fn set_paused(&mut self, paused: bool) -> Result<()> {
-        let Some(stream) = &self.stream else {
-            return Ok(());
-        };
-        if paused {
-            stream.pause().context("the device would not pause")
-        } else {
-            stream.play().context("the device would not resume")
-        }
-    }
-
     fn stop(&mut self) {
         self.stream = None;
     }

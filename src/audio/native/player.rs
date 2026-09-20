@@ -4,6 +4,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
@@ -31,6 +32,9 @@ pub struct NativePlayer {
     /// Written straight from the caller's thread: the whole point of applying
     /// the volume at the output is that it does not queue behind the audio.
     volume: Arc<Volume>,
+    /// Likewise, so that a device already started cannot play a note between
+    /// the pause being asked for and the engine taking the command up.
+    paused: Arc<AtomicBool>,
     /// What the listener asked for, kept so that leaving bit-perfect puts it
     /// back rather than leaving the music at full scale.
     wanted: f64,
@@ -78,6 +82,8 @@ impl NativePlayer {
         let volume = Arc::new(Volume::default());
         volume.set(if bit_perfect { 1.0 } else { wanted });
         let shared_volume = Arc::clone(&volume);
+        let paused = Arc::new(AtomicBool::new(false));
+        let shared_paused = Arc::clone(&paused);
 
         let thread = thread::Builder::new()
             .name("muscli-audio".to_string())
@@ -89,7 +95,14 @@ impl NativePlayer {
                         return;
                     }
                 };
-                let mut engine = Engine::new(output, settings, events, shared, shared_volume);
+                let mut engine = Engine::new(
+                    output,
+                    settings,
+                    events,
+                    shared,
+                    shared_volume,
+                    shared_paused,
+                );
                 if opened.send(Ok(engine.output_name())).is_err() {
                     return;
                 }
@@ -127,6 +140,7 @@ impl NativePlayer {
             commands,
             position,
             volume,
+            paused,
             wanted,
             bit_perfect,
             device,
@@ -193,11 +207,17 @@ impl AudioBackend for NativePlayer {
     }
 
     fn pause(&mut self, paused: bool) -> Result<()> {
+        // Set here as well as sent, so a device the engine has already started
+        // is silent from the next callback rather than from whenever the
+        // command is taken up.
+        self.paused.store(paused, Ordering::Relaxed);
         self.send(Command::Pause(paused))
     }
 
     fn toggle(&mut self) -> Result<()> {
-        self.send(Command::Toggle)
+        let paused = !self.paused.load(Ordering::Relaxed);
+        self.paused.store(paused, Ordering::Relaxed);
+        self.send(Command::Pause(paused))
     }
 
     fn seek_relative(&mut self, seconds: f64) -> Result<()> {

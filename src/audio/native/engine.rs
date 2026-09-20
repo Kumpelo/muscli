@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -179,7 +179,9 @@ pub struct Engine {
     /// Applied on the way out rather than here, so it reaches audio that is
     /// already decoded and waiting.
     volume: Arc<Volume>,
-    paused: bool,
+    /// Read by the output on every callback; the engine keeps a copy to decide
+    /// how long it may sleep.
+    paused: Arc<AtomicBool>,
     /// Frames already announced as missed, so a shortfall is reported once.
     reported_starved: u64,
     last_starve_notice: Option<Instant>,
@@ -192,6 +194,7 @@ impl Engine {
         events: UnboundedSender<PlayerEvent>,
         position: Arc<Position>,
         volume: Arc<Volume>,
+        paused: Arc<AtomicBool>,
     ) -> Self {
         let epoch = position.epoch();
         Self {
@@ -201,9 +204,9 @@ impl Engine {
             position,
             epoch,
             volume,
+            paused,
             stream: None,
             prefetch: None,
-            paused: false,
             reported_starved: 0,
             last_starve_notice: None,
         }
@@ -217,7 +220,7 @@ impl Engine {
     /// How long the thread may wait before looking at the ring again. `None`
     /// means nothing is playing, so it can block until a command arrives.
     pub fn idle_timeout(&self) -> Option<Duration> {
-        match (&self.stream, self.paused) {
+        match (&self.stream, self.paused.load(Ordering::Relaxed)) {
             (None, _) => None,
             (Some(_), true) => Some(RESTING),
             (Some(_), false) => Some(BUSY),
@@ -258,7 +261,10 @@ impl Engine {
                 Ok(())
             }
             Command::Pause(paused) => self.set_paused(paused),
-            Command::Toggle => self.set_paused(!self.paused),
+            Command::Toggle => {
+                let paused = self.paused.load(Ordering::Relaxed);
+                self.set_paused(!paused)
+            }
             Command::SeekAbsolute(position_ms) => self.seek(position_ms),
             Command::SeekRelative(seconds) => {
                 let current = self.position.ms() as i64;
@@ -348,7 +354,10 @@ impl Engine {
         let capacity =
             (u64::from(sample_rate) * BUFFER_MS / 1_000) as usize * usize::from(channels);
         let (producer, consumer) = RingBuffer::new(capacity);
-        let state = Arc::new(SinkState::new(Arc::clone(&self.volume)));
+        let state = Arc::new(SinkState::new(
+            Arc::clone(&self.volume),
+            Arc::clone(&self.paused),
+        ));
 
         let mut chain = Chain::new(sample_rate, usize::from(channels), &self.settings);
         chain.set_bit_perfect(self.settings.bit_perfect && untouched);
@@ -390,13 +399,11 @@ impl Engine {
             self.stream = None;
             return Err(error);
         }
-        self.output.set_paused(self.paused)?;
         Ok(())
     }
 
     fn set_paused(&mut self, paused: bool) -> Result<()> {
-        self.paused = paused;
-        self.output.set_paused(paused)?;
+        self.paused.store(paused, Ordering::Relaxed);
         let _ = self.events.send(PlayerEvent::Paused(paused));
         Ok(())
     }
