@@ -78,6 +78,11 @@ pub enum LibraryCommand {
     Rescan,
     /// Remove stale tracks and dangling covers while preserving unplugged volumes
     Prune,
+    /// Forget where you had got to in every track
+    ///
+    /// Play counts, listening time and history are left alone; only the
+    /// resume points go.
+    ForgetPositions,
     /// Analyze loudness without modifying audio files
     AnalyzeGain {
         /// Re-analyze files that already have cached results

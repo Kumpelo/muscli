@@ -125,6 +125,8 @@
 "label.single" = " Single{suffix}"
 "label.track_count" = " {count} pistas{suffix}"
 "label.unknown_genre" = "Sin género"
+"library.positions_forgotten.one" = "olvidada la posición guardada de {count} pista"
+"library.positions_forgotten.other" = "olvidadas las posiciones guardadas de {count} pistas"
 "panel.actions" = " Acciones "
 "panel.add_to_playlist" = " Añadir a playlist "
 "panel.artist_hint" = " {name} · álbumes y singles · Esc para volver "

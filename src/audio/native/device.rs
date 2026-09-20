@@ -18,7 +18,10 @@ use rtrb::Consumer;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    audio::native::sink::{Output, SinkState, fill},
+    audio::{
+        dsp::gain::Gain,
+        native::sink::{Output, SinkState, fill},
+    },
     model::PlayerEvent,
 };
 
@@ -122,6 +125,7 @@ impl CpalOutput {
     {
         let channels = config.channels;
         let mut scratch = vec![0.0f32; SCRATCH_FRAMES * usize::from(channels.max(1))];
+        let mut volume = Gain::new(config.sample_rate, state.volume.get());
         let starved = Arc::clone(&state);
         let complaints = self.events.clone();
 
@@ -140,7 +144,7 @@ impl CpalOutput {
                         return;
                     }
                     let staging = &mut scratch[..buffer.len()];
-                    fill(staging, &mut frames, &starved, channels);
+                    fill(staging, &mut frames, &starved, channels, &mut volume);
                     for (out, sample) in buffer.iter_mut().zip(staging.iter()) {
                         *out = T::from_sample(*sample);
                     }
@@ -163,11 +167,14 @@ impl CpalOutput {
         state: Arc<SinkState>,
     ) -> Result<Stream> {
         let channels = config.channels;
+        let mut volume = Gain::new(config.sample_rate, state.volume.get());
         let complaints = self.events.clone();
         self.device
             .build_output_stream::<f32, _, _>(
                 config,
-                move |buffer: &mut [f32], _| fill(buffer, &mut frames, &state, channels),
+                move |buffer: &mut [f32], _| {
+                    fill(buffer, &mut frames, &state, channels, &mut volume)
+                },
                 move |error| {
                     let _ = complaints.send(PlayerEvent::Notice(error.to_string()));
                 },

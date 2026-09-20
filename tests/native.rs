@@ -7,10 +7,7 @@ mod common;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::Arc,
 };
 
 use muscli::{
@@ -18,8 +15,8 @@ use muscli::{
         decode::Decoder,
         dsp::Settings,
         native::{
-            engine::{Command, Engine},
-            sink::{CaptureHandle, CaptureOutput},
+            engine::{Command, Engine, Position},
+            sink::{CaptureHandle, CaptureOutput, Volume},
         },
     },
     model::PlayerEvent,
@@ -34,7 +31,7 @@ struct Harness {
     engine: Engine,
     capture: CaptureHandle,
     events: UnboundedReceiver<PlayerEvent>,
-    position: Arc<AtomicU64>,
+    position: Arc<Position>,
     _directory: TempDir,
     path: PathBuf,
 }
@@ -50,12 +47,13 @@ fn harness(millis: u32, rates: &[u32]) -> Harness {
 
     let (output, capture) = CaptureOutput::new(rates);
     let (sender, events) = unbounded_channel();
-    let position = Arc::new(AtomicU64::new(0));
+    let position = Arc::new(Position::default());
     let engine = Engine::new(
         Box::new(output),
         Settings::default(),
         sender,
         Arc::clone(&position),
+        Arc::new(Volume::default()),
     );
 
     Harness {
@@ -153,8 +151,14 @@ fn a_mono_file_reaches_both_channels_of_a_stereo_device() {
 
     let (output, capture) = CaptureOutput::with_channels(&[RATE], &[2]);
     let (sender, mut events) = unbounded_channel();
-    let position = Arc::new(AtomicU64::new(0));
-    let mut engine = Engine::new(Box::new(output), Settings::default(), sender, position);
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        position,
+        Arc::new(Volume::default()),
+    );
 
     engine.handle(Command::Load {
         path: path.clone(),
@@ -186,7 +190,7 @@ fn the_position_follows_the_device_and_not_the_decoder() {
 
     harness.engine.step();
     assert_eq!(
-        harness.position.load(Ordering::Relaxed),
+        harness.position.ms(),
         0,
         "the position moved before anything was played"
     );
@@ -196,7 +200,7 @@ fn the_position_follows_the_device_and_not_the_decoder() {
         harness.capture.pull(BLOCK);
         harness.engine.step();
     }
-    let position = harness.position.load(Ordering::Relaxed);
+    let position = harness.position.ms();
     assert!(
         position.abs_diff(250) < 40,
         "a quarter of a second in, the position reads {position} ms"
@@ -282,7 +286,7 @@ fn a_seek_moves_the_reported_position() {
 
     // Reported straight away, before a single frame has been played: the
     // interface should not show the old position while the seek lands.
-    let landed = harness.position.load(Ordering::Relaxed);
+    let landed = harness.position.ms();
     assert!(
         landed.abs_diff(1_500) < 100,
         "a seek to 1500 ms reported {landed} ms"
@@ -298,7 +302,7 @@ fn a_seek_moves_the_reported_position() {
 
     // One buffer of that went on the flush itself.
     let elapsed = (played - BLOCK as u64) * 1_000 / u64::from(RATE);
-    let position = harness.position.load(Ordering::Relaxed);
+    let position = harness.position.ms();
     assert!(
         position.abs_diff(1_500 + elapsed) < 60,
         "after seeking to 1500 ms and playing {elapsed} ms the position reads {position} ms"
@@ -433,12 +437,13 @@ fn a_queued_track_joins_the_one_playing_without_a_gap() {
 
     let (output, capture) = CaptureOutput::new(&[RATE]);
     let (sender, mut events) = unbounded_channel();
-    let position = Arc::new(AtomicU64::new(0));
+    let position = Arc::new(Position::default());
     let mut engine = Engine::new(
         Box::new(output),
         Settings::default(),
         sender,
         Arc::clone(&position),
+        Arc::new(Volume::default()),
     );
 
     engine.handle(Command::Load {
@@ -503,8 +508,14 @@ fn a_queued_track_of_another_shape_is_not_forced_to_join() {
 
     let (output, capture) = CaptureOutput::new(&[RATE, 48_000]);
     let (sender, mut events) = unbounded_channel();
-    let position = Arc::new(AtomicU64::new(0));
-    let mut engine = Engine::new(Box::new(output), Settings::default(), sender, position);
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        position,
+        Arc::new(Volume::default()),
+    );
 
     engine.handle(Command::Load {
         path: first.clone(),
@@ -576,8 +587,14 @@ fn a_track_queued_late_still_joins() {
 
     let (output, capture) = CaptureOutput::new(&[RATE]);
     let (sender, mut events) = unbounded_channel();
-    let position = Arc::new(AtomicU64::new(0));
-    let mut engine = Engine::new(Box::new(output), Settings::default(), sender, position);
+    let position = Arc::new(Position::default());
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        position,
+        Arc::new(Volume::default()),
+    );
 
     engine.handle(Command::Load {
         path: first.clone(),
@@ -709,7 +726,7 @@ fn the_position_does_not_lurch_while_a_seek_lands() {
     harness.engine.handle(Command::SeekAbsolute(1_500));
     harness.engine.step();
 
-    let position = harness.position.load(Ordering::Relaxed);
+    let position = harness.position.ms();
     assert!(
         position.abs_diff(1_500) < 60,
         "while the seek was landing the position read {position} ms"
@@ -764,4 +781,114 @@ fn a_seek_while_paused_lands_when_playing_resumes() {
         &expected[..compared]
     );
     assert_eq!(harness.capture.starts(), 1, "the device was reopened");
+}
+
+#[test]
+fn loading_a_track_does_not_report_the_last_one_s_position() {
+    // The application reads the position back inside the same tick it asked
+    // for a track. If the answer is still the previous track's, it stores it
+    // as this one's resume point and the next play starts a minute in.
+    use muscli::audio::{AudioBackend, native::player::NativePlayer};
+    use std::{thread, time::Duration};
+
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("one.flac");
+    let second = directory.path().join("two.flac");
+    for (path, hz) in [(&first, 440.0), (&second, 660.0)] {
+        fs::write(
+            path,
+            common::flac_bytes(RATE, &common::sine(RATE, hz, 4_000)),
+        )
+        .expect("write a fixture");
+    }
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, _events) = unbounded_channel();
+    let mut player = NativePlayer::start_with(
+        move |_| Ok(Box::new(output) as Box<dyn muscli::audio::native::sink::Output>),
+        Settings::default(),
+        sender,
+    )
+    .expect("start the backend");
+
+    player.load(&first, 0).expect("load the first");
+    thread::sleep(Duration::from_millis(100));
+    for _ in 0..40 {
+        capture.pull(BLOCK);
+    }
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        player.position_ms() > 500,
+        "the first track never got going"
+    );
+
+    player.load(&second, 0).expect("load the second");
+    let straight_away = player.position_ms();
+    assert_eq!(
+        straight_away, 0,
+        "a track just loaded reported {straight_away} ms, which belongs to the one before it"
+    );
+}
+
+#[test]
+fn a_configured_equaliser_reaches_the_device() {
+    // Measured at the far end of the whole path rather than on the filter in
+    // isolation, so a band that is configured but never wired up cannot pass.
+    use muscli::config::EQUALIZER_BANDS;
+
+    let directory = TempDir::new().expect("a temporary directory");
+    let path = directory.path().join("tone.flac");
+    // A tone sitting on the 1 kHz band, which is EQUALIZER_BANDS[3].
+    let band = EQUALIZER_BANDS[3] as f64;
+    fs::write(
+        &path,
+        common::flac_bytes(RATE, &common::sine(RATE, band, 4_000)),
+    )
+    .expect("write the fixture");
+
+    let level = |gain_db: f32| {
+        let settings = Settings {
+            equalizer: EQUALIZER_BANDS
+                .iter()
+                .enumerate()
+                .map(|(index, hz)| (*hz, if index == 3 { gain_db } else { 0.0 }))
+                .collect(),
+            ..Settings::default()
+        };
+        let (output, capture) = CaptureOutput::new(&[RATE]);
+        let (sender, _events) = unbounded_channel();
+        let mut engine = Engine::new(
+            Box::new(output),
+            settings,
+            sender,
+            Arc::new(Position::default()),
+            Arc::new(Volume::default()),
+        );
+        engine.handle(Command::Load {
+            path: path.clone(),
+            position_ms: 0,
+        });
+
+        let mut captured = Vec::new();
+        while captured.len() < 3 * 32_768 {
+            engine.step();
+            captured.extend(capture.pull(BLOCK));
+        }
+        // Past the filter's start-up, and measured through a window because
+        // the tone is not coherent with the analysis length.
+        muscli::audio::measure::windowed_amplitude(
+            &captured[32_768..2 * 32_768],
+            RATE,
+            band - 100.0,
+            band + 100.0,
+        )
+    };
+
+    let flat = level(0.0);
+    let lifted = level(6.0);
+    let moved = muscli::audio::measure::db(lifted / flat);
+    assert!(
+        (moved - 6.0).abs() < 0.5,
+        "a band set to +6 dB moved the device's audio by {moved:.2} dB"
+    );
 }

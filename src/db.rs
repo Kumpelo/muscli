@@ -1099,6 +1099,17 @@ impl Database {
         Ok(())
     }
 
+    /// Forget every resume point, leaving counts and history untouched.
+    ///
+    /// Returns how many tracks had one. Resume points are also cleared by
+    /// playing a track to its end, so this is for clearing the lot at once.
+    pub fn forget_resume_positions(&mut self) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE track_stats SET resume_position_ms=0 WHERE resume_position_ms>0",
+            [],
+        )?)
+    }
+
     pub fn update_history(&mut self, update: HistoryUpdate<'_>) -> Result<()> {
         let tx = self.conn.transaction()?;
         Self::update_history_tx(&tx, update)?;

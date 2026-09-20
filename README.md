@@ -54,6 +54,7 @@ muscli library remove PATH
 muscli library list
 muscli library rescan
 muscli library prune
+muscli library forget-positions
 muscli library analyze-gain
 muscli library write-gain --yes
 muscli doctor
@@ -107,8 +108,16 @@ rather than by trusting its extension. mpv is started only if some file needs
 it.
 
 An eight-band equaliser is configured with `equalizer` in `config.toml`, as
-gains in decibels from low to high; all zero means the filter is not installed
-at all. It works on both backends and is designed to sound the same on each.
+gains in decibels from low to high — the bands are 60, 150, 400, 1000, 2400,
+6000, 12000 and 16000 Hz, each an octave wide:
+
+```toml
+equalizer = [4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 3.0]
+```
+
+There is no default: an unset or all-zero list means the filter is not
+installed at all, so nothing is coloured and nothing is heard. It works on
+both backends and is designed to sound the same on each.
 
 FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
 indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and

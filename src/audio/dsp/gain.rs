@@ -39,7 +39,14 @@ impl Gain {
     }
 
     /// Slide to a linear gain.
+    ///
+    /// Asking for the target it is already heading to does nothing, so a
+    /// caller that sets it on every block does not restart the ramp on every
+    /// block and leave it never arriving.
     pub fn set(&mut self, target: f64) {
+        if self.target == target {
+            return;
+        }
         self.target = target;
         self.retarget();
     }

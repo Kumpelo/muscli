@@ -15,13 +15,45 @@ use std::sync::{
 use anyhow::Result;
 use rtrb::Consumer;
 
+use crate::audio::dsp::gain::Gain;
+
+/// The listener's volume, shared between the interface and the output.
+///
+/// It lives here rather than in the processing chain because the chain runs
+/// half a second ahead of what is being heard: a volume applied there is a
+/// volume that arrives when the buffer does, and holding a key would feel
+/// like pushing something heavy. Applied on the way out, it lands in the time
+/// it takes to fill one device buffer.
+#[derive(Debug)]
+pub struct Volume(AtomicU64);
+
+impl Default for Volume {
+    fn default() -> Self {
+        Self(AtomicU64::new(1.0f64.to_bits()))
+    }
+}
+
+impl Volume {
+    pub fn set(&self, volume: f64) {
+        self.0
+            .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
+}
+
 /// What the output reports back, shared with whoever is interested.
 ///
 /// Both counters are in frames and only ever increase, which is what lets the
 /// engine read them from another thread without a lock and still get an answer
 /// that means something.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SinkState {
+    /// What the listener asked for, shared across every stream this player
+    /// opens so that changing it needs no round trip through the engine.
+    pub volume: Arc<Volume>,
     /// Frames handed to the device since the stream was started.
     pub played: AtomicU64,
     /// Frames the device asked for and did not get.
@@ -41,6 +73,19 @@ pub struct SinkState {
     pub flushed: AtomicU64,
     /// The frame the first sample after the flush will be played at.
     pub flushed_at: AtomicU64,
+}
+
+impl SinkState {
+    pub fn new(volume: Arc<Volume>) -> Self {
+        Self {
+            volume,
+            played: AtomicU64::new(0),
+            starved: AtomicU64::new(0),
+            flush: AtomicU64::new(0),
+            flushed: AtomicU64::new(0),
+            flushed_at: AtomicU64::new(0),
+        }
+    }
 }
 
 /// An output device.
@@ -83,7 +128,13 @@ pub trait Output {
 /// both the real device and the test see the same behaviour: what is there is
 /// played, the rest is silence, and the shortfall is counted. Anything else --
 /// waiting, allocating, locking -- would be a glitch rather than a gap.
-pub fn fill(buffer: &mut [f32], frames: &mut Consumer<f32>, state: &SinkState, channels: u16) {
+pub fn fill(
+    buffer: &mut [f32],
+    frames: &mut Consumer<f32>,
+    state: &SinkState,
+    channels: u16,
+    volume: &mut Gain,
+) {
     let wanted = buffer.len();
     let channel_count = u64::from(channels.max(1));
 
@@ -110,6 +161,10 @@ pub fn fill(buffer: &mut [f32], frames: &mut Consumer<f32>, state: &SinkState, c
     let short = missing.len();
     missing.fill(0.0);
 
+    // Last of all, so it reaches what is already decoded and waiting.
+    volume.set(state.volume.get());
+    volume.process(buffer, channels.max(1).into());
+
     state
         .played
         .fetch_add(wanted as u64 / channel_count, Ordering::Relaxed);
@@ -135,6 +190,7 @@ struct Capture {
     /// How many times a stream has been opened on this output, so a test can
     /// tell a seek that reuses the device from one that reopens it.
     starts: usize,
+    volume: Option<Gain>,
     frames: Option<Consumer<f32>>,
     state: Option<Arc<SinkState>>,
     channels: u16,
@@ -189,7 +245,7 @@ impl Output for CaptureOutput {
 
     fn start(
         &mut self,
-        _sample_rate: u32,
+        sample_rate: u32,
         channels: u16,
         frames: Consumer<f32>,
         state: Arc<SinkState>,
@@ -198,6 +254,7 @@ impl Output for CaptureOutput {
             .shared
             .lock()
             .expect("the capture lock is never poisoned");
+        capture.volume = Some(Gain::new(sample_rate, state.volume.get()));
         capture.frames = Some(frames);
         capture.state = Some(state);
         capture.channels = channels;
@@ -237,13 +294,14 @@ impl CaptureHandle {
         let Capture {
             frames: Some(ring),
             state: Some(state),
+            volume: Some(volume),
             paused: false,
             ..
         } = &mut *capture
         else {
             return buffer;
         };
-        fill(&mut buffer, ring, state, channels);
+        fill(&mut buffer, ring, state, channels, volume);
         buffer
     }
 
@@ -353,5 +411,77 @@ mod tests {
     fn nothing_is_folded_without_being_asked() {
         assert_eq!(choose_channels(6, &[2]), None);
         assert_eq!(choose_channels(2, &[1]), None);
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+    use rtrb::RingBuffer;
+
+    const RATE: u32 = 48_000;
+
+    fn ring(samples: &[f32]) -> (Consumer<f32>, Arc<SinkState>) {
+        let (mut producer, consumer) = RingBuffer::new(samples.len().max(1));
+        let _ = producer.push_partial_slice(samples);
+        std::mem::forget(producer);
+        (
+            consumer,
+            Arc::new(SinkState::new(Arc::new(Volume::default()))),
+        )
+    }
+
+    #[test]
+    fn the_volume_reaches_audio_that_is_already_waiting() {
+        // The buffer holds half a second. A volume applied where the decoding
+        // happens would not be heard until all of that had played, which is
+        // what made holding the key feel like pushing something heavy.
+        let (mut frames, state) = ring(&vec![1.0f32; 4_096]);
+        state.volume.set(0.5);
+        let mut gain = Gain::new(RATE, state.volume.get());
+
+        let mut buffer = vec![0.0f32; 2_048];
+        fill(&mut buffer, &mut frames, &state, 2, &mut gain);
+
+        // Past the ramp, the samples that were already in the ring come out
+        // at the new volume.
+        let settled = buffer[buffer.len() - 1];
+        assert!(
+            (settled - 0.5).abs() < 1e-6,
+            "audio already buffered came out at {settled} instead of 0.5"
+        );
+    }
+
+    #[test]
+    fn a_volume_change_does_not_click() {
+        let (mut frames, state) = ring(&vec![1.0f32; 8_192]);
+        let mut gain = Gain::new(RATE, 1.0);
+
+        let mut buffer = vec![0.0f32; 1_024];
+        fill(&mut buffer, &mut frames, &state, 2, &mut gain);
+        state.volume.set(0.0);
+        let mut next = vec![0.0f32; 4_096];
+        fill(&mut next, &mut frames, &state, 2, &mut gain);
+
+        buffer.extend_from_slice(&next);
+        let worst = buffer
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst < 0.002,
+            "the volume jumped by {worst} between samples"
+        );
+    }
+
+    #[test]
+    fn full_volume_leaves_the_samples_exactly_as_they_were() {
+        let original: Vec<f32> = (0..1_024).map(|n| (n as f32 * 0.01).sin() * 0.5).collect();
+        let (mut frames, state) = ring(&original);
+        let mut gain = Gain::new(RATE, 1.0);
+
+        let mut buffer = vec![0.0f32; 1_024];
+        fill(&mut buffer, &mut frames, &state, 2, &mut gain);
+        assert_eq!(buffer, original);
     }
 }

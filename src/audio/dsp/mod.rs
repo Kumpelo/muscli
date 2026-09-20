@@ -6,10 +6,15 @@
 //!    it after the equaliser and a quiet track would be boosted into the
 //!    limiter that the loud one it was meant to match never reaches.
 //! 2. **Equaliser**, on a signal that is now at a sensible level.
-//! 3. **Volume**, last of the gains, so turning the music down turns down
-//!    everything that came before it rather than only part of it.
-//! 4. **Limiter**, which can therefore only see what will actually be played.
-//! 5. **Dither**, if and only if the device takes fixed point.
+//! 3. **Limiter**, catching whatever the two of them pushed over full scale.
+//! 4. **Dither**, if and only if the device takes fixed point.
+//!
+//! The listener's volume is deliberately not here. This chain runs half a
+//! second ahead of what is being heard, and a volume applied here arrives
+//! when the buffer does; it belongs at the point the samples leave for the
+//! device. That also puts it after the limiter, which is where it should be:
+//! whether a sample would clip is a property of the recording, the ReplayGain
+//! and the equaliser, not of how loud somebody is listening.
 //!
 //! Every stage does nothing, exactly, when it has nothing to do: a flat
 //! equaliser, unity gain and a signal under the ceiling give back the samples
@@ -32,7 +37,8 @@ use limiter::Limiter;
 /// What the chain should do, as the application sees it.
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// `0.0` to `1.0`.
+    /// `0.0` to `1.0`. Applied at the output rather than by the chain; this
+    /// is the value a stream starts at.
     pub volume: f64,
     /// The current track's adjustment, in decibels.
     pub replay_gain_db: Option<f64>,
@@ -67,7 +73,6 @@ pub struct Chain {
     channels: usize,
     replay_gain: Gain,
     equalizer: Equalizer,
-    volume: Gain,
     limiter: Limiter,
     dither: Option<Dither>,
     bit_perfect: bool,
@@ -80,26 +85,17 @@ impl Chain {
         replay_gain.set_db(settings.replay_gain_db);
         replay_gain.settle();
 
-        let mut volume = Gain::new(sample_rate, settings.volume.clamp(0.0, 1.0));
-        volume.settle();
-
         Self {
             sample_rate,
             channels,
             replay_gain,
             equalizer: Equalizer::new(sample_rate, channels, &settings.equalizer),
-            volume,
             limiter: Limiter::new(sample_rate, channels, settings.ceiling_db),
             dither: settings
                 .output_bits
                 .map(|bits| Dither::new(bits, channels, settings.noise_shaping)),
             bit_perfect: settings.bit_perfect,
         }
-    }
-
-    /// Slide the volume to a new setting.
-    pub fn set_volume(&mut self, volume: f64) {
-        self.volume.set(volume.clamp(0.0, 1.0));
     }
 
     /// Apply a track's ReplayGain, or remove it with `None`.
@@ -125,7 +121,6 @@ impl Chain {
     /// Arrive at every pending target immediately.
     pub fn settle(&mut self) {
         self.replay_gain.settle();
-        self.volume.settle();
     }
 
     /// Frames of delay the chain adds, which a reported position has to
@@ -159,7 +154,6 @@ impl Chain {
         }
         self.replay_gain.process(interleaved, self.channels);
         self.equalizer.process(interleaved);
-        self.volume.process(interleaved, self.channels);
         self.limiter.process(interleaved);
         if let Some(dither) = &mut self.dither {
             dither.process(interleaved, self.channels);
@@ -171,7 +165,7 @@ impl Chain {
 mod tests {
     use super::*;
     use crate::{
-        audio::measure::{db, peak, rms, thd_n, tone, tone_frequency},
+        audio::measure::{db, peak, thd_n, tone, tone_frequency},
         config::EQUALIZER_BANDS,
     };
 
@@ -241,23 +235,22 @@ mod tests {
     }
 
     #[test]
-    fn the_volume_reaches_everything_before_it() {
+    fn the_listeners_volume_is_not_applied_here() {
+        // It is applied at the output instead. Applying it here as well would
+        // turn the music down twice, and applying it only here would make a
+        // volume change wait for the buffer to drain.
         let settings = Settings {
             volume: 0.25,
-            replay_gain_db: Some(6.0),
-            equalizer: bands([0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 0.0]),
             ..Settings::default()
         };
         let mut chain = Chain::new(RATE, 1, &settings);
 
-        let original = tone(FRAMES, CYCLES, 0.1);
+        let original = tone(FRAMES, CYCLES, 0.5);
         let mut signal = original.clone();
         chain.process(&mut signal);
 
-        // -12 dB of volume against +6 of ReplayGain and +6 of lift: back to
-        // where it started, which only happens if the volume applies to both.
-        let moved = db(rms(&signal) / rms(&original));
-        assert!(moved.abs() < 0.2, "the level moved {moved:.2} dB");
+        let skip = chain.latency_frames();
+        assert_eq!(&signal[skip..], &original[..original.len() - skip]);
     }
 
     #[test]

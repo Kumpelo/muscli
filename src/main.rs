@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use muscli::t;
+use muscli::{t, tn};
 
 use muscli::{
     cli::{
@@ -87,6 +87,11 @@ fn main() -> Result<()> {
                 for error in report.errors {
                     eprintln!("warning: {error}");
                 }
+            }
+            LibraryCommand::ForgetPositions => {
+                let mut db = Database::open(&paths.database_file())?;
+                let cleared = db.forget_resume_positions()?;
+                println!("{}", tn!("library.positions_forgotten", cleared));
             }
             LibraryCommand::Prune => {
                 if control::send(&paths.control_socket(), RemoteCommand::Prune)? {

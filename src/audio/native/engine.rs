@@ -27,7 +27,7 @@ use crate::{
     audio::{
         decode::Decoder,
         dsp::{Chain, Settings, resample::Resampler},
-        native::sink::{Output, SinkState, choose_channels, choose_rate},
+        native::sink::{Output, SinkState, Volume, choose_channels, choose_rate},
     },
     model::PlayerEvent,
     t,
@@ -54,6 +54,44 @@ const RESTING: Duration = Duration::from_millis(100);
 /// is struggling struggles continuously, and a message per dropout would bury
 /// everything else in the status bar.
 const STARVE_NOTICE_EVERY: Duration = Duration::from_secs(5);
+
+/// The playing position, and a stamp saying whose position it is.
+///
+/// The application asks for a track and then reads the position back from
+/// here. In between, the engine is still playing the previous one, and a
+/// reading taken then is the old track's -- which the application stores as
+/// the new track's resume point, so the next time it is played it starts a
+/// minute in. The stamp is what makes a reading from before the change
+/// recognisable as one, so it can be dropped instead of written.
+#[derive(Debug, Default)]
+pub struct Position {
+    ms: AtomicU64,
+    epoch: AtomicU64,
+}
+
+impl Position {
+    /// State a position from the application's side, retiring whatever the
+    /// engine has not caught up with yet.
+    pub fn declare(&self, ms: u64) {
+        self.ms.store(ms, Ordering::Relaxed);
+        self.epoch.fetch_add(1, Ordering::Release);
+    }
+
+    pub fn ms(&self) -> u64 {
+        self.ms.load(Ordering::Relaxed)
+    }
+
+    fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Acquire)
+    }
+
+    /// Report from the engine, ignored if the application has moved on.
+    fn report(&self, epoch: u64, ms: u64) {
+        if self.epoch() == epoch {
+            self.ms.store(ms, Ordering::Relaxed);
+        }
+    }
+}
 
 /// What the application asks the engine to do.
 #[derive(Debug)]
@@ -147,11 +185,16 @@ pub struct Engine {
     events: UnboundedSender<PlayerEvent>,
     /// Read by the interface from another thread, so it is an atomic rather
     /// than something that needs a lock on the audio path.
-    position_ms: Arc<AtomicU64>,
+    position: Arc<Position>,
+    /// The application's position stamp as of the last command handled here.
+    epoch: u64,
     stream: Option<Stream>,
     /// The track queued behind the one playing, opened early so the join
     /// costs no file opening at the moment it has to be seamless.
     prefetch: Option<Decoder>,
+    /// Applied on the way out rather than here, so it reaches audio that is
+    /// already decoded and waiting.
+    volume: Arc<Volume>,
     paused: bool,
     /// Frames already announced as missed, so a shortfall is reported once.
     reported_starved: u64,
@@ -163,13 +206,17 @@ impl Engine {
         output: Box<dyn Output>,
         settings: Settings,
         events: UnboundedSender<PlayerEvent>,
-        position_ms: Arc<AtomicU64>,
+        position: Arc<Position>,
+        volume: Arc<Volume>,
     ) -> Self {
+        let epoch = position.epoch();
         Self {
             output,
             settings,
             events,
-            position_ms,
+            position,
+            epoch,
+            volume,
             stream: None,
             prefetch: None,
             paused: false,
@@ -204,6 +251,10 @@ impl Engine {
     }
 
     pub fn handle(&mut self, command: Command) {
+        // Commands arrive in the order they were issued, and each one may be
+        // the application declaring a new position, so the engine adopts the
+        // stamp as it takes the command up.
+        self.epoch = self.position.epoch();
         let outcome = match command {
             Command::Load { path, position_ms } => {
                 self.prefetch = None;
@@ -229,15 +280,13 @@ impl Engine {
             Command::Toggle => self.set_paused(!self.paused),
             Command::SeekAbsolute(position_ms) => self.seek(position_ms),
             Command::SeekRelative(seconds) => {
-                let current = self.position_ms.load(Ordering::Relaxed) as i64;
+                let current = self.position.ms() as i64;
                 let wanted = (current + (seconds * 1_000.0) as i64).max(0) as u64;
                 self.seek(wanted)
             }
             Command::Volume(volume) => {
                 self.settings.volume = volume.clamp(0.0, 1.0);
-                if let Some(stream) = &mut self.stream {
-                    stream.chain.set_volume(self.settings.volume);
-                }
+                self.volume.set(self.settings.volume);
                 Ok(())
             }
             Command::ReplayGain(gain_db) => {
@@ -325,7 +374,7 @@ impl Engine {
         let capacity =
             (u64::from(sample_rate) * BUFFER_MS / 1_000) as usize * usize::from(channels);
         let (producer, consumer) = RingBuffer::new(capacity);
-        let state = Arc::new(SinkState::default());
+        let state = Arc::new(SinkState::new(Arc::clone(&self.volume)));
 
         let mut chain = Chain::new(sample_rate, usize::from(channels), &self.settings);
         chain.set_bit_perfect(self.settings.bit_perfect && untouched);
@@ -334,7 +383,7 @@ impl Engine {
         if let Some(duration) = decoder.duration_ms() {
             let _ = self.events.send(PlayerEvent::Duration(duration));
         }
-        self.position_ms.store(position_ms, Ordering::Relaxed);
+        self.position.report(self.epoch, position_ms);
 
         self.reported_starved = 0;
         self.stream = Some(Stream {
@@ -414,15 +463,15 @@ impl Engine {
         stream.awaiting_flush = Some(generation);
         stream.state.flush.store(generation, Ordering::Release);
 
-        self.position_ms
-            .store(stream.decoder.position_ms(), Ordering::Relaxed);
+        self.position
+            .report(self.epoch, stream.decoder.position_ms());
         Ok(())
     }
 
     fn stop(&mut self) {
         self.output.stop();
         self.stream = None;
-        self.position_ms.store(0, Ordering::Relaxed);
+        self.position.report(self.epoch, 0);
     }
 
     /// Decode and process until the ring is full or the track runs out.
@@ -590,8 +639,7 @@ impl Engine {
             && mark.output_frame <= played
         {
             let elapsed = (played - mark.output_frame) * 1_000 / u64::from(stream.sample_rate);
-            self.position_ms
-                .store(mark.source_ms + elapsed, Ordering::Relaxed);
+            self.position.report(self.epoch, mark.source_ms + elapsed);
         }
 
         while stream

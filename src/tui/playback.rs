@@ -311,14 +311,18 @@ impl App {
     }
 
     pub(super) fn handle_remote_action(&mut self, action: RemoteCommand) -> Result<()> {
-        let step = f64::from(self.config.volume_step.clamp(1, 20)) / 100.0;
+        // Stepped in whole percent rather than by adding a fraction to what
+        // is already there. Adding 0.05 to an f64 nine times lands on
+        // 0.4499999999999999, which reads back as 44 rather than 45, and from
+        // then on every step looks like a different size than the one asked
+        // for.
+        let step = i32::from(self.config.volume_step.clamp(1, 20));
+        let percent = (self.playback.volume * 100.0).round() as i32;
+        let stepped =
+            |by: i32| PlayerAction::SetVolume(f64::from((percent + by).clamp(0, 100)) / 100.0);
         match action {
-            RemoteCommand::VolumeUp => self.handle_action(PlayerAction::SetVolume(
-                (self.playback.volume + step).min(1.0),
-            ))?,
-            RemoteCommand::VolumeDown => self.handle_action(PlayerAction::SetVolume(
-                (self.playback.volume - step).max(0.0),
-            ))?,
+            RemoteCommand::VolumeUp => self.handle_action(stepped(step))?,
+            RemoteCommand::VolumeDown => self.handle_action(stepped(-step))?,
             RemoteCommand::VolumeSet(percent) => {
                 self.handle_action(PlayerAction::SetVolume(f64::from(percent.min(100)) / 100.0))?
             }

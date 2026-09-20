@@ -4,7 +4,6 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, Sender},
     },
     thread::{self, JoinHandle},
@@ -19,8 +18,8 @@ use crate::{
         dsp::Settings,
         native::{
             device::CpalOutput,
-            engine::{Command, Engine},
-            sink::Output,
+            engine::{Command, Engine, Position},
+            sink::{Output, Volume},
         },
     },
     model::PlayerEvent,
@@ -28,7 +27,14 @@ use crate::{
 
 pub struct NativePlayer {
     commands: Sender<Command>,
-    position_ms: Arc<AtomicU64>,
+    position: Arc<Position>,
+    /// Written straight from the caller's thread: the whole point of applying
+    /// the volume at the output is that it does not queue behind the audio.
+    volume: Arc<Volume>,
+    /// What the listener asked for, kept so that leaving bit-perfect puts it
+    /// back rather than leaving the music at full scale.
+    wanted: f64,
+    bit_perfect: bool,
     device: String,
     thread: Option<JoinHandle<()>>,
 }
@@ -66,8 +72,13 @@ impl NativePlayer {
     {
         let (commands, inbox) = mpsc::channel();
         let (opened, opening) = mpsc::channel();
-        let position_ms = Arc::new(AtomicU64::new(0));
-        let shared = Arc::clone(&position_ms);
+        let position = Arc::new(Position::default());
+        let shared = Arc::clone(&position);
+        let wanted = settings.volume.clamp(0.0, 1.0);
+        let bit_perfect = settings.bit_perfect;
+        let volume = Arc::new(Volume::default());
+        volume.set(if bit_perfect { 1.0 } else { wanted });
+        let shared_volume = Arc::clone(&volume);
 
         let thread = thread::Builder::new()
             .name("muscli-audio".to_string())
@@ -79,7 +90,7 @@ impl NativePlayer {
                         return;
                     }
                 };
-                let mut engine = Engine::new(output, settings, events, shared);
+                let mut engine = Engine::new(output, settings, events, shared, shared_volume);
                 if opened.send(Ok(engine.output_name())).is_err() {
                     return;
                 }
@@ -117,7 +128,10 @@ impl NativePlayer {
 
         Ok(Self {
             commands,
-            position_ms,
+            position,
+            volume,
+            wanted,
+            bit_perfect,
             device,
             thread: Some(thread),
         })
@@ -161,6 +175,10 @@ impl AudioBackend for NativePlayer {
     }
 
     fn load(&mut self, path: &Path, position_ms: u64) -> Result<()> {
+        // Declared here rather than left to the engine. The application reads
+        // the position back within the same tick, and until the engine takes
+        // the command up it is still playing the track before this one.
+        self.position.declare(position_ms);
         self.send(Command::Load {
             path: path.to_path_buf(),
             position_ms,
@@ -186,15 +204,23 @@ impl AudioBackend for NativePlayer {
     }
 
     fn seek_relative(&mut self, seconds: f64) -> Result<()> {
+        let wanted = (self.position.ms() as i64 + (seconds * 1_000.0) as i64).max(0) as u64;
+        self.position.declare(wanted);
         self.send(Command::SeekRelative(seconds))
     }
 
     fn seek_absolute_ms(&mut self, position_ms: u64) -> Result<()> {
+        self.position.declare(position_ms);
         self.send(Command::SeekAbsolute(position_ms))
     }
 
     fn set_volume(&mut self, volume: f64) -> Result<()> {
-        self.send(Command::Volume(volume))
+        self.wanted = volume.clamp(0.0, 1.0);
+        if !self.bit_perfect {
+            self.volume.set(self.wanted);
+        }
+        // Still told, so that a stream opened later starts at this volume.
+        self.send(Command::Volume(self.wanted))
     }
 
     fn set_replay_gain(&mut self, gain_db: Option<f64>) -> Result<()> {
@@ -206,14 +232,19 @@ impl AudioBackend for NativePlayer {
     }
 
     fn set_bit_perfect(&mut self, on: bool) -> Result<()> {
+        self.bit_perfect = on;
+        // Untouched means untouched: the volume is given up while it is on,
+        // which is what the settings view says it costs.
+        self.volume.set(if on { 1.0 } else { self.wanted });
         self.send(Command::BitPerfect(on))
     }
 
     fn stop(&mut self) -> Result<()> {
+        self.position.declare(0);
         self.send(Command::Stop)
     }
 
     fn position_ms(&self) -> u64 {
-        self.position_ms.load(Ordering::Relaxed)
+        self.position.ms()
     }
 }

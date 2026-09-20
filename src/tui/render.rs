@@ -1002,7 +1002,7 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 shuffle = if app.shuffle { "󰒟" } else { "󰒞" },
                 repeat = repeat
             ),
-            (app.playback.volume * 100.0) as u8
+            (app.playback.volume * 100.0).round() as u8
         ))
         .alignment(Alignment::Right),
         columns[2],

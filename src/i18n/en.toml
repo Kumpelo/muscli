@@ -125,6 +125,8 @@
 "label.single" = " Single{suffix}"
 "label.track_count" = " {count} tracks{suffix}"
 "label.unknown_genre" = "No genre"
+"library.positions_forgotten.one" = "forgot the resume point of {count} track"
+"library.positions_forgotten.other" = "forgot the resume points of {count} tracks"
 "panel.actions" = " Actions "
 "panel.add_to_playlist" = " Add to playlist "
 "panel.artist_hint" = " {name} · albums and singles · Esc to go back "
