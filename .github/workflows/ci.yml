@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Every branch, not a list: a branch that is not covered is a branch whose
+  # first run happens when a pull request opens, which is too late to be
+  # useful while working on it.
   push:
-    branches: [main, master, "review/**"]
   pull_request:
 
 permissions:
