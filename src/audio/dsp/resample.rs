@@ -16,6 +16,10 @@ use rubato::{
 /// Input frames handed to the converter at a time.
 const CHUNK: usize = 1024;
 
+/// Silence fed to the filter at the end of a track to walk out what it still
+/// holds of the music.
+const TAIL: usize = 2_048;
+
 /// Length of the interpolation filter. `benches/audio.rs` puts 256 taps at
 /// 6.7 ms per second of stereo; shorter filters cost the top octave.
 const TAPS: usize = 256;
@@ -23,6 +27,11 @@ const TAPS: usize = 256;
 pub struct Resampler {
     inner: Async<f32>,
     channels: usize,
+    /// Output frames per input frame, which is how many frames the input fed
+    /// so far is owed.
+    ratio: f64,
+    fed: u64,
+    produced: u64,
     /// Input that did not fill a chunk, interleaved, waiting for the rest.
     pending: Vec<f32>,
     /// Output scratch, sized once so the hot path never allocates.
@@ -52,6 +61,9 @@ impl Resampler {
         Ok(Self {
             inner,
             channels,
+            ratio,
+            fed: 0,
+            produced: 0,
             pending: Vec::with_capacity(CHUNK * channels * 2),
             scratch,
         })
@@ -60,6 +72,35 @@ impl Resampler {
     /// Convert interleaved input, appending interleaved output. Input that
     /// does not fill a chunk is held, so blocks may be any size.
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<()> {
+        self.fed += (input.len() / self.channels) as u64;
+        self.convert(input, output)
+    }
+
+    /// Walk the filter out at the end of a track, appending only what the
+    /// input is still owed. Untrimmed, the silence used to push the tail out
+    /// would be appended to the music as well.
+    pub fn flush(&mut self, output: &mut Vec<f32>) -> Result<()> {
+        let owed = (self.fed as f64 * self.ratio).round() as u64;
+        let wanted = owed.saturating_sub(self.produced) as usize * self.channels;
+        if wanted == 0 {
+            return Ok(());
+        }
+
+        let start = output.len();
+        let silence = vec![0.0; TAIL * self.channels];
+        while output.len() - start < wanted {
+            let before = output.len();
+            self.convert(&silence, output)?;
+            if output.len() == before {
+                break;
+            }
+        }
+        output.truncate(start + wanted);
+        Ok(())
+    }
+
+    fn convert(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<()> {
+        let before = output.len();
         self.pending.extend_from_slice(input);
 
         let wanted = self.inner.input_frames_next() * self.channels;
@@ -82,12 +123,15 @@ impl Resampler {
             taken += wanted;
         }
         self.pending.drain(..taken);
+        self.produced += ((output.len() - before) / self.channels) as u64;
         Ok(())
     }
 
     /// Forget what is half-converted, for a seek.
     pub fn reset(&mut self) {
         self.pending.clear();
+        self.fed = 0;
+        self.produced = 0;
         self.inner.reset();
     }
 }
@@ -117,6 +161,26 @@ mod tests {
             input.len(),
             output.len()
         );
+    }
+
+    #[test]
+    fn a_flush_ends_the_track_on_music_rather_than_on_silence() {
+        // The filter is walked out with silence, so an untrimmed flush would
+        // append that silence to the track.
+        let input = tone(1 << 14, 341, 0.5);
+        let mut resampler = Resampler::new(44_100, 48_000, 1).expect("build the converter");
+        let mut output = Vec::new();
+        resampler.process(&input, &mut output).expect("convert");
+        resampler.flush(&mut output).expect("flush");
+
+        let expected = (input.len() as f64 * 48_000.0 / 44_100.0).round() as usize;
+        assert_eq!(output.len(), expected);
+
+        let tail = &output[output.len() - 64..];
+        let peak = tail
+            .iter()
+            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+        assert!(peak > 0.1, "the track ends in silence: peak {peak}");
     }
 
     #[test]
