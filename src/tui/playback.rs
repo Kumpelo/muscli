@@ -489,7 +489,8 @@ impl App {
             PlayerAction::SeekAbsolute(position) => self.player.seek_absolute_ms(position)?,
             PlayerAction::SetVolume(volume) => {
                 self.playback.volume = volume.clamp(0.0, 1.0);
-                self.player.set_volume(self.playback.volume)?;
+                self.player
+                    .set_volume(self.config.volume_gain(self.playback.volume))?;
                 if self.playback.volume > 0.0 {
                     self.muted_volume = None;
                 }
@@ -501,7 +502,8 @@ impl App {
                 } else {
                     self.playback.volume = self.muted_volume.take().unwrap_or(1.0);
                 }
-                self.player.set_volume(self.playback.volume)?;
+                self.player
+                    .set_volume(self.config.volume_gain(self.playback.volume))?;
             }
             PlayerAction::SetShuffle(value) => self.shuffle = value,
             PlayerAction::SetRepeat(value) => self.repeat = value,
@@ -525,7 +527,10 @@ impl App {
                 self.playback.status = PlaybackStatus::Playing
             }
             PlayerEvent::Paused(false) => {}
-            PlayerEvent::Volume(value) => self.playback.volume = value,
+            // mpv reports an amplitude; the control is a position on a
+            // curve, and showing one as the other would make it jump every
+            // time mpv echoed back what it was told.
+            PlayerEvent::Volume(gain) => self.playback.volume = self.config.volume_position(gain),
             PlayerEvent::PlaylistPosition(position) => {
                 // Anything past the first entry means mpv rolled into the track
                 // queued behind this one.
@@ -625,6 +630,7 @@ impl App {
             position_ms: self.playback.position_ms,
             volume: self.playback.volume,
             last_nonzero_volume: self.muted_volume,
+            volume_is_position: true,
             shuffle: self.shuffle,
             repeat: self.repeat,
         }

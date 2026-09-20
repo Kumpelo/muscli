@@ -996,13 +996,20 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{}\n󰕾 {:>3}%",
+            "{}\n󰕾 {:>3}% {}",
             t!(
                 "label.shuffle_repeat",
                 shuffle = if app.shuffle { "󰒟" } else { "󰒞" },
                 repeat = repeat
             ),
-            (app.playback.volume * 100.0).round() as u8
+            (app.playback.volume * 100.0).round() as u8,
+            // The decibels as well as the percentage: the control moves in
+            // decibels now, and the number that says how loud it is should
+            // be the one that means something.
+            match app.config.volume_db(app.playback.volume) {
+                Some(db) => t!("label.decibels", value = format!("{db:.0}")),
+                None => t!("label.silent").to_owned(),
+            }
         ))
         .alignment(Alignment::Right),
         columns[2],

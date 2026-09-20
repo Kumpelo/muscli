@@ -414,11 +414,21 @@ async fn run_inner(
     let db = Database::open(&paths.database_file())?;
     let saved = db.load_playback()?;
     let (player_events_tx, player_events) = tokio_mpsc::unbounded_channel();
-    let saved_volume = saved.volume.clamp(0.0, 1.0);
-    let (mut player, backend_warning) =
-        start_player(&paths, &config, saved_volume, player_events_tx)?;
+    // Sessions saved before the control had a curve hold an amplitude; read
+    // as a position it would come back far quieter than it was left.
+    let saved_volume = if saved.volume_is_position {
+        saved.volume.clamp(0.0, 1.0)
+    } else {
+        config.volume_position(saved.volume)
+    };
+    let (mut player, backend_warning) = start_player(
+        &paths,
+        &config,
+        config.volume_gain(saved_volume),
+        player_events_tx,
+    )?;
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
-    player.set_volume(saved_volume)?;
+    player.set_volume(config.volume_gain(saved_volume))?;
     player.set_equalizer(&config.equalizer_bands())?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {

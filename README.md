@@ -119,6 +119,12 @@ There is no default: an unset or all-zero list means the filter is not
 installed at all, so nothing is coloured and nothing is heard. It works on
 both backends and is designed to sound the same on each.
 
+The volume control moves in decibels, not in amplitude, so every step is the
+same size to the ear: with the default 5% step, each press is 3 dB wherever
+you are in the range. `volume_range_db` sets how far down the bottom of the
+travel reaches, -60 dB by default; zero is true silence rather than merely
+very quiet. The status bar shows both the position and the decibels.
+
 FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
 indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and
 embedded or external artwork are read without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
