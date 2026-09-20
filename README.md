@@ -81,15 +81,23 @@ rather than left to a sound server: measured against a tone, 15 kHz survives
 44.1 to 48 kHz within 0.1 dB and the conversion's own images stay below
 -80 dB.
 
-What it does, in order, is ReplayGain, then the equaliser, then the volume,
-then a look-ahead limiter that keeps an equaliser boost from clipping. With
-all of them neutral the samples that reach the device are the samples that
-were in the file, bit for bit; with all of them working the arithmetic adds
-distortion at -144.8 dB, which is below what a 24-bit recording can hold, and
-costs 2.6 ms of one core per second of stereo. `bit_perfect = true` hands the
-decoder's output over untouched, which means giving up the volume control,
-ReplayGain and the equaliser to do it; the settings view says so rather than
-leaving those controls looking as though they still work.
+What it does, in order, is ReplayGain, then the equaliser, then a look-ahead
+limiter that keeps an equaliser boost from clipping. The volume is applied at
+the device, so a change is heard on the next callback instead of behind the
+half second already buffered, and on an integer device the samples are
+dithered after it. With all of them neutral the samples that reach the device
+are the samples that were in the file, bit for bit; with all of them working
+the arithmetic adds distortion at -144.8 dB, which is below what a 24-bit
+recording can hold, and costs 2.6 ms of one core per second of stereo.
+
+`bit_perfect = true` hands the decoder's output over untouched, which means
+giving up the volume control, ReplayGain and the equaliser to do it; the
+settings view says so rather than leaving those controls looking as though
+they still work. What it promises is that muscli changes nothing. Whether the
+samples reach the converter unchanged is then up to the device: an exclusive
+or hardware device gets them as they are, while a shared one on PulseAudio,
+PipeWire or WASAPI Shared may still be mixed and resampled after muscli is
+done with them.
 
 Album sides that were mastered to run together do: the next track is opened
 early and joined to the one playing inside the same device stream, so the
