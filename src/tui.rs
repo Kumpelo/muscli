@@ -1330,13 +1330,26 @@ impl App {
             self.status = t!("status.nothing_playable").into();
             return Ok(());
         }
-        let target = self.selected_track_id();
-        if self.shuffle {
-            ids.shuffle(&mut rand::rng());
-        }
-        let start = target
-            .and_then(|id| ids.iter().position(|candidate| candidate == &id))
-            .unwrap_or(0);
+        let target = match self.view {
+            View::Albums
+            | View::Artists
+            | View::Genres
+            | View::ArtistDetail
+            | View::Playlists
+            | View::SmartPlaylists => None,
+            View::GenreDetail if self.genre_tab != 2 => None,
+            _ => self.selected_track_id(),
+        };
+
+        let start = if self.shuffle {
+            let mut rng = rand::rng();
+            prepare_shuffled_queue(&mut ids, target.as_ref(), &mut rng)
+        } else {
+            target
+                .as_ref()
+                .and_then(|id| ids.iter().position(|candidate| candidate == id))
+                .unwrap_or(0)
+        };
         self.queue = ids;
         self.queue_index = Some(start);
         self.queue_dirty = true;
@@ -1350,6 +1363,22 @@ impl App {
             0
         })
     }
+}
+
+fn prepare_shuffled_queue<T: PartialEq>(
+    queue: &mut [T],
+    target: Option<&T>,
+    rng: &mut impl rand::Rng,
+) -> usize {
+    queue.shuffle(rng);
+
+    if let Some(target) = target {
+        if let Some(index) = queue.iter().position(|candidate| candidate == target) {
+            queue.swap(0, index);
+        }
+    }
+
+    0
 }
 
 fn cover_layout_requires_full_repaint(protocol: ratatui_image::picker::ProtocolType) -> bool {
@@ -1409,6 +1438,7 @@ fn format_duration(ms: u64) -> String {
 mod tests {
     use super::render::track_viewport;
     use super::*;
+    use rand::{SeedableRng, rngs::StdRng};
 
     #[test]
     fn duration_is_human_readable() {
@@ -1449,5 +1479,44 @@ mod tests {
         assert_eq!(shifted_index(2, -4, 10), 0);
         assert_eq!(shifted_index(8, 4, 10), 9);
         assert_eq!(shifted_index(0, 1, 0), 0);
+    }
+
+    #[test]
+    fn a_new_shuffled_group_starts_at_zero_and_keeps_every_track() {
+        let mut queue = vec!["a", "b", "c", "d", "e", "f"];
+        let original = queue.clone();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let start = prepare_shuffled_queue(&mut queue, None, &mut rng);
+
+        assert_eq!(start, 0);
+        assert_ne!(queue, original);
+
+        let mut actual = queue;
+        let mut expected = original;
+        actual.sort_unstable();
+        expected.sort_unstable();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn a_selected_track_stays_first_in_a_new_shuffled_queue() {
+        let mut queue = vec!["a", "b", "c", "d", "e", "f"];
+        let original = queue.clone();
+        let target = "c";
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let start = prepare_shuffled_queue(&mut queue, Some(&target), &mut rng);
+
+        assert_eq!(start, 0);
+        assert_eq!(queue.first(), Some(&target));
+
+        let mut actual = queue;
+        let mut expected = original;
+        actual.sort_unstable();
+        expected.sort_unstable();
+
+        assert_eq!(actual, expected);
     }
 }
