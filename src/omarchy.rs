@@ -87,7 +87,12 @@ pub fn setup(paths: &AppPaths) -> Result<String> {
             }
             fs::write(&state.desktop_file, desktop_entry())?;
         } else if let Ok(contents) = fs::read_to_string(&state.desktop_file)
-            && [legacy_desktop_entry(), compact_desktop_entry()].contains(&contents.as_str())
+            && [
+                legacy_desktop_entry(),
+                compact_desktop_entry(),
+                flac_era_desktop_entry(),
+            ]
+            .contains(&contents.as_str())
         {
             atomic_write(&state.desktop_file, desktop_entry().as_bytes())?;
         }
@@ -249,11 +254,15 @@ fn media_widget_is_intact_value(value: &serde_json::Value) -> bool {
 }
 
 fn desktop_entry() -> &'static str {
-    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nGenericName[es]=Reproductor de música FLAC\nComment=Browse and play a local FLAC library\nComment[es]=Explora y reproduce una biblioteca FLAC local\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli -e muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
+    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=Music Player\nGenericName[es]=Reproductor de música\nComment=Browse and play a local music library\nComment[es]=Explora y reproduce una biblioteca de música local\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli -e muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;audio/mpeg;audio/mp4;audio/aac;audio/ogg;audio/opus;audio/x-vorbis+ogg;audio/wav;audio/x-wav;audio/aiff;audio/x-aiff;audio/x-wavpack;audio/x-ape;\nKeywords=music;player;terminal;FLAC;\n"
 }
 
 fn compact_desktop_entry() -> &'static str {
     "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nGenericName[es]=Reproductor de música FLAC\nComment=Browse and play a local FLAC library\nComment[es]=Explora y reproduce una biblioteca FLAC local\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli-compact -e muscli --compact\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
+}
+
+fn flac_era_desktop_entry() -> &'static str {
+    "[Desktop Entry]\nType=Application\nName=muscli\nGenericName=FLAC Music Player\nGenericName[es]=Reproductor de música FLAC\nComment=Browse and play a local FLAC library\nComment[es]=Explora y reproduce una biblioteca FLAC local\nIcon=audio-x-generic\nExec=kitty --class muscli-compact --title muscli -e muscli\nTerminal=false\nCategories=Audio;Music;Player;AudioVideo;\nMimeType=audio/flac;\nKeywords=FLAC;music;terminal;\n"
 }
 
 fn legacy_desktop_entry() -> &'static str {
