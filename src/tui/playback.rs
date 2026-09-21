@@ -48,6 +48,15 @@ impl HistoryTally {
     }
 }
 
+fn shuffle_upcoming<T>(queue: &mut [T], current: Option<usize>, rng: &mut impl rand::Rng) {
+    let start = current
+        .map(|index| index.saturating_add(1))
+        .unwrap_or(0)
+        .min(queue.len());
+
+    queue[start..].shuffle(rng);
+}
+
 /// Which queue position plays after `current`.
 ///
 /// Walks forward, skipping entries whose file is missing, and wraps only when
@@ -76,6 +85,23 @@ fn next_playable(
 }
 
 impl App {
+    pub(super) fn set_shuffle(&mut self, enabled: bool) {
+        if self.shuffle == enabled {
+            return;
+        }
+
+        self.shuffle = enabled;
+
+        if enabled {
+            let mut rng = rand::rng();
+            shuffle_upcoming(&mut self.queue, self.queue_index, &mut rng);
+
+            self.queue_dirty = true;
+            self.prefetched = None;
+        }
+
+        self.dirty = true;
+    }
     pub(super) fn load_current(&mut self, position_ms: u64) -> Result<()> {
         self.flush_history(false)?;
         let Some(track) = self.current_track().cloned() else {
@@ -499,7 +525,7 @@ impl App {
                 self.player
                     .set_volume(self.config.volume_gain(self.playback.volume))?;
             }
-            PlayerAction::SetShuffle(value) => self.shuffle = value,
+            PlayerAction::SetShuffle(value) => self.set_shuffle(value),
             PlayerAction::SetRepeat(value) => self.repeat = value,
             PlayerAction::Quit => self.should_quit = true,
         }
@@ -644,7 +670,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use rand::{SeedableRng, rngs::StdRng};
     const ALL: fn(usize) -> bool = |_| true;
 
     #[test]
@@ -696,5 +722,55 @@ mod tests {
             None,
             "without repeat there is nothing after it"
         );
+    }
+
+    #[test]
+    fn shuffle_keeps_the_current_and_played_tracks_in_place() {
+        use rand::{SeedableRng, rngs::StdRng};
+
+        let mut queue = vec!["a", "b", "current", "d", "e", "f", "g"];
+        let original = queue.clone();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        shuffle_upcoming(&mut queue, Some(2), &mut rng);
+
+        assert_eq!(&queue[..=2], &original[..=2]);
+
+        let mut expected_future = original[3..].to_vec();
+        let mut actual_future = queue[3..].to_vec();
+        expected_future.sort_unstable();
+        actual_future.sort_unstable();
+
+        assert_eq!(actual_future, expected_future);
+        assert_ne!(&queue[3..], &original[3..]);
+    }
+
+    #[test]
+    fn shuffle_without_a_current_track_uses_the_whole_queue() {
+        let mut queue = vec!["a", "b", "c", "d", "e", "g"];
+        let original = queue.clone();
+        let mut rng = StdRng::seed_from_u64(42);
+
+        shuffle_upcoming(&mut queue, None, &mut rng);
+
+        let mut expected = original.clone();
+        let mut actual = queue.clone();
+        expected.sort_unstable();
+        actual.sort_unstable();
+
+        assert_eq!(original, expected);
+        assert_ne!(queue, actual);
+    }
+
+    #[test]
+    fn shuffle_with_the_current_track_last_changes_nothing() {
+        let mut queue = vec!["a", "b", "current"];
+        let original = queue.clone();
+        let current = queue.len() - 1;
+        let mut rng = StdRng::seed_from_u64(42);
+
+        shuffle_upcoming(&mut queue, Some(current), &mut rng);
+
+        assert_eq!(queue, original);
     }
 }

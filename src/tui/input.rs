@@ -128,14 +128,13 @@ impl App {
             }
             Action::Player(player_action) => self.handle_action(player_action)?,
             Action::ToggleShuffle => {
-                self.shuffle = !self.shuffle;
+                self.set_shuffle(!self.shuffle);
                 self.status = t!(if self.shuffle {
                     "status.shuffle_on"
                 } else {
                     "status.shuffle_off"
                 })
                 .into();
-                self.dirty = true;
             }
             Action::CycleRepeat => {
                 self.repeat = self.repeat.next();
