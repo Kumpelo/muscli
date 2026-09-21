@@ -114,6 +114,7 @@ impl App {
             Action::OpenContextMenu => {
                 if self.selected_track_id().is_some() {
                     self.input = Some(InputMode::Context { selected: 0 });
+                    self.dirty = true;
                 }
             }
             Action::QueueMove(amount) => self.move_queue_item(amount),
