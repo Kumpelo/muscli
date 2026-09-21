@@ -9,6 +9,22 @@ use super::*;
 use crate::t;
 
 impl App {
+    fn enqueue_selection(&mut self) -> usize {
+        let ids = match self.view {
+            View::Artists | View::Genres => self.view_track_ids(),
+            _ => self.selected_track_id().into_iter().collect(),
+        };
+
+        let count = ids.len();
+
+        if count > 0 {
+            self.queue.extend(ids);
+            self.queue_dirty = true;
+            self.dirty = true
+        }
+
+        count
+    }
     pub(super) fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         // A modal owns the keyboard completely while it is open.
         if self.input.is_some() {
@@ -147,11 +163,8 @@ impl App {
                 self.dirty = true;
             }
             Action::EnqueueSelected => {
-                if let Some(id) = self.selected_track_id() {
-                    self.queue.push(id);
-                    self.queue_dirty = true;
+                if self.enqueue_selection() > 0 {
                     self.status = t!("status.added_to_queue").into();
-                    self.dirty = true;
                 }
             }
             Action::ToggleFavorite => {
@@ -430,9 +443,9 @@ impl App {
                 self.status = t!("status.playing_next").into();
             }
             ContextAction::Enqueue => {
-                self.queue.push(track_id);
-                self.queue_dirty = true;
-                self.status = t!("status.added_to_queue_end").into();
+                if self.enqueue_selection() > 0 {
+                    self.status = t!("status.added_to_queue_end").into();
+                }
             }
             ContextAction::ToggleFavorite => {
                 let favorite = self.db.toggle_favorite(&track_id)?;
