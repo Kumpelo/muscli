@@ -4,9 +4,10 @@
 
 muscli is a fast, local-first music player with a Spotify-like terminal UI. It
 indexes removable drives and local folders, keeps playlists usable while a
-drive is offline, and delegates gapless audio playback to mpv, which opens the
-next track before the current one ends. It has no
-account, streaming service, telemetry, or resident daemon.
+drive is offline, and plays FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF,
+WavPack and Monkey's Audio gaplessly — through its own audio path, which
+decodes and mixes in floating point and can run bit-perfect, or through mpv.
+It has no account, streaming service, telemetry, or resident daemon.
 
 ## Platforms
 
@@ -150,7 +151,7 @@ ReplayGain analysis, settings, a keybinding reference, and compact mode.
 muscli setup discord --large-image peter
 ```
 
-MusCLI ships with its official Discord application ID, so users do not need to
+muscli ships with its official Discord application ID, so users do not need to
 create or configure a Discord application. No bot token or OAuth is needed. The
 local Discord/Vesktop IPC displays title, artist, album and progress. Assets named `peter_metal`, `peter_dj`, and
 `daft_punk` are selected for their matching genres/artist; otherwise the
@@ -192,7 +193,7 @@ cargo build --release
 
 CI runs these checks on Linux and Windows. Tags matching `v*` create draft
 GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
-CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.1`.
+CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.2`.
 
 `muscli library write-gain` is the only command that modifies your audio files.
 It writes the cached loudness analysis into their ReplayGain tags so other

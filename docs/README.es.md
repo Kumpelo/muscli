@@ -1,6 +1,6 @@
 # muscli
 
-muscli es un reproductor FLAC local, rápido y sin servicios residentes. Tiene
+muscli es un reproductor local, rápido y sin servicios residentes. Tiene
 una TUI estilo Spotify, indexa SD, pendrives y carpetas locales, y usa mpv para
 reproducción gapless sin convertir el audio.
 
@@ -69,17 +69,17 @@ Nunca sube las portadas locales.
 
 ## Controles principales
 
-| Tecla | Acción |
-|---|---|
-| Flechas o `hjkl` | Navegar |
-| Enter / Esc | Abrir o reproducir / volver |
-| Space, `n`, `p` | Pausa, siguiente, anterior |
-| `/`, `x`, `f`, `a` | Buscar, menú, favorito, cola |
-| `s`, `r`, `+`, `-` | Aleatorio, repetir, volumen |
-| `m`, `,`, `?` | Compacto, Settings, ayuda |
-| `Shift+J/K`, `d` | Reordenar o quitar de la cola |
-| `C`, `S`, `L` | Limpiar, guardar o cargar cola |
-| `q` | Guardar estado y salir |
+| Tecla              | Acción                         |
+| ------------------ | ------------------------------ |
+| Flechas o `hjkl`   | Navegar                        |
+| Enter / Esc        | Abrir o reproducir / volver    |
+| Space, `n`, `p`    | Pausa, siguiente, anterior     |
+| `/`, `x`, `f`, `a` | Buscar, menú, favorito, cola   |
+| `s`, `r`, `+`, `-` | Aleatorio, repetir, volumen    |
+| `m`, `,`, `?`      | Compacto, Settings, ayuda      |
+| `Shift+J/K`, `d`   | Reordenar o quitar de la cola  |
+| `C`, `S`, `L`      | Limpiar, guardar o cargar cola |
+| `q`                | Guardar estado y salir         |
 
 ## Temas
 
@@ -87,13 +87,13 @@ La interfaz trae una paleta clara, y es la predeterminada tanto en Linux como
 en Windows. Se cambia desde Ajustes (`,`), con las flechas izquierda y derecha
 sobre la fila **Tema**, o con `theme` en `config.toml`:
 
-| `theme` | |
-|---|---|
-| `light` | fondo blanco, el predeterminado |
-| `dark` | la paleta del propio terminal |
-| `high-contrast` | negro sobre blanco, para salas iluminadas y proyectores |
-| `nord`, `gruvbox`, `solarized-light` | paletas fijas, iguales en todas partes |
-| `system` | seguir al escritorio: el tema actual de Omarchy en Linux, claro en el resto |
+| `theme`                              |                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `light`                              | fondo blanco, el predeterminado                                             |
+| `dark`                               | la paleta del propio terminal                                               |
+| `high-contrast`                      | negro sobre blanco, para salas iluminadas y proyectores                     |
+| `nord`, `gruvbox`, `solarized-light` | paletas fijas, iguales en todas partes                                      |
+| `system`                             | seguir al escritorio: el tema actual de Omarchy en Linux, claro en el resto |
 
 Con `system` en Linux la paleta sigue a Omarchy en vivo: cambiar de tema allí
 repinta muscli sin reiniciarlo. `muscli --theme dark` prueba una paleta durante

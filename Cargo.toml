@@ -1,13 +1,13 @@
 [package]
 name = "muscli"
-version = "0.2.0-beta.1"
+version = "0.2.0-beta.2"
 edition = "2024"
 rust-version = "1.90"
-description = "A fast local FLAC library and terminal player for Linux and Windows"
+description = "A fast local-first music library and terminal player for Linux and Windows"
 license = "MIT"
 repository = "https://github.com/Kumpelo/muscli"
 readme = "README.md"
-keywords = ["flac", "music", "terminal", "tui", "mpv"]
+keywords = ["music", "player", "terminal", "tui", "audio"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
