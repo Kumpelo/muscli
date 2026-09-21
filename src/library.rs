@@ -1,3 +1,5 @@
+const COVER_CACHE_PREFIX: &str = "v2-";
+
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fs,
@@ -140,7 +142,7 @@ impl ScanCaches {
         {
             return *known;
         }
-        let valid = cached_cover_is_valid(cover);
+        let valid = cached_cover_is_current(cover);
         self.cover_validity
             .lock()
             .expect("scan cache poisoned")
@@ -675,18 +677,25 @@ const COVER_QUALITY: u8 = 85;
 
 /// Where a cover with this key is written from now on.
 fn cover_target(paths: &AppPaths, key: &str) -> PathBuf {
-    paths.cover_cache_dir().join(format!("{key}.jpg"))
+    paths
+        .cover_cache_dir()
+        .join(format!("{COVER_CACHE_PREFIX}{key}.jpg"))
 }
 
-/// An already-cached cover for this key, in either format. Older caches hold
-/// PNGs; they stay valid and the byte-budget pass retires them in time.
+/// Returns a valid cover from the current cache version.
+///
+/// Legacy entries are intentionally ignored so a full rescan rebuilds them
+/// using the safe concurrent writer.
 fn existing_cover(paths: &AppPaths, key: &str) -> Option<PathBuf> {
-    [
-        cover_target(paths, key),
-        paths.cover_cache_dir().join(format!("{key}.png")),
-    ]
-    .into_iter()
-    .find(|candidate| cached_cover_is_valid(candidate))
+    let candidate = cover_target(paths, key);
+    cached_cover_is_valid(&candidate).then_some(candidate)
+}
+
+fn cached_cover_is_current(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(COVER_CACHE_PREFIX))
+        && cached_cover_is_valid(path)
 }
 
 fn cache_cover(paths: &AppPaths, key: &str, image: image::DynamicImage) -> Result<PathBuf> {
