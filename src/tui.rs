@@ -354,7 +354,7 @@ pub async fn run(
     let mut terminal = ratatui::init();
     if let Err(error) = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)
     {
-        ratatui::restore();
+        let _ = ratatui::try_restore();
         return Err(error.into());
     }
     let result = run_inner(&mut terminal, paths, config, picker, compact, theme).await;
