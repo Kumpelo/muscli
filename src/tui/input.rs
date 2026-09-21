@@ -8,12 +8,22 @@ use super::keys::{self, Action};
 use super::*;
 use crate::t;
 
+fn enqueue_ids_for_view<T>(
+    view: View,
+    selected: Option<T>,
+    group: impl FnOnce() -> Vec<T>,
+) -> Vec<T> {
+    match view {
+        View::Artists | View::Genres => group(),
+        _ => selected.into_iter().collect(),
+    }
+}
+
 impl App {
     fn enqueue_selection(&mut self) -> usize {
-        let ids = match self.view {
-            View::Artists | View::Genres => self.view_track_ids(),
-            _ => self.selected_track_id().into_iter().collect(),
-        };
+        let view = self.view;
+        let selected = self.selected_track_id();
+        let ids = enqueue_ids_for_view(view, selected, || self.view_track_ids());
 
         let count = ids.len();
 
@@ -584,4 +594,36 @@ fn set_rule_value(rule: &mut SmartRule, value: &str) {
         }
         _ => serde_json::Value::String(value.to_owned()),
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artist_selection_enqueues_every_track() {
+        let group = vec!["one", "two", "three"];
+
+        let ids = enqueue_ids_for_view(View::Artists, Some("one"), || group.clone());
+
+        assert_eq!(ids, group);
+    }
+
+    #[test]
+    fn genre_selection_enqueues_every_track() {
+        let group = vec!["one", "two", "three"];
+
+        let ids = enqueue_ids_for_view(View::Genres, Some("one"), || group.clone());
+
+        assert_eq!(ids, group);
+    }
+
+    #[test]
+    fn track_selection_enqueues_only_the_selected_track() {
+        let ids = enqueue_ids_for_view(View::Tracks, Some("two"), || {
+            panic!("an individual selection must not build the whole view")
+        });
+
+        assert_eq!(ids, vec!["two"]);
+    }
 }
