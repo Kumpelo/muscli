@@ -9,6 +9,8 @@ WavPack and Monkey's Audio gaplessly — through its own audio path, which
 decodes and mixes in floating point and can run bit-perfect, or through mpv.
 It has no account, streaming service, telemetry, or resident daemon.
 
+![muscli library view](docs/assets/muscli-beta2.png)
+
 ## Platforms
 
 - Linux: MPRIS, removable media discovery, Discord Rich Presence, and an
@@ -23,13 +25,38 @@ SmartScreen may ask for confirmation.
 
 ## Install
 
-### Linux / Omarchy
+### Linux
+
+Install the runtime dependencies first. muscli needs ALSA (`libasound.so.2`),
+mpv, and FFmpeg. On Arch-based systems:
 
 ```bash
-omarchy pkg add mpv ffmpeg
-cargo install --root "$HOME/.local" --path .
+sudo pacman -S alsa-lib mpv ffmpeg
+```
+
+On Debian or Ubuntu:
+
+```bash
+sudo apt install libasound2 mpv ffmpeg
+```
+
+Download the Linux archive from the
+[v0.2.0-beta.2 release](https://github.com/Kumpelo/muscli/releases/tag/v0.2.0-beta.2),
+then install the binary for your user:
+
+```bash
+tar -xzf muscli-v0.2.0-beta.2-linux-x86_64.tar.gz
+install -Dm755 muscli-v0.2.0-beta.2-linux-x86_64/muscli "$HOME/.local/bin/muscli"
+muscli --version
+```
+
+Make sure `$HOME/.local/bin` is in `PATH`.
+
+### Omarchy
+
+```bash
+omarchy pkg add alsa-lib mpv ffmpeg
 muscli setup omarchy
-muscli
 ```
 
 Omarchy setup only edits user-owned configuration, creates timestamped
@@ -40,12 +67,34 @@ backups, validates Hyprland, enables the official media widget, and installs:
 
 Undo intact managed blocks with `muscli setup omarchy --undo`.
 
+### Build from source
+
+Install the ALSA development headers and Rust 1.90 or newer, clone the
+repository, then run:
+
+```bash
+cargo install --locked --root "$HOME/.local" --path .
+```
+
 ### Windows 11
 
 Download `muscli-vX.Y.Z-windows-x86_64-setup.exe` from Releases and run it.
 The Start menu contains muscli and `muscli Doctor`; the installer also
 registers `muscli.exe` in Windows App Paths. Windows Terminal is recommended
 for the best image support.
+
+## Quick start
+
+```bash
+muscli library add /path/to/Music
+muscli library rescan
+muscli doctor
+muscli
+```
+
+Inside the app, use the arrow keys or `hjkl` to move, Enter to open or play,
+Space to pause, `/` to search, `,` for settings, `?` for help, and `q` to save
+and quit.
 
 ## Library and playback
 
@@ -145,6 +194,18 @@ Features include genres, artist releases, resume/history, editable smart
 playlists, fuzzy search, a context menu, saved/reorderable queues, local
 ReplayGain analysis, settings, a keybinding reference, and compact mode.
 
+## Beta limitations
+
+- The Windows installer is not signed, so SmartScreen may require manual
+  confirmation.
+- The native decoder falls back to mpv for Opus, WavPack, and Monkey's Audio.
+- Gapless native playback requires adjacent tracks to use the same stream
+  format; a sample-rate change opens a new stream.
+- Changing or disconnecting an audio device may require restarting playback.
+
+When reporting a problem, include the platform, exact muscli version,
+reproduction steps, and the output of `muscli doctor`.
+
 ## Discord Rich Presence
 
 ```text
@@ -191,9 +252,9 @@ cargo test --all-targets
 cargo build --release
 ```
 
-CI runs these checks on Linux and Windows. Tags matching `v*` create draft
-GitHub releases with Linux and Windows artifacts, SHA-256 checksums, and a
-CycloneDX SBOM. The intended first prerelease is `v0.2.0-beta.2`.
+CI runs these checks on Linux and Windows. The release workflow can build a
+manual release candidate; tags matching `v*` create draft prereleases with
+Linux and Windows artifacts, SHA-256 checksums, and a CycloneDX SBOM.
 
 `muscli library write-gain` is the only command that modifies your audio files.
 It writes the cached loudness analysis into their ReplayGain tags so other

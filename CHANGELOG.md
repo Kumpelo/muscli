@@ -4,7 +4,18 @@ All notable user-visible changes are documented here.
 
 ## Unreleased
 
-- Discord Rich Presence now uses MusCLI's built-in Discord application ID; users no longer need to create or configure their own Discord application.
+## 0.2.0-beta.2 - 2026-09-25
+
+- Added an optional native audio backend with ReplayGain, an eight-band
+  equalizer, a limiter, high-quality resampling, dither, bit-perfect mode, and
+  gapless playback between tracks with matching stream formats.
+- Added automatic fallback to mpv for formats the native decoder cannot read.
+- Added seek controls, a decibel volume scale, audio-device selection, and
+  native-backend diagnostics in `muscli doctor`.
+- Added artist and genre group enqueueing, and made shuffle update the
+  unplayed part of an active queue without skipping the current track.
+- Discord Rich Presence now uses muscli's built-in application ID; users no
+  longer need to create or configure their own Discord application.
 - Added a selectable colour theme on Linux and Windows alike: `light` (the new
   default, on a white background), `dark`, `high-contrast`, `nord`, `gruvbox`,
   `solarized-light`, and `system` to follow the Omarchy palette on Linux. It is
@@ -16,6 +27,10 @@ All notable user-visible changes are documented here.
 - Added the settings previously reachable only by editing `config.toml`: gapless
   playback, scan threads, and every band of the equaliser, with a row to flatten
   it again.
+- Reworked cover rendering and cache versioning to avoid stale artwork and
+  unnecessary terminal redraws.
+- Fixed saved volume resets, playback between different sample rates, context
+  menu redraws, terminal restoration after hangup, and queue edge cases.
 
 ## 0.2.0-beta.1
 
