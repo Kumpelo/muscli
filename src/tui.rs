@@ -1372,10 +1372,10 @@ fn prepare_shuffled_queue<T: PartialEq>(
 ) -> usize {
     queue.shuffle(rng);
 
-    if let Some(target) = target {
-        if let Some(index) = queue.iter().position(|candidate| candidate == target) {
-            queue.swap(0, index);
-        }
+    if let Some(target) = target
+        && let Some(index) = queue.iter().position(|candidate| candidate == target)
+    {
+        queue.swap(0, index);
     }
 
     0
