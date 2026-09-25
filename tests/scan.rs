@@ -568,10 +568,9 @@ fn cached_covers_are_stored_compactly() {
 }
 
 #[test]
-fn covers_cached_by_an_older_version_are_reused_not_replaced() {
-    // Switching the cache format must not orphan an existing cache. PNGs
-    // written by earlier builds decode perfectly well, so an upgrade should
-    // keep using them rather than re-encoding every album on the next scan.
+fn covers_cached_by_an_older_version_are_rebuilt_in_the_current_format() {
+    // Versioned names let a scan replace entries written by an older cache
+    // implementation instead of trusting them in concurrent reads.
     let fixture = Fixture::new();
     let artwork = png_bytes(96, 96, [12, 34, 56]);
     write_track(
@@ -596,16 +595,25 @@ fn covers_cached_by_an_older_version_are_reused_not_replaced() {
     let mut db = open_db(&fixture);
     scan(&fixture, &mut db);
 
-    assert!(legacy.exists(), "an existing PNG cover must be reused");
+    assert!(!legacy.exists(), "the legacy PNG should be retired");
+    let covers = fixture.cover_cache_files();
+    assert_eq!(covers.len(), 1, "one current cover should replace it");
+    let current = &covers[0];
     assert_eq!(
-        fixture.cover_cache_files(),
-        std::slice::from_ref(&legacy),
-        "no duplicate should be written alongside it"
+        current.extension().and_then(|value| value.to_str()),
+        Some("jpg")
+    );
+    assert!(
+        current
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name.starts_with("v2-")),
+        "the replacement should carry the current cache version"
     );
     assert_eq!(
         db.load_tracks().expect("loading tracks")[0].cover_path,
-        Some(legacy),
-        "and the row should point at the cover that was kept"
+        Some(current.clone()),
+        "the row should point at the rebuilt cover"
     );
 }
 
