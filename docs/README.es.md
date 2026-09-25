@@ -28,10 +28,16 @@ Arch:
 sudo pacman -S alsa-lib mpv ffmpeg
 ```
 
-En Debian o Ubuntu:
+En Debian:
 
 ```bash
 sudo apt install libasound2 mpv ffmpeg
+```
+
+En Ubuntu 24.04 o posterior:
+
+```bash
+sudo apt install libasound2t64 mpv ffmpeg
 ```
 
 Descarga el archivo Linux desde el

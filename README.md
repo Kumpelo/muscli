@@ -34,10 +34,16 @@ mpv, and FFmpeg. On Arch-based systems:
 sudo pacman -S alsa-lib mpv ffmpeg
 ```
 
-On Debian or Ubuntu:
+On Debian:
 
 ```bash
 sudo apt install libasound2 mpv ffmpeg
+```
+
+On Ubuntu 24.04 or newer:
+
+```bash
+sudo apt install libasound2t64 mpv ffmpeg
 ```
 
 Download the Linux archive from the
