@@ -5,7 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread,
@@ -123,11 +123,13 @@ enum ScanOutcome {
 /// Work shared between scan threads: artwork decoded once per album rather
 /// than per track, a directory listed once, a cached cover validated once.
 ///
-/// The lock is held around the lookup and the insert, never the decode, so a
-/// race duplicates work harmlessly -- the same key yields the same file.
+/// Cover writes are locked per content key. Different covers are still decoded
+/// in parallel, while tracks sharing artwork never replace the same file at
+/// once.
 #[derive(Default)]
 struct ScanCaches {
     artwork: Mutex<HashMap<String, Option<PathBuf>>>,
+    artwork_writes: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     external_cover: Mutex<HashMap<PathBuf, Option<PathBuf>>>,
     cover_validity: Mutex<HashMap<PathBuf, bool>>,
 }
@@ -637,10 +639,24 @@ fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Resul
         return Ok(cached.clone());
     }
 
-    // The lock is deliberately not held across decoding and re-encoding, which
-    // is the expensive part. Two threads racing on the same key both do the
-    // work and both write the same bytes to the same place, which is cheaper
-    // than serialising every cover behind one mutex.
+    let write_lock = {
+        let mut writes = caches.artwork_writes.lock().expect("scan cache poisoned");
+        Arc::clone(
+            writes
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    };
+    let _write = write_lock.lock().expect("cover write lock poisoned");
+    if let Some(cached) = caches
+        .artwork
+        .lock()
+        .expect("scan cache poisoned")
+        .get(&key)
+    {
+        return Ok(cached.clone());
+    }
+
     let cached = if let Some(existing) = existing_cover(paths, &key) {
         Some(existing)
     } else if let Ok(image) = image::load_from_memory(data) {
