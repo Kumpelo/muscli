@@ -1,27 +1,42 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to package, without a leading v
+        required: true
+        default: 0.2.0-beta.2
   push:
     tags: ["v*"]
 
 permissions:
   contents: write
 
+env:
+  RELEASE_VERSION: ${{ inputs.version || github.ref_name }}
+
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify package version
+        shell: bash
+        run: |
+          version="${RELEASE_VERSION#v}"
+          manifest_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          test "$version" = "$manifest_version"
       # cpal links against ALSA on Linux; the runners do not ship its headers.
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets
+      - run: cargo test --all-targets --locked
       - run: cargo build --release --locked
       - name: Assemble archive
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_VERSION#v}"
           mkdir -p "dist/muscli-v${version}-linux-x86_64"
           cp target/release/muscli LICENSE THIRD_PARTY_NOTICES.md "dist/muscli-v${version}-linux-x86_64/"
           tar -C dist -czf "dist/muscli-v${version}-linux-x86_64.tar.gz" "muscli-v${version}-linux-x86_64"
@@ -34,15 +49,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify package version
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_VERSION.TrimStart("v")
+          $manifest = Select-String '^version = "([^"]+)"' Cargo.toml
+          if ($version -ne $manifest.Matches[0].Groups[1].Value) {
+            throw "Release version does not match Cargo.toml"
+          }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets
+      - run: cargo test --all-targets --locked
       - run: cargo build --release --locked
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Build verified installer
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -Version "${{ github.ref_name }}".Substring(1)
+        run: ./scripts/package-windows.ps1 -Version ($env:RELEASE_VERSION.TrimStart("v"))
       - uses: actions/upload-artifact@v7
         with:
           name: windows-release
@@ -70,8 +93,12 @@ jobs:
           mv muscli.cdx.json dist/muscli.cdx.json
           cd dist
           sha256sum * > SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-candidate-${{ env.RELEASE_VERSION }}
+          path: dist/*
       - name: Attest public release artifacts
-        if: github.event.repository.visibility == 'public'
+        if: github.event_name == 'push' && github.event.repository.visibility == 'public'
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: |
@@ -79,8 +106,10 @@ jobs:
             dist/*.exe
             dist/muscli.cdx.json
       - uses: softprops/action-gh-release@v3
+        if: github.event_name == 'push'
         with:
           draft: true
+          prerelease: true
           generate_release_notes: true
           files: |
             dist/*
