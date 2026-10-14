@@ -3,11 +3,7 @@
 //! The decoder never runs on the playback callback. One worker processes
 //! candidates sequentially so adding a large library cannot spawn a thread
 //! per song or allocate buffers proportional to the whole music collection.
-use std::{
-    path::PathBuf,
-    thread,
-    time::Duration,
-};
+use std::{path::PathBuf, thread, time::Duration};
 
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
