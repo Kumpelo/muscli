@@ -8,12 +8,12 @@ use clap::Parser;
 use muscli::{t, tn};
 
 use muscli::{
+    audio::mix::{self, MixPreset},
     cli::{
         Cli, Command, LibraryCommand, LyricsCommand, MixCommand, PlaylistCommand,
         RemoteCommand as CliRemoteCommand, SetupCommand, VolumeCommand,
     },
     config::{Config, all_sources},
-    audio::mix::{self, MixPreset},
     control::{self, RemoteCommand},
     db::Database,
     doctor, i18n, library,
@@ -108,7 +108,9 @@ fn main() -> Result<()> {
                         "Estimated BPM: first {:?}, second {:?}; similar tempo: {}",
                         report.first_bpm, report.second_bpm, report.tempo_compatible
                     );
-                    println!("Preview aligns the fade duration to beats; it does not yet beat-match, time-stretch or sync beat phase.");
+                    println!(
+                        "Preview aligns the fade duration to beats; it does not yet beat-match, time-stretch or sync beat phase."
+                    );
                 }
                 println!("Inputs were not modified. Render is a demo file, not live TUI mixing.");
             }
