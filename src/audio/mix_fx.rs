@@ -8,21 +8,16 @@ use std::f32::consts::TAU;
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum MixFilter {
     /// AutoDJ chooses a sweep only for rhythmically compatible tracks.
+    #[default]
     Auto,
     Off,
     LowPass,
     HighPass,
     Sweep,
-}
-
-impl Default for MixFilter {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
