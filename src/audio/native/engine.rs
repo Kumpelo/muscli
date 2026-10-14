@@ -295,7 +295,13 @@ impl Engine {
                     Some(path) => match Decoder::open(&path) {
                         Ok(decoder) => Some(decoder),
                         Err(error) => {
-                            let _ = self.events.send(PlayerEvent::Error(error.to_string()));
+                            // A failed *next* decoder must not abort the currently
+                            // playing track. The queue will fall back to a normal
+                            // load if the prefetched decoder was unavailable.
+                            let _ = self.events.send(PlayerEvent::Notice(format!(
+                                "Gapless prefetch unavailable ({}): {error}",
+                                path.display()
+                            )));
                             None
                         }
                     },
