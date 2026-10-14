@@ -475,14 +475,13 @@ impl App {
                 });
             }
             ContextAction::ShowAlbum => {
-                if let Some(track) = self
-                    .track_index
-                    .get(&track_id)
-                    .and_then(|index| self.tracks.get(*index))
-                    && let Some(album) = self.albums.iter().find(|album| {
-                        album.title.eq_ignore_ascii_case(&track.album)
-                            && album.artist.eq_ignore_ascii_case(&track.album_artist)
-                    })
+                // Album Artist may be inferred for a multi-artist compilation.
+                // Use the indexed album's membership rather than requiring
+                // its display artist to match the individual track's tags.
+                if let Some(album) = self
+                    .albums
+                    .iter()
+                    .find(|album| album.track_ids.contains(&track_id))
                 {
                     let key = album.key.clone();
                     let position = album
