@@ -1721,6 +1721,63 @@ mod tests {
     }
 
     #[test]
+    fn gain_candidates_after_rescan_only_include_new_or_modified_tracks() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let existing = (0..20)
+            .map(|index| ScannedTrack {
+                track: track(&format!("existing-{index}"), index + 1),
+                file_size: 100,
+                modified_ns: 1,
+            })
+            .collect::<Vec<_>>();
+        db.upsert_scan("s", Path::new("/music"), "Music", &existing, &[])?;
+
+        let analyzed = ReplayGainAnalysis {
+            gain_db: -4.0,
+            true_peak_db: -1.0,
+        };
+        for entry in &existing {
+            db.save_gain(&entry.track.id, analyzed, entry.file_size, entry.modified_ns)?;
+        }
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+
+        let added = (20..25)
+            .map(|index| ScannedTrack {
+                track: track(&format!("new-{index}"), index + 1),
+                file_size: 100,
+                modified_ns: 1,
+            })
+            .collect::<Vec<_>>();
+        db.upsert_scan("s", Path::new("/music"), "Music", &added, &[])?;
+
+        let candidates = db.gain_analysis_candidates(false)?;
+        assert_eq!(candidates.len(), 5, "existing analyzed tracks stay cached");
+        assert!(
+            candidates.iter().all(|(id, _, _, _)| id.starts_with("new-")),
+            "only newly imported tracks should need analysis"
+        );
+
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[ScannedTrack {
+                track: track("existing-0", 1),
+                file_size: 101,
+                modified_ns: 2,
+            }],
+            &[],
+        )?;
+        let candidates = db.gain_analysis_candidates(false)?;
+        assert_eq!(candidates.len(), 6);
+        assert!(
+            candidates.iter().any(|(id, _, _, _)| id == "existing-0"),
+            "a modified track should be reanalyzed"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn groups_album() {
         let albums = group_albums(&[track("one", 1), track("two", 2)]);
         assert_eq!(albums.len(), 1);
