@@ -164,13 +164,22 @@ impl App {
     }
 
     fn apply_replay_gain(&mut self, track: &Track) -> Result<()> {
-        let gain = if self.config.replaygain_enabled {
-            self.db.track_gain(
-                &track.id,
-                self.config.replaygain_mode == ReplayGainMode::Album,
-            )?
-        } else {
+        let gain = if !self.config.replaygain_enabled {
             None
+        } else if self.config.replaygain_mode == ReplayGainMode::Album {
+            // The library's release grouping also includes conservatively
+            // inferred compilations whose tracks have different album artists.
+            if let Some(album) = self
+                .albums
+                .iter()
+                .find(|album| album.track_ids.contains(&track.id))
+            {
+                self.db.album_gain_for_tracks(&track.id, &album.track_ids)?
+            } else {
+                self.db.track_gain(&track.id, true)?
+            }
+        } else {
+            self.db.track_gain(&track.id, false)?
         };
         let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
         self.player.set_replay_gain(gain)
