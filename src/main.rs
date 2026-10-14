@@ -94,7 +94,12 @@ fn main() -> Result<()> {
                 let first_cached = db.mix_analysis_for_path(&first_key)?;
                 let second_cached = db.mix_analysis_for_path(&second_key)?;
                 let report = mix::render_preview_with_analysis(
-                    &first, &second, &output, &settings, first_cached, second_cached,
+                    &first,
+                    &second,
+                    &output,
+                    &settings,
+                    first_cached,
+                    second_cached,
                 )?;
                 if let Some(name) = save_preset {
                     let name = name.trim();
@@ -256,7 +261,12 @@ fn main() -> Result<()> {
                                     result.energy_rms
                                 );
                             } else {
-                                println!("[{}/{}] skipped modified file: {}", index + 1, total, path.display());
+                                println!(
+                                    "[{}/{}] skipped modified file: {}",
+                                    index + 1,
+                                    total,
+                                    path.display()
+                                );
                             }
                         }
                         Err(error) => {
@@ -266,7 +276,9 @@ fn main() -> Result<()> {
                     }
                 }
                 let (songs, complete, bpm, failed) = db.mix_analysis_status()?;
-                println!("MIX: {complete}/{songs} cached; {bpm} BPM estimates, {failed} unsupported/failed");
+                println!(
+                    "MIX: {complete}/{songs} cached; {bpm} BPM estimates, {failed} unsupported/failed"
+                );
             }
             LibraryCommand::AnalyzeGain { force } => {
                 let db = Database::open(&paths.database_file())?;
