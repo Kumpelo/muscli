@@ -46,8 +46,9 @@ fn main() -> Result<()> {
                 }
                 for (name, preset) in &config.mix_presets {
                     println!(
-                        "{name}: {:?} / {:?} / {:.2}s / {} beats / BPM {:?}",
-                        preset.mode, preset.curve, preset.seconds, preset.beats, preset.bpm_hint
+                        "{name}: {:?} / {:?} / {:.2}s / {} beats / BPM {:?} / filter {:?} / scratch {} / EQ [{:.1},{:.1},{:.1}]",
+                        preset.mode, preset.curve, preset.seconds, preset.beats, preset.bpm_hint, preset.filter,
+                        preset.scratch, preset.bass_db, preset.mid_db, preset.treble_db
                     );
                 }
             }
@@ -60,6 +61,12 @@ fn main() -> Result<()> {
                 curve,
                 beats,
                 bpm,
+                filter,
+                intensity,
+                bass_db,
+                mid_db,
+                treble_db,
+                scratch,
                 preset,
                 save_preset,
             } => {
@@ -85,6 +92,24 @@ fn main() -> Result<()> {
                 }
                 if let Some(bpm) = bpm {
                     settings.bpm_hint = Some(bpm);
+                }
+                if let Some(filter) = filter {
+                    settings.filter = filter;
+                }
+                if let Some(intensity) = intensity {
+                    settings.intensity = intensity;
+                }
+                if let Some(bass_db) = bass_db {
+                    settings.bass_db = bass_db;
+                }
+                if let Some(mid_db) = mid_db {
+                    settings.mid_db = mid_db;
+                }
+                if let Some(treble_db) = treble_db {
+                    settings.treble_db = treble_db;
+                }
+                if scratch {
+                    settings.scratch = true;
                 }
                 // Reuse descriptors already computed by 'library analyze-mix'
                 // or the TUI worker; only unknown tracks are analyzed now.
@@ -116,6 +141,15 @@ fn main() -> Result<()> {
                     report.output_seconds,
                     report.transition_seconds,
                     settings.curve
+                );
+                println!(
+                    "Transition FX: {:?} filter, {:.0}% wet, EQ [{:+.1},{:+.1},{:+.1}] dB, scratch {}",
+                    report.applied_filter,
+                    settings.intensity * 100.0,
+                    settings.bass_db,
+                    settings.mid_db,
+                    settings.treble_db,
+                    report.scratch_applied
                 );
                 if settings.mode == mix::MixMode::Auto {
                     println!(
