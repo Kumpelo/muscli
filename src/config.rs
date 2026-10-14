@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -6,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{fsutil::atomic_replace, paths::AppPaths};
+use crate::{audio::mix::MixPreset, fsutil::atomic_replace, paths::AppPaths};
 
 /// Which player actually makes the sound.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +79,8 @@ pub struct Config {
     /// Hand the decoder's samples to the device untouched, giving up the
     /// volume, ReplayGain and the equaliser. The settings view says so.
     pub bit_perfect: bool,
+    /// Named MIX demo presets stored as a handful of parameters, not audio.
+    pub mix_presets: BTreeMap<String, MixPreset>,
 }
 
 /// Centre frequencies of the equaliser bands, an octave apart.
@@ -109,6 +112,7 @@ impl Default for Config {
             audio_backend: AudioBackendChoice::default(),
             audio_device: String::new(),
             bit_perfect: false,
+            mix_presets: BTreeMap::new(),
         }
     }
 }
