@@ -1452,6 +1452,63 @@ impl Database {
         Ok(())
     }
 
+    /// ReplayGain for an album as grouped by the library. This is important
+    /// for compilations: the individual tracks can have different Album Artist
+    /// tags, so joining only by their tag would undercount the release.
+    pub fn album_gain_for_tracks(
+        &self,
+        current_track_id: &str,
+        track_ids: &[String],
+    ) -> Result<Option<ReplayGainAnalysis>> {
+        if track_ids.is_empty() {
+            return self.track_gain(current_track_id, false);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT gain_db,true_peak_db,duration_ms,
+                    CASE WHEN gain_db IS NOT NULL AND true_peak_db IS NOT NULL
+                              AND gain_file_size=file_size
+                              AND gain_modified_ns=modified_ns
+                         THEN 1 ELSE 0 END
+             FROM tracks WHERE id=?1 AND available=1",
+        )?;
+        let mut samples = Vec::with_capacity(track_ids.len());
+        for track_id in track_ids {
+            let sample = stmt
+                .query_row([track_id], |row| {
+                    Ok((
+                        row.get::<_, Option<f64>>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, i64>(2)?.max(1) as f64,
+                        row.get::<_, i64>(3)? != 0,
+                    ))
+                })
+                .optional()?;
+            match sample {
+                Some((Some(gain), Some(peak), weight, true)) => {
+                    samples.push((gain, peak, weight));
+                }
+                Some((_, _, _, false)) | None | Some(_) => {
+                    // Defer normalization until every member has an analysis.
+                    // Still give the currently playing track its own gain.
+                    return self.track_gain(current_track_id, false);
+                }
+            }
+        }
+        let total_weight = samples.iter().map(|(_, _, weight)| weight).sum::<f64>();
+        let energy = samples
+            .iter()
+            .map(|(gain, _, weight)| weight * 10f64.powf(-gain / 10.0))
+            .sum::<f64>()
+            / total_weight;
+        Ok(Some(ReplayGainAnalysis {
+            gain_db: -10.0 * energy.log10(),
+            true_peak_db: samples
+                .iter()
+                .map(|(_, peak, _)| *peak)
+                .fold(f64::NEG_INFINITY, f64::max),
+        }))
+    }
+
     pub fn track_gain(
         &self,
         track_id: &str,
