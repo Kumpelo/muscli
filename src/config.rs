@@ -81,6 +81,8 @@ pub struct Config {
     pub bit_perfect: bool,
     /// Named MIX demo presets stored as a handful of parameters, not audio.
     pub mix_presets: BTreeMap<String, MixPreset>,
+    /// Analyze BPM and energy incrementally, without blocking playback.
+    pub mix_analysis_enabled: bool,
 }
 
 /// Centre frequencies of the equaliser bands, an octave apart.
@@ -113,6 +115,7 @@ impl Default for Config {
             audio_device: String::new(),
             bit_perfect: false,
             mix_presets: BTreeMap::new(),
+            mix_analysis_enabled: true,
         }
     }
 }
