@@ -62,6 +62,21 @@ fn shuffle_upcoming<T>(queue: &mut [T], current: Option<usize>, rng: &mut impl r
 /// Walks forward, skipping entries whose file is missing, and wraps only when
 /// the queue repeats. Separate from `App` so the rule the prefetch depends on
 /// can be tested without a database, an mpv process or a terminal.
+fn previous_playable(
+    len: usize,
+    current: usize,
+    position_ms: u64,
+    playable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    // Like other music players, Previous restarts once the song has played
+    // for a few seconds. At its beginning, it selects the last playable
+    // entry before the current queue position.
+    if position_ms > 5_000 {
+        return None;
+    }
+    (0..current.min(len)).rev().find(|&index| playable(index))
+}
+
 fn next_playable(
     len: usize,
     current: usize,
@@ -273,20 +288,31 @@ impl App {
     }
 
     pub(super) fn previous(&mut self) -> Result<()> {
-        if self.playback.position_ms > 5_000 {
+        let current = self.queue_index.unwrap_or(0);
+        let position_ms = self.player.position_ms();
+        if let Some(index) = previous_playable(self.queue.len(), current, position_ms, |index| {
+            self.queue_track_is_playable(index)
+        }) {
+            let was_paused = self.playback.status == PlaybackStatus::Paused;
+            self.queue_index = Some(index);
+            self.load_current(0)?;
+            if was_paused {
+                // Changing tracks while paused must not begin playing.
+                self.player.pause(true)?;
+                self.playback.status = PlaybackStatus::Paused;
+            }
+            return Ok(());
+        }
+
+        // Restart by seeking, not reopening the decoder and audio device.
+        // This avoids a needless gap and preserves paused playback.
+        if self.playback.status == PlaybackStatus::Stopped {
             return self.load_current(0);
         }
-        let current = self.queue_index.unwrap_or(0);
-        for offset in 1..=self.queue.len() {
-            let Some(index) = current.checked_sub(offset) else {
-                break;
-            };
-            if self.queue_track_is_playable(index) {
-                self.queue_index = Some(index);
-                return self.load_current(0);
-            }
-        }
-        self.load_current(0)
+        self.player.seek_absolute_ms(0)?;
+        self.playback.position_ms = 0;
+        self.dirty = true;
+        self.persist_playback()
     }
 
     pub(super) fn queue_track_is_playable(&self, index: usize) -> bool {
@@ -672,6 +698,22 @@ mod tests {
     use super::*;
     use rand::{SeedableRng, rngs::StdRng};
     const ALL: fn(usize) -> bool = |_| true;
+
+    #[test]
+    fn previous_restarts_when_past_five_seconds() {
+        assert_eq!(previous_playable(4, 3, 5_001, ALL), None);
+        assert_eq!(previous_playable(4, 3, 5_000, ALL), Some(2));
+    }
+
+    #[test]
+    fn previous_skips_unavailable_tracks() {
+        assert_eq!(
+            previous_playable(5, 4, 0, |index| index != 2 && index != 3),
+            Some(1)
+        );
+        assert_eq!(previous_playable(3, 0, 0, ALL), None);
+        assert_eq!(previous_playable(3, 2, 0, |_| false), None);
+    }
 
     #[test]
     fn an_empty_queue_has_no_next_track() {
