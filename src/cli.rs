@@ -129,6 +129,14 @@ pub enum LibraryCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Cache BPM and energy for every new or modified local song
+    AnalyzeMix {
+        /// Re-analyze every indexed song, including previously failed files
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show local MIX analysis coverage without decoding audio
+    MixStatus,
     /// Write cached ReplayGain results into the audio files themselves
     ///
     /// This is the only command that modifies your files. Nothing else muscli
