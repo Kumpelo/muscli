@@ -1795,6 +1795,86 @@ mod tests {
     }
 
     #[test]
+    fn album_gain_waits_for_all_available_tracks_and_recalculates_on_rescan() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let first = ScannedTrack {
+            track: track("first", 1),
+            file_size: 100,
+            modified_ns: 1,
+        };
+        let second = ScannedTrack {
+            track: track("second", 2),
+            file_size: 100,
+            modified_ns: 1,
+        };
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[first, second],
+            &[],
+        )?;
+        let first_gain = ReplayGainAnalysis {
+            gain_db: -4.0,
+            true_peak_db: -1.0,
+        };
+        db.save_gain("first", first_gain, 100, 1)?;
+
+        assert_eq!(
+            db.track_gain("first", true)?,
+            Some(first_gain),
+            "until the album is complete, use valid track gain"
+        );
+        assert_eq!(
+            db.track_gain("second", true)?,
+            None,
+            "unanalysed tracks cannot borrow partial album gain"
+        );
+
+        let second_gain = ReplayGainAnalysis {
+            gain_db: -6.0,
+            true_peak_db: -0.5,
+        };
+        db.save_gain("second", second_gain, 100, 1)?;
+        let complete = db.track_gain("first", true)?.expect("album gain");
+        assert!(complete.gain_db < -4.0 && complete.gain_db > -6.0);
+        assert_eq!(complete.true_peak_db, -0.5);
+
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[ScannedTrack {
+                track: track("third", 3),
+                file_size: 100,
+                modified_ns: 1,
+            }],
+            &[],
+        )?;
+        assert_eq!(
+            db.track_gain("first", true)?,
+            Some(first_gain),
+            "adding a track invalidates the aggregate until it is analysed"
+        );
+
+        db.save_gain(
+            "third",
+            ReplayGainAnalysis {
+                gain_db: -2.0,
+                true_peak_db: -0.75,
+            },
+            100,
+            1,
+        )?;
+        let updated = db.track_gain("first", true)?.expect("updated album gain");
+        assert!(
+            (updated.gain_db - complete.gain_db).abs() > 0.1,
+            "album normalization must reflect its new track"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn groups_album() {
         let albums = group_albums(&[track("one", 1), track("two", 2)]);
         assert_eq!(albums.len(), 1);
