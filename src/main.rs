@@ -86,7 +86,16 @@ fn main() -> Result<()> {
                 if let Some(bpm) = bpm {
                     settings.bpm_hint = Some(bpm);
                 }
-                let report = mix::render_preview(&first, &second, &output, &settings)?;
+                // Reuse descriptors already computed by 'library analyze-mix'
+                // or the TUI worker; only unknown tracks are analyzed now.
+                let db = Database::open(&paths.database_file())?;
+                let first_key = first.canonicalize().unwrap_or_else(|_| first.clone());
+                let second_key = second.canonicalize().unwrap_or_else(|_| second.clone());
+                let first_cached = db.mix_analysis_for_path(&first_key)?;
+                let second_cached = db.mix_analysis_for_path(&second_key)?;
+                let report = mix::render_preview_with_analysis(
+                    &first, &second, &output, &settings, first_cached, second_cached,
+                )?;
                 if let Some(name) = save_preset {
                     let name = name.trim();
                     if name.is_empty() || name.len() > 64 {
@@ -219,6 +228,45 @@ fn main() -> Result<()> {
                     "{}",
                     t!("cli.write_gain_done", written = written, skipped = skipped)
                 );
+            }
+            LibraryCommand::MixStatus => {
+                let db = Database::open(&paths.database_file())?;
+                let (total, analyzed, bpm, failed) = db.mix_analysis_status()?;
+                println!(
+                    "MIX: {analyzed}/{total} analyzed, {bpm} with estimated BPM, {failed} failed; {} pending",
+                    total.saturating_sub(analyzed)
+                );
+            }
+            LibraryCommand::AnalyzeMix { force } => {
+                let db = Database::open(&paths.database_file())?;
+                let candidates = db.mix_analysis_candidates(force)?;
+                let total = candidates.len();
+                println!("MIX: {total} song(s) need analysis");
+                for (index, (id, path, size, modified)) in candidates.into_iter().enumerate() {
+                    match mix::analyze_track(&path) {
+                        Ok(result) => {
+                            if db.save_mix_analysis(&id, result, size, modified)? {
+                                println!(
+                                    "[{}/{}] {} · BPM {:?} · confidence {:.2} · energy {:.3}",
+                                    index + 1,
+                                    total,
+                                    path.display(),
+                                    result.bpm,
+                                    result.confidence,
+                                    result.energy_rms
+                                );
+                            } else {
+                                println!("[{}/{}] skipped modified file: {}", index + 1, total, path.display());
+                            }
+                        }
+                        Err(error) => {
+                            db.save_mix_failure(&id, &error.to_string(), size, modified)?;
+                            eprintln!("warning: {}: {error:#}", path.display());
+                        }
+                    }
+                }
+                let (songs, complete, bpm, failed) = db.mix_analysis_status()?;
+                println!("MIX: {complete}/{songs} cached; {bpm} BPM estimates, {failed} unsupported/failed");
             }
             LibraryCommand::AnalyzeGain { force } => {
                 let db = Database::open(&paths.database_file())?;
