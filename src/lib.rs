@@ -12,8 +12,8 @@ pub mod instance;
 pub mod library;
 pub mod lyrics;
 pub mod m3u;
-pub mod model;
 pub mod mix_analysis;
+pub mod model;
 pub mod mpris;
 #[cfg(unix)]
 pub mod omarchy;
