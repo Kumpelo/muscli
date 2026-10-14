@@ -61,6 +61,7 @@ use crate::{
         TrackStats,
     },
     mpris::MprisBridge,
+    mix_analysis::{self, MixAnalysisMessage},
     paths::AppPaths,
     replaygain::{self, GainMessage},
     t,
@@ -292,6 +293,11 @@ struct App {
     /// the current batch finishes so new and modified tracks are not missed.
     gain_rescan_pending: bool,
     gain_progress: Option<(usize, usize)>,
+    mix_analysis_tx: tokio_mpsc::UnboundedSender<MixAnalysisMessage>,
+    mix_analysis_rx: tokio_mpsc::UnboundedReceiver<MixAnalysisMessage>,
+    mix_analysis_running: bool,
+    mix_rescan_pending: bool,
+    mix_analysis_progress: Option<(usize, usize)>,
     scan_rx: tokio_mpsc::UnboundedReceiver<ScanMessage>,
     scan_tx: tokio_mpsc::UnboundedSender<ScanMessage>,
     watch_rx: tokio_mpsc::UnboundedReceiver<WatchEvent>,
@@ -441,6 +447,7 @@ async fn run_inner(
     let (scan_tx, scan_rx) = tokio_mpsc::unbounded_channel();
     let (watch_tx, watch_rx) = tokio_mpsc::unbounded_channel();
     let (gain_tx, gain_rx) = tokio_mpsc::unbounded_channel();
+    let (mix_analysis_tx, mix_analysis_rx) = tokio_mpsc::unbounded_channel();
     start_watchers(&config, watch_tx);
     let discord = if config.discord_enabled {
         Some(DiscordPresence::start(config.discord_large_image.clone()))
@@ -529,6 +536,11 @@ async fn run_inner(
         gain_running: false,
         gain_rescan_pending: false,
         gain_progress: None,
+        mix_analysis_tx,
+        mix_analysis_rx,
+        mix_analysis_running: false,
+        mix_rescan_pending: false,
+        mix_analysis_progress: None,
         scan_rx,
         scan_tx,
         watch_rx,
@@ -606,6 +618,7 @@ async fn run_inner(
     }
     app.start_scan();
     app.start_gain_analysis()?;
+    app.start_mix_analysis()?;
 
     let mut shutdown_rx = start_shutdown_listener()?;
     let mut terminal_events = start_terminal_event_reader();
@@ -647,6 +660,11 @@ async fn run_inner(
                 message = app.gain_rx.recv() => {
                     if let Some(message) = message {
                         app.handle_gain_message(message)?;
+                    }
+                }
+                message = app.mix_analysis_rx.recv() => {
+                    if let Some(message) = message {
+                        app.handle_mix_analysis_message(message)?;
                     }
                 }
                 changed = app.watch_rx.recv() => {
@@ -696,6 +714,9 @@ async fn run_inner(
             }
             while let Ok(message) = app.gain_rx.try_recv() {
                 app.handle_gain_message(message)?;
+            }
+            while let Ok(message) = app.mix_analysis_rx.try_recv() {
+                app.handle_mix_analysis_message(message)?;
             }
             while let Ok(event) = app.watch_rx.try_recv() {
                 app.scan_pending.record(event);
