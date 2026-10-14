@@ -577,6 +577,7 @@ impl App {
                     // still running. Defer another candidate lookup until it
                     // completes, instead of silently skipping new tracks.
                     self.schedule_gain_analysis()?;
+                    self.schedule_mix_analysis()?;
                     self.dirty = true;
                 } else {
                     self.status = t!(
@@ -585,6 +586,75 @@ impl App {
                         albums = self.albums.len()
                     );
                     self.dirty = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn schedule_mix_analysis(&mut self) -> Result<()> {
+        if self.mix_analysis_running {
+            self.mix_rescan_pending = true;
+            Ok(())
+        } else {
+            self.start_mix_analysis()
+        }
+    }
+
+    pub(super) fn start_mix_analysis(&mut self) -> Result<()> {
+        if !self.config.mix_analysis_enabled || self.mix_analysis_running {
+            return Ok(());
+        }
+        let candidates = self.db.mix_analysis_candidates(false)?;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let total = candidates.len();
+        mix_analysis::start(candidates, self.mix_analysis_tx.clone())?;
+        self.mix_analysis_running = true;
+        self.mix_analysis_progress = Some((0, total));
+        Ok(())
+    }
+
+    pub(super) fn handle_mix_analysis_message(
+        &mut self,
+        message: MixAnalysisMessage,
+    ) -> Result<()> {
+        match message {
+            MixAnalysisMessage::Result {
+                track_id,
+                analysis,
+                size,
+                modified,
+                completed,
+                total,
+            } => {
+                match analysis {
+                    Ok(analysis) => {
+                        self.db.save_mix_analysis(&track_id, analysis, size, modified)?;
+                    }
+                    Err(error) => {
+                        self.db.save_mix_failure(&track_id, &error, size, modified)?;
+                    }
+                }
+                self.mix_analysis_progress = Some((completed, total));
+                // Report progress without rebuilding the library or blocking audio.
+                // Keep ReplayGain's independent progress visible when active.
+                if !self.gain_running {
+                    self.status = format!("MIX: analizando BPM {completed}/{total}");
+                    self.dirty = true;
+                }
+            }
+            MixAnalysisMessage::Done => {
+                self.mix_analysis_running = false;
+                self.mix_analysis_progress = None;
+                if !self.gain_running {
+                    self.status = "MIX: análisis musical actualizado".into();
+                    self.dirty = true;
+                }
+                if self.mix_rescan_pending {
+                    self.mix_rescan_pending = false;
+                    self.start_mix_analysis()?;
                 }
             }
         }
