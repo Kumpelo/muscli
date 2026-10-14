@@ -76,6 +76,9 @@ pub enum Command {
     },
 }
 
+// The Windows PathBuf layout puts this one-shot CLI variant just above
+// Clippy's size threshold; it is created once and never used in audio code.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub enum MixCommand {
     /// Export a mixed preview of two songs to a new 16-bit WAV
