@@ -212,6 +212,39 @@ ReplayGain analysis, settings, a keybinding reference, and compact mode.
 When reporting a problem, include the platform, exact muscli version,
 reproduction steps, and the output of `muscli doctor`.
 
+## Persistent MIX analysis (BPM and energy)
+
+MIX analysis works like ReplayGain: while muscli is open it scans the local
+library in the background, analyzes only missing, changed or outdated tracks
+and stores compact music descriptors in its SQLite database. It does not
+modify music files or upload any audio.
+
+```sh
+muscli library analyze-mix          # fill missing BPM/energy data
+muscli library mix-status           # analysis coverage and failed codecs
+muscli library analyze-mix --force  # recompute all indexed tracks
+```
+
+For each indexed track the cache includes estimated BPM (nullable if
+uncertain), autocorrelation confidence, RMS energy, file size, modification
+timestamp and algorithm version. Unsupported/corrupt files are recorded as
+failed rather than retried at every startup. Changing a track or upgrading
+the analysis algorithm automatically invalidates that row. The analyzer
+decodes at most the first 30 seconds per song and processes one song at
+a time to keep background work bounded. On large libraries, initial analysis
+can take time; playback does not wait for it. Set
+`mix_analysis_enabled = false` in config.toml to disable automatic
+background analysis. The manual CLI command remains available.
+
+Cached BPM values are reused by `muscli mix demo` when both songs
+are indexed. This basic BPM detector is approximate, especially with
+half/double tempos, long introductions or songs without regular percussion.
+A correct BPM estimate does not yet imply beat alignment or mixing in the TUI.
+
+**Database note:** this feature upgrades the index schema to version 7.
+Back up the library database before trying an older muscli binary, since
+older versions cannot open a newer index.
+
 ## Experimental MIX preview (offline)
 
 The early MIX demo renders a new WAV from two local files; it does **not**
