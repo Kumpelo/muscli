@@ -1634,6 +1634,12 @@ fn album_folder_key(track: &Track) -> (String, String, String, Option<i32>) {
     )
 }
 
+#[derive(Default)]
+struct ReleaseVariants {
+    years: BTreeSet<i32>,
+    folders: BTreeSet<(String, String)>,
+}
+
 pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
     let mut folder_tracks: BTreeMap<_, Vec<&Track>> = BTreeMap::new();
     for track in tracks {
@@ -1675,8 +1681,7 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
     // A remaster with a different year in a separate directory is not the
     // same release. Keep ambiguous cases together unless both independent
     // clues (year and folder) disagree, to avoid splitting multi-disc albums.
-    let mut release_variants: BTreeMap<_, (BTreeSet<i32>, BTreeSet<(String, String)>)> =
-        BTreeMap::new();
+    let mut release_variants: BTreeMap<_, ReleaseVariants> = BTreeMap::new();
     for track in tracks {
         let artist = if track.album_artist.is_empty() {
             &track.artist
@@ -1687,14 +1692,16 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
             .entry((artist.to_lowercase(), track.album.to_lowercase()))
             .or_default();
         if let Some(year) = track.year {
-            variants.0.insert(year);
+            variants.years.insert(year);
         }
         let folder = album_folder_key(track);
-        variants.1.insert((folder.0, folder.1));
+        variants.folders.insert((folder.0, folder.1));
     }
     let distinct_editions = release_variants
         .into_iter()
-        .filter_map(|(key, (years, folders))| (years.len() > 1 && folders.len() > 1).then_some(key))
+        .filter_map(|(key, variants)| {
+            (variants.years.len() > 1 && variants.folders.len() > 1).then_some(key)
+        })
         .collect::<BTreeSet<_>>();
 
     let mut grouped: BTreeMap<(String, String, Option<String>), Album> = BTreeMap::new();
