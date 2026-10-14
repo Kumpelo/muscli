@@ -263,12 +263,29 @@ muscli mix demo "track-a.flac" "track-b.flac" "auto.wav" \
 muscli mix demo "track-c.flac" "track-d.flac" "another.wav" \
   --preset my-fade --seconds 4
 
+# Combined DJ filter sweep, 3-band transition EQ, and baby scratch:
+muscli mix demo "track-a.flac" "track-b.flac" "dj-preview.wav" \
+  --mode auto --filter sweep --intensity 0.75 --scratch \
+  --bass-db -5 --mid-db -2 --treble-db 3 \
+  --save-preset dj-transition
+
+# Gentler incoming-track high-pass transition:
+muscli mix demo "track-c.flac" "track-d.flac" "highpass.wav" \
+  --mode manual --seconds 6 --filter high-pass --intensity 0.5
+
 muscli mix presets
 ```
 
 Options: `--mode auto|manual`, `--seconds 0..12`,
 `--curve linear|smooth|equal-power`, `--beats`, `--bpm`,
-`--preset` and `--save-preset`. Presets are saved as small TOML
+`--preset` and `--save-preset`, plus `--filter auto|off|low-pass|high-pass|sweep`,
+`--intensity 0..1`, `--bass-db`, `--mid-db`, `--treble-db` (-12..+12 dB)
+and `--scratch`. The three-band EQ and short vinyl-style scratch can be
+combined with any filter. `auto` filter selects a sweep only when both BPM
+estimates are compatible; otherwise it uses a clean crossfade. Scratch is
+**manual opt-in**, never applied unpredictably by AutoDJ.
+
+Presets are saved as small TOML
 parameter sets in the normal configuration, **not** copied audio.
 
 The preview uses the built-in decoder and a streaming 16-bit PCM WAV encoder.
@@ -278,7 +295,13 @@ crossfade; **it does not yet synchronize beat phase, musical key, tempo or
 downbeats**. An unreliable estimate falls back to the preset duration.
 Each output file must be a *new* path and PCM WAV output can be sizable.
 This is a proof of concept, not yet Apple Music AutoMix, Spotify Mix, or
-real-time DJ playback. Normal playback and bit-perfect remain unaffected.
+real-time DJ playback. Filtering uses lightweight, one-pole low/high-pass
+sections; transition EQ is a simple 3-band crossover and automatically
+returns to normal when the overlap finishes. Scratch performs a short
+forward/reverse gesture on a bounded (~300 ms maximum) intro, not a full
+turntable emulation or key-locked vinyl algorithm. Peak safety relies on
+gain headroom and 16-bit output clamping, not a mastering limiter.
+Normal playback and bit-perfect remain unaffected.
 
 ## Discord Rich Presence
 
