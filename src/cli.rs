@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::audio::mix::{MixCurve, MixMode};
+use crate::audio::{mix::{MixCurve, MixMode}, mix_fx::MixFilter};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -95,6 +95,22 @@ pub enum MixCommand {
         /// Optional BPM override for auto transitions
         #[arg(long)]
         bpm: Option<f64>,
+        /// Filter: auto, off, low-pass, high-pass or sweep
+        #[arg(long, value_enum)]
+        filter: Option<MixFilter>,
+        /// Wet amount (0.0 to 1.0)
+        #[arg(long)]
+        intensity: Option<f32>,
+        /// Incoming 3-band transition EQ, -12..+12 dB per band
+        #[arg(long)]
+        bass_db: Option<f32>,
+        #[arg(long)]
+        mid_db: Option<f32>,
+        #[arg(long)]
+        treble_db: Option<f32>,
+        /// Short vinyl-style forward/reverse motion at the start of the mix
+        #[arg(long)]
+        scratch: bool,
         /// Load named transition settings from config.toml
         #[arg(long)]
         preset: Option<String>,
