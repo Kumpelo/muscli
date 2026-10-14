@@ -30,6 +30,12 @@ enum Command {
 
 pub const MUSCLI_DISCORD_APPLICATION_ID: &str = "1550289541544546394";
 
+// A paused player is not actively listening. Clear Discord's activity rather
+// than leaving the last song visible indefinitely (including after restore).
+fn publish_presence(status: PlaybackStatus) -> bool {
+    status == PlaybackStatus::Playing
+}
+
 pub struct DiscordPresence {
     tx: Sender<Command>,
     worker: Option<JoinHandle<()>>,
@@ -80,7 +86,7 @@ impl DiscordPresence {
 
     pub fn sync(&self, track: Option<&Track>, state: &PlaybackState) {
         let command = match track {
-            Some(track) if state.status != PlaybackStatus::Stopped => Command::Update(Presence {
+            Some(track) if publish_presence(state.status) => Command::Update(Presence {
                 title: track.title.clone(),
                 artist: track.artist.clone(),
                 album: track.album.clone(),
@@ -180,6 +186,13 @@ fn presence_image<'a>(artist: &str, genre: &str, fallback: &'a str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_and_stopped_playback_do_not_publish_presence() {
+        assert!(publish_presence(PlaybackStatus::Playing));
+        assert!(!publish_presence(PlaybackStatus::Paused));
+        assert!(!publish_presence(PlaybackStatus::Stopped));
+    }
 
     #[test]
     fn discord_fields_are_safely_limited() {
