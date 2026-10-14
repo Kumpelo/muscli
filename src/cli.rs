@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::audio::mix::{MixCurve, MixMode};
+
 #[derive(Debug, Parser)]
 #[command(
     name = "muscli",
@@ -25,6 +27,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Render a local DJ transition demo without modifying source music
+    Mix {
+        #[command(subcommand)]
+        command: MixCommand,
+    },
     /// Manage indexed music folders
     Library {
         #[command(subcommand)]
@@ -64,6 +71,39 @@ pub enum Command {
         #[command(subcommand)]
         command: RemoteCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MixCommand {
+    /// Export a mixed preview of two songs to a new 16-bit WAV
+    Demo {
+        first: PathBuf,
+        second: PathBuf,
+        output: PathBuf,
+        /// Use auto beat-duration or manually selected fade duration
+        #[arg(long, value_enum)]
+        mode: Option<MixMode>,
+        /// Manual fade duration (seconds), or auto fallback (0-12)
+        #[arg(long)]
+        seconds: Option<f64>,
+        /// Shape of the volume transition
+        #[arg(long, value_enum)]
+        curve: Option<MixCurve>,
+        /// Beat count in automatic mode (1-64)
+        #[arg(long)]
+        beats: Option<u8>,
+        /// Optional BPM override for auto transitions
+        #[arg(long)]
+        bpm: Option<f64>,
+        /// Load named transition settings from config.toml
+        #[arg(long)]
+        preset: Option<String>,
+        /// Save these transition settings to config.toml
+        #[arg(long)]
+        save_preset: Option<String>,
+    },
+    /// Display the locally saved transition presets
+    Presets,
 }
 
 #[derive(Debug, Subcommand)]
