@@ -1487,7 +1487,7 @@ impl Database {
                 Some((Some(gain), Some(peak), weight, true)) => {
                     samples.push((gain, peak, weight));
                 }
-                Some((_, _, _, false)) | None | Some(_) => {
+                _ => {
                     // Defer normalization until every member has an analysis.
                     // Still give the currently playing track its own gain.
                     return self.track_gain(current_track_id, false);
@@ -1995,6 +1995,126 @@ mod tests {
             (updated.gain_db - complete.gain_db).abs() > 0.1,
             "album normalization must reflect its new track"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn groups_numbered_multi_artist_compilation_without_merging_other_editions() {
+        let mut first = track("song-a", 1);
+        first.album = "Night Drive".into();
+        first.artist = "Performer A".into();
+        first.album_artist = "Performer A".into();
+        first.path = "/music/Night Drive/01.flac".into();
+
+        let mut second = track("song-b", 2);
+        second.album = first.album.clone();
+        second.artist = "Performer B".into();
+        second.album_artist = "Performer B".into();
+        second.path = "/music/Night Drive/02.flac".into();
+
+        // A similarly titled release in a different folder is not part of it.
+        let mut another_edition = track("song-c", 1);
+        another_edition.album = first.album.clone();
+        another_edition.artist = "Performer C".into();
+        another_edition.album_artist = "Performer C".into();
+        another_edition.path = "/music/Remaster/01.flac".into();
+
+        // The source index is deliberately not ordered by track number.
+        let albums = group_albums(&[second, another_edition, first]);
+        assert_eq!(albums.len(), 2);
+        let compilation = albums
+            .iter()
+            .find(|album| album.artist == "Various Artists")
+            .expect("one inferred compilation");
+        assert_eq!(compilation.track_ids, ["song-a", "song-b"]);
+        assert_eq!(compilation.available_tracks, 2);
+        assert_eq!(
+            albums
+                .iter()
+                .find(|album| album.artist == "Performer C")
+                .expect("separate edition")
+                .track_ids,
+            ["song-c"]
+        );
+    }
+
+    #[test]
+    fn ambiguous_compilation_numbering_is_not_automatically_merged() {
+        let mut first = track("first", 1);
+        first.artist = "First".into();
+        first.album_artist = "First".into();
+        first.path = "/music/Unsorted/first.flac".into();
+
+        let mut second = track("second", 1);
+        second.artist = "Second".into();
+        second.album_artist = "Second".into();
+        second.path = "/music/Unsorted/second.flac".into();
+
+        let albums = group_albums(&[first, second]);
+        assert_eq!(albums.len(), 2);
+        assert!(albums.iter().all(|album| album.artist != "Various Artists"));
+    }
+
+    #[test]
+    fn album_gain_for_inferred_compilation_includes_every_artist() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let mut first = track("first", 1);
+        first.artist = "A".into();
+        first.album_artist = "A".into();
+        first.path = "/music/Mix/01.flac".into();
+
+        let mut second = track("second", 2);
+        second.artist = "B".into();
+        second.album_artist = "B".into();
+        second.path = "/music/Mix/02.flac".into();
+
+        let album = group_albums(&[first.clone(), second.clone()])
+            .into_iter()
+            .next()
+            .expect("album");
+        assert_eq!(album.track_ids.len(), 2);
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[
+                ScannedTrack {
+                    track: first,
+                    file_size: 100,
+                    modified_ns: 1,
+                },
+                ScannedTrack {
+                    track: second,
+                    file_size: 100,
+                    modified_ns: 1,
+                },
+            ],
+            &[],
+        )?;
+        let first_gain = ReplayGainAnalysis {
+            gain_db: -3.0,
+            true_peak_db: -1.0,
+        };
+        db.save_gain("first", first_gain, 100, 1)?;
+        assert_eq!(
+            db.album_gain_for_tracks("first", &album.track_ids)?,
+            Some(first_gain),
+            "partial album uses its current track gain"
+        );
+        db.save_gain(
+            "second",
+            ReplayGainAnalysis {
+                gain_db: -7.0,
+                true_peak_db: -0.5,
+            },
+            100,
+            1,
+        )?;
+        let combined = db
+            .album_gain_for_tracks("first", &album.track_ids)?
+            .expect("complete compilation gain");
+        assert!(combined.gain_db < -3.0 && combined.gain_db > -7.0);
+        assert_eq!(combined.true_peak_db, -0.5);
         Ok(())
     }
 
