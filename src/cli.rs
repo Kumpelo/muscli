@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::audio::{mix::{MixCurve, MixMode}, mix_fx::MixFilter};
+use crate::audio::{
+    mix::{MixCurve, MixMode},
+    mix_fx::MixFilter,
+};
 
 #[derive(Debug, Parser)]
 #[command(
