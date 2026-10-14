@@ -408,6 +408,7 @@ impl Database {
                     bpm REAL,
                     confidence REAL NOT NULL,
                     energy_rms REAL NOT NULL,
+                    error_text TEXT,
                     file_size INTEGER NOT NULL,
                     modified_ns INTEGER NOT NULL,
                     algorithm_version INTEGER NOT NULL
@@ -1481,6 +1482,7 @@ impl Database {
                 bpm=excluded.bpm,
                 confidence=excluded.confidence,
                 energy_rms=excluded.energy_rms,
+                error_text=NULL,
                 file_size=excluded.file_size,
                 modified_ns=excluded.modified_ns,
                 algorithm_version=excluded.algorithm_version",
@@ -1497,6 +1499,37 @@ impl Database {
         Ok(changed == 1)
     }
 
+    /// Unsupported codecs and corrupt files are recorded as failed. This
+    /// prevents retry storms on every start; a changed file is retried.
+    pub fn save_mix_failure(
+        &self,
+        track_id: &str,
+        error: &str,
+        size: u64,
+        modified: i64,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO track_mix_analysis
+                (track_id,bpm,confidence,energy_rms,error_text,file_size,modified_ns,algorithm_version)
+             SELECT id,NULL,0,0,?2,?3,?4,?5 FROM tracks
+             WHERE id=?1 AND available=1 AND file_size=?3 AND modified_ns=?4
+             ON CONFLICT(track_id) DO UPDATE SET
+                bpm=NULL,confidence=0,energy_rms=0,
+                error_text=excluded.error_text,
+                file_size=excluded.file_size,
+                modified_ns=excluded.modified_ns,
+                algorithm_version=excluded.algorithm_version",
+            params![
+                track_id,
+                error,
+                size.min(i64::MAX as u64) as i64,
+                modified,
+                crate::audio::mix::ANALYSIS_VERSION,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
     pub fn mix_analysis_for_path(
         &self,
         path: &Path,
@@ -1505,7 +1538,7 @@ impl Database {
             .query_row(
                 "SELECT a.bpm,a.confidence,a.energy_rms
                  FROM tracks t JOIN track_mix_analysis a ON a.track_id=t.id
-                 WHERE t.path=?1 AND t.available=1
+                 WHERE t.path=?1 AND t.available=1 AND a.error_text IS NULL
                    AND a.file_size=t.file_size
                    AND a.modified_ns=t.modified_ns
                    AND a.algorithm_version=?2",
@@ -1522,21 +1555,21 @@ impl Database {
     }
 
     /// Count cached descriptors without decoding, including uncertain BPMs.
-    pub fn mix_analysis_status(&self) -> Result<(usize, usize, usize)> {
+    pub fn mix_analysis_status(&self) -> Result<(usize, usize, usize, usize)> {
         let available: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM tracks WHERE available=1",
             [],
             |row| row.get(0),
         )?;
-        let (analyzed, with_bpm): (i64, i64) = self.conn.query_row(
-            "SELECT COUNT(*),COUNT(a.bpm)
+        let (analyzed, with_bpm, failed): (i64, i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*),COUNT(a.bpm),COUNT(a.error_text)
              FROM tracks t JOIN track_mix_analysis a ON t.id=a.track_id
              WHERE t.available=1 AND a.file_size=t.file_size
                AND a.modified_ns=t.modified_ns AND a.algorithm_version=?1",
             [crate::audio::mix::ANALYSIS_VERSION],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        Ok((available as usize, analyzed as usize, with_bpm as usize))
+        Ok((available as usize, analyzed as usize, with_bpm as usize, failed as usize))
     }
 
     pub fn gain_analysis_candidates(
