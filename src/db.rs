@@ -1560,20 +1560,84 @@ pub struct ScannedTrack {
     pub modified_ns: i64,
 }
 
+/// An album's source and folder provide a conservative compilation boundary:
+/// unrelated editions in different directories must never be merged just
+/// because their titles match.
+fn album_folder_key(track: &Track) -> (String, String, String, Option<i32>) {
+    (
+        track.source_id.clone(),
+        track
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .to_string_lossy()
+            .into_owned(),
+        track.album.to_lowercase(),
+        track.year,
+    )
+}
+
 pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
-    let mut grouped: BTreeMap<(String, String), Album> = BTreeMap::new();
+    let mut folder_tracks: BTreeMap<_, Vec<&Track>> = BTreeMap::new();
     for track in tracks {
-        let artist = if track.album_artist.is_empty() {
+        if !track.album.trim().is_empty() {
+            folder_tracks
+                .entry(album_folder_key(track))
+                .or_default()
+                .push(track);
+        }
+    }
+
+    // Only infer a various-artists compilation when its track numbers are
+    // unambiguous, multiple performers AND album artists occur in one folder,
+    // and every member agrees on the title/year. Never guess across folders.
+    let compilations = folder_tracks
+        .into_iter()
+        .filter_map(|(key, members)| {
+            let performers = members
+                .iter()
+                .map(|track| track.artist.to_lowercase())
+                .collect::<BTreeSet<_>>();
+            let album_artists = members
+                .iter()
+                .map(|track| track.album_artist.to_lowercase())
+                .collect::<BTreeSet<_>>();
+            let positions = members
+                .iter()
+                .map(|track| (track.disc_number, track.track_number))
+                .collect::<BTreeSet<_>>();
+            (members.len() >= 2
+                && performers.len() >= 2
+                && album_artists.len() >= 2
+                && positions.len() == members.len()
+                && members.iter().all(|track| track.track_number > 0))
+            .then_some(key)
+        })
+        .collect::<BTreeSet<_>>();
+
+    let mut grouped: BTreeMap<(String, String, Option<String>), Album> = BTreeMap::new();
+    for track in tracks {
+        let folder_key = album_folder_key(track);
+        let inferred_compilation = compilations.contains(&folder_key);
+        let artist = if inferred_compilation {
+            "Various Artists"
+        } else if track.album_artist.is_empty() {
             &track.artist
         } else {
             &track.album_artist
         };
-        let key = (artist.to_lowercase(), track.album.to_lowercase());
-        let album_key = format!("{}\u{1f}{}", key.0, key.1);
+        let edition = inferred_compilation.then(|| {
+            format!("{}\u{1f}{}\u{1f}{:?}", folder_key.0, folder_key.1, folder_key.3)
+        });
+        let key = (artist.to_lowercase(), track.album.to_lowercase(), edition);
+        let album_key = match &key.2 {
+            Some(edition) => format!("{}\u{1f}{}\u{1f}{edition}", key.0, key.1),
+            None => format!("{}\u{1f}{}", key.0, key.1),
+        };
         let album = grouped.entry(key).or_insert_with(|| Album {
             key: album_key,
             title: track.album.clone(),
-            artist: artist.clone(),
+            artist: artist.to_owned(),
             year: track.year,
             cover_path: track.cover_path.clone(),
             track_ids: Vec::new(),
@@ -1583,6 +1647,15 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
         album.available_tracks += usize::from(track.available);
         if album.cover_path.is_none() {
             album.cover_path = track.cover_path.clone();
+        }
+    }
+    let order = tracks
+        .iter()
+        .map(|track| (track.id.as_str(), (track.disc_number, track.track_number)))
+        .collect::<HashMap<_, _>>();
+    for ((_, _, edition), album) in &mut grouped {
+        if edition.is_some() {
+            album.track_ids.sort_by_key(|id| order.get(id.as_str()).copied());
         }
     }
     grouped.into_values().collect()
@@ -1807,13 +1880,7 @@ mod tests {
             file_size: 100,
             modified_ns: 1,
         };
-        db.upsert_scan(
-            "s",
-            Path::new("/music"),
-            "Music",
-            &[first, second],
-            &[],
-        )?;
+        db.upsert_scan("s", Path::new("/music"), "Music", &[first, second], &[])?;
         let first_gain = ReplayGainAnalysis {
             gain_db: -4.0,
             true_peak_db: -1.0,
