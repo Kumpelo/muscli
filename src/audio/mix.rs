@@ -229,7 +229,8 @@ struct WaveWriter {
 impl WaveWriter {
     fn create(path: &Path, channels: u16, rate: u32) -> Result<Self> {
         let mut writer = BufWriter::new(
-            File::create_new(path).with_context(|| format!("output already exists: {}", path.display()))?,
+            File::create_new(path)
+                .with_context(|| format!("output already exists: {}", path.display()))?,
         );
         writer.write_all(&[0; 44])?;
         Ok(Self {
@@ -300,7 +301,10 @@ pub fn render_preview(
     if spec.sample_rate != other.sample_rate || spec.channels != other.channels {
         bail!(
             "demo requires matching sample rates and channels ({} Hz/{} ch vs {} Hz/{} ch)",
-            spec.sample_rate, spec.channels, other.sample_rate, other.channels
+            spec.sample_rate,
+            spec.channels,
+            other.sample_rate,
+            other.channels
         );
     }
 
@@ -327,7 +331,9 @@ pub fn render_preview(
         preset.seconds
     };
     let overlap = (seconds * f64::from(spec.sample_rate)).round() as u64;
-    let overlap = overlap.min(first_frames.saturating_sub(1)).min(second_frames.saturating_sub(1));
+    let overlap = overlap
+        .min(first_frames.saturating_sub(1))
+        .min(second_frames.saturating_sub(1));
     let channels = usize::from(spec.channels);
     let mut writer = WaveWriter::create(output, spec.channels, spec.sample_rate)?;
     let mut left = vec![0.0f32; channels];
