@@ -134,6 +134,11 @@ impl App {
             return Ok(());
         }
         self.apply_replay_gain(&track)?;
+        if paused {
+            // Set the native backend's pause flag before the asynchronous
+            // Load command can open a new output stream.
+            self.player.pause(true)?;
+        }
         self.player.load(&track.path, position_ms)?;
         // A replace wipes mpv's playlist, so whatever was queued behind is gone.
         self.prefetched = None;
