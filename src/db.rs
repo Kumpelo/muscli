@@ -1694,9 +1694,7 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
     }
     let distinct_editions = release_variants
         .into_iter()
-        .filter_map(|(key, (years, folders))| {
-            (years.len() > 1 && folders.len() > 1).then_some(key)
-        })
+        .filter_map(|(key, (years, folders))| (years.len() > 1 && folders.len() > 1).then_some(key))
         .collect::<BTreeSet<_>>();
 
     let mut grouped: BTreeMap<(String, String, Option<String>), Album> = BTreeMap::new();
@@ -2092,7 +2090,10 @@ mod tests {
         assert_eq!(albums.len(), 2);
         assert_ne!(albums[0].key, albums[1].key);
         assert_eq!(
-            albums.iter().map(|album| album.year).collect::<BTreeSet<_>>(),
+            albums
+                .iter()
+                .map(|album| album.year)
+                .collect::<BTreeSet<_>>(),
             BTreeSet::from([Some(1998), Some(2024)])
         );
     }
