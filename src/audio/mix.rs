@@ -154,28 +154,45 @@ fn frame_count(path: &Path) -> Result<u64> {
     Ok(count)
 }
 
-/// Estimate dance tempo from positive changes in short-time energy.
-///
-/// The detector reads at most 30 seconds and keeps a few thousand energy
-/// values, not decoded tracks. An ambiguous/quiet signal returns None; it
-/// never invents a confident BPM for a pure tone or quiet ambient music.
-pub fn estimate_bpm(path: &Path) -> Result<Option<f64>> {
+/// Persisted musical descriptors. A missing BPM is a valid outcome for music
+/// without a confidently detectable periodic beat, and is cached as such.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackAnalysis {
+    pub bpm: Option<f64>,
+    /// Normalized onset autocorrelation (0..1), not a probability.
+    pub confidence: f64,
+    /// RMS of the first 30 seconds; a quick energy descriptor, not LUFS.
+    pub energy_rms: f64,
+}
+
+/// Increment when the extractor changes so previously cached rows are
+/// correctly reanalyzed after an upgrade.
+pub const ANALYSIS_VERSION: i64 = 1;
+
+/// Analyze a bounded excerpt rather than decoding whole songs or keeping PCM.
+/// A worker thread owns the decoder; the playback callback never runs this.
+pub fn analyze_track(path: &Path) -> Result<TrackAnalysis> {
     let mut reader = FrameReader::open(path)?;
     let rate = reader.decoder.spec().sample_rate;
     let bin_frames = (rate / 100).max(1) as usize;
     let mut frame = vec![0.0; reader.channels];
     let mut bins = Vec::with_capacity(3_001);
     let mut energy = 0.0f64;
+    let mut total_energy = 0.0f64;
     let mut frames = 0usize;
+    let mut total_frames = 0u64;
     for _ in 0..u64::from(rate) * 30 {
         if !reader.next_frame(&mut frame)? {
             break;
         }
-        energy += frame
+        let power = frame
             .iter()
             .map(|sample| f64::from(*sample) * f64::from(*sample))
             .sum::<f64>()
             / reader.channels as f64;
+        energy += power;
+        total_energy += power;
+        total_frames += 1;
         frames += 1;
         if frames == bin_frames {
             bins.push((energy / frames as f64).sqrt());
@@ -183,8 +200,13 @@ pub fn estimate_bpm(path: &Path) -> Result<Option<f64>> {
             frames = 0;
         }
     }
+    let energy_rms = (total_energy / total_frames.max(1) as f64).sqrt();
     if bins.len() < 800 {
-        return Ok(None);
+        return Ok(TrackAnalysis {
+            bpm: None,
+            confidence: 0.0,
+            energy_rms,
+        });
     }
     let onsets = bins
         .windows(2)
@@ -192,7 +214,11 @@ pub fn estimate_bpm(path: &Path) -> Result<Option<f64>> {
         .collect::<Vec<_>>();
     let activity: f64 = onsets.iter().map(|v| v * v).sum();
     if activity < 1e-6 {
-        return Ok(None);
+        return Ok(TrackAnalysis {
+            bpm: None,
+            confidence: 0.0,
+            energy_rms,
+        });
     }
     let bins_per_sec = f64::from(rate) / bin_frames as f64;
     let mut best = (0.0, 0.0);
@@ -216,7 +242,16 @@ pub fn estimate_bpm(path: &Path) -> Result<Option<f64>> {
             best = (f64::from(bpm), score);
         }
     }
-    Ok((best.1 >= 0.25).then_some(best.0))
+    Ok(TrackAnalysis {
+        bpm: (best.1 >= 0.25).then_some(best.0),
+        confidence: best.1.clamp(0.0, 1.0),
+        energy_rms,
+    })
+}
+
+/// Backward-compatible BPM helper used by the MIX preview.
+pub fn estimate_bpm(path: &Path) -> Result<Option<f64>> {
+    Ok(analyze_track(path)?.bpm)
 }
 
 struct WaveWriter {
@@ -287,6 +322,19 @@ pub fn render_preview(
     output: &Path,
     preset: &MixPreset,
 ) -> Result<MixReport> {
+    render_preview_with_analysis(first, second, output, preset, None, None)
+}
+
+/// Use cached musical descriptors when available, so previews never repeat
+/// expensive onset analysis after the library worker has already completed it.
+pub fn render_preview_with_analysis(
+    first: &Path,
+    second: &Path,
+    output: &Path,
+    preset: &MixPreset,
+    first_cached: Option<TrackAnalysis>,
+    second_cached: Option<TrackAnalysis>,
+) -> Result<MixReport> {
     preset.validate()?;
     if output.exists() {
         bail!("output already exists: {}", output.display());
@@ -315,7 +363,10 @@ pub fn render_preview(
     }
 
     let (first_bpm, second_bpm) = if preset.mode == MixMode::Auto {
-        (estimate_bpm(first)?, estimate_bpm(second)?)
+        (
+            first_cached.map_or_else(|| estimate_bpm(first), |analysis| Ok(analysis.bpm))?,
+            second_cached.map_or_else(|| estimate_bpm(second), |analysis| Ok(analysis.bpm))?,
+        )
     } else {
         (None, None)
     };
