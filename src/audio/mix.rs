@@ -14,7 +14,10 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-use super::decode::Decoder;
+use super::{
+    decode::Decoder,
+    mix_fx::{EffectSettings, MixFilter, TransitionFx, scratch_mix, scratch_position},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +46,16 @@ pub struct MixPreset {
     pub beats: u8,
     /// Optional manual override for automatic tempo estimation.
     pub bpm_hint: Option<f64>,
+    /// Filter applied during the overlap; Auto selects a sweep only for compatible BPM.
+    pub filter: MixFilter,
+    /// Effect wet amount, from 0 (dry) to 1 (maximum).
+    pub intensity: f32,
+    /// Incoming-track three-band EQ, faded out before normal playback resumes.
+    pub bass_db: f32,
+    pub mid_db: f32,
+    pub treble_db: f32,
+    /// Short bounded forward/reverse vinyl gesture on the incoming track.
+    pub scratch: bool,
 }
 
 impl Default for MixPreset {
@@ -53,6 +66,12 @@ impl Default for MixPreset {
             seconds: 6.0,
             beats: 8,
             bpm_hint: None,
+            filter: MixFilter::Auto,
+            intensity: 0.7,
+            bass_db: 0.0,
+            mid_db: 0.0,
+            treble_db: 0.0,
+            scratch: false,
         }
     }
 }
@@ -70,6 +89,14 @@ impl MixPreset {
         {
             bail!("BPM hint must be between 50 and 240");
         }
+        if !self.intensity.is_finite() || !(0.0..=1.0).contains(&self.intensity) {
+            bail!("MIX effect intensity must be between 0 and 1");
+        }
+        for db in [self.bass_db, self.mid_db, self.treble_db] {
+            if !db.is_finite() || !(-12.0..=12.0).contains(&db) {
+                bail!("MIX EQ band gains must be between -12 and +12 dB");
+            }
+        }
         Ok(())
     }
 }
@@ -81,6 +108,8 @@ pub struct MixReport {
     pub transition_seconds: f64,
     pub output_seconds: f64,
     pub tempo_compatible: bool,
+    pub applied_filter: MixFilter,
+    pub scratch_applied: bool,
 }
 
 /// Peak-safe gains; equal-power starts with sine/cosine and compensates for
@@ -390,6 +419,38 @@ pub fn render_preview_with_analysis(
     let mut left = vec![0.0f32; channels];
     let mut right = vec![0.0f32; channels];
     let mut mixed = vec![0.0f32; channels];
+    let filter = match preset.filter {
+        MixFilter::Auto if preset.mode == MixMode::Auto && tempo_compatible => MixFilter::Sweep,
+        MixFilter::Auto => MixFilter::Off,
+        explicit => explicit,
+    };
+    let mut fx = TransitionFx::new(
+        EffectSettings {
+            filter,
+            intensity: preset.intensity,
+            bass_db: preset.bass_db,
+            mid_db: preset.mid_db,
+            treble_db: preset.treble_db,
+        },
+        channels,
+        spec.sample_rate,
+    );
+
+    // A bounded incoming-track intro, not a decoded full song.
+    // Consumed once: after the gesture, B resumes from the exact next frame.
+    let scratch_frames = if preset.scratch && preset.intensity > 0.0 {
+        (u64::from(spec.sample_rate) * 300 / 1_000)
+            .min(overlap / 3)
+            .min(second_frames.saturating_sub(1))
+    } else {
+        0
+    };
+    let mut scratch_intro = vec![0.0f32; scratch_frames as usize * channels];
+    for frame in scratch_intro.chunks_exact_mut(channels) {
+        if !b.next_frame(frame)? {
+            bail!("second decoder ended while preloading scratch gesture");
+        }
+    }
 
     for _ in 0..first_frames - overlap {
         if !a.next_frame(&mut left)? {
@@ -398,14 +459,38 @@ pub fn render_preview_with_analysis(
         writer.frame(&left)?;
     }
     for index in 0..overlap {
-        if !a.next_frame(&mut left)? || !b.next_frame(&mut right)? {
-            bail!("decoder ended during transition");
+        if !a.next_frame(&mut left)? {
+            bail!("first decoder ended during transition");
+        }
+        if index < scratch_frames {
+            let len = scratch_frames as usize;
+            let raw_index = index as usize;
+            let progress = if len <= 1 {
+                1.0
+            } else {
+                raw_index as f32 / (len - 1) as f32
+            };
+            let warped = scratch_position(progress) * (len - 1) as f32;
+            let before = warped.floor() as usize;
+            let after = (before + 1).min(len - 1);
+            let frac = warped - before as f32;
+            let amount = scratch_mix(progress, preset.intensity);
+            for channel in 0..channels {
+                let dry = scratch_intro[raw_index * channels + channel];
+                let a = scratch_intro[before * channels + channel];
+                let b = scratch_intro[after * channels + channel];
+                let scratched = a + (b - a) * frac;
+                right[channel] = dry + (scratched - dry) * amount;
+            }
+        } else if !b.next_frame(&mut right)? {
+            bail!("second decoder ended during transition");
         }
         let t = if overlap <= 1 {
             1.0
         } else {
             index as f64 / (overlap - 1) as f64
         };
+        fx.process(&mut left, &mut right, t as f32);
         let (a_gain, b_gain) = blend_gains(preset.curve, t);
         for c in 0..channels {
             mixed[c] = left[c] * a_gain + right[c] * b_gain;
@@ -426,6 +511,8 @@ pub fn render_preview_with_analysis(
         output_seconds: (first_frames + second_frames - overlap) as f64
             / f64::from(spec.sample_rate),
         tempo_compatible,
+        applied_filter: filter,
+        scratch_applied: scratch_frames > 0,
     })
 }
 
