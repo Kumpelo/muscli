@@ -212,6 +212,41 @@ ReplayGain analysis, settings, a keybinding reference, and compact mode.
 When reporting a problem, include the platform, exact muscli version,
 reproduction steps, and the output of `muscli doctor`.
 
+## Experimental MIX preview (offline)
+
+The early MIX demo renders a new WAV from two local files; it does **not**
+alter the source tracks or enable mixing during normal TUI playback.
+
+```sh
+# Manual 6-second transition with a smooth fade:
+muscli mix demo "track-a.flac" "track-b.flac" "demo.wav" \
+  --mode manual --seconds 6 --curve smooth --save-preset my-fade
+
+# Automatic overlap duration estimated from BPM (8 beats by default):
+muscli mix demo "track-a.flac" "track-b.flac" "auto.wav" \
+  --mode auto --beats 8 --curve equal-power
+
+# Reuse a tiny saved recipe, overriding parameters if desired:
+muscli mix demo "track-c.flac" "track-d.flac" "another.wav" \
+  --preset my-fade --seconds 4
+
+muscli mix presets
+```
+
+Options: `--mode auto|manual`, `--seconds 0..12`,
+`--curve linear|smooth|equal-power`, `--beats`, `--bpm`,
+`--preset` and `--save-preset`. Presets are saved as small TOML
+parameter sets in the normal configuration, **not** copied audio.
+
+The preview uses the built-in decoder and a streaming 16-bit PCM WAV encoder.
+For now the two songs must have the **same sample rate and channel count**.
+Automatic mode estimates BPM from an onset envelope, then sets a beat-length
+crossfade; **it does not yet synchronize beat phase, musical key, tempo or
+downbeats**. An unreliable estimate falls back to the preset duration.
+Each output file must be a *new* path and PCM WAV output can be sizable.
+This is a proof of concept, not yet Apple Music AutoMix, Spotify Mix, or
+real-time DJ playback. Normal playback and bit-perfect remain unaffected.
+
 ## Discord Rich Presence
 
 ```text
