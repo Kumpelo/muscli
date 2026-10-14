@@ -12,6 +12,7 @@ pub mod dsp;
 pub mod hybrid;
 pub mod measure;
 pub mod mix;
+pub mod mix_fx;
 pub mod mpv;
 pub mod native;
 
