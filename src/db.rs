@@ -170,7 +170,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -394,6 +394,25 @@ impl Database {
                         AND EXISTS (SELECT 1 FROM app_state WHERE key='playback_state');
 
                     PRAGMA user_version = 6;",
+            )?;
+            tx.commit()?;
+        }
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 6 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE track_mix_analysis (
+                    track_id TEXT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+                    bpm REAL,
+                    confidence REAL NOT NULL,
+                    energy_rms REAL NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    modified_ns INTEGER NOT NULL,
+                    algorithm_version INTEGER NOT NULL
+                );
+                PRAGMA user_version = 7;",
             )?;
             tx.commit()?;
         }
@@ -1417,6 +1436,107 @@ impl Database {
             }
         }
         Ok(queues)
+    }
+
+    /// Only new or modified, available tracks require a MIX analysis. A row
+    /// with unknown BPM is still complete and must not be retried on every run.
+    pub fn mix_analysis_candidates(
+        &self,
+        force: bool,
+    ) -> Result<Vec<(String, std::path::PathBuf, u64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id,t.path,t.file_size,t.modified_ns FROM tracks t
+             LEFT JOIN track_mix_analysis a ON a.track_id=t.id
+             WHERE t.available=1 AND
+               (?1 OR a.track_id IS NULL OR a.file_size<>t.file_size
+                   OR a.modified_ns<>t.modified_ns OR a.algorithm_version<>?2)
+             ORDER BY t.id",
+        )?;
+        let rows = stmt.query_map(params![force, crate::audio::mix::ANALYSIS_VERSION], |row| {
+            Ok((
+                row.get(0)?,
+                std::path::PathBuf::from(row.get::<_, String>(1)?),
+                row.get::<_, i64>(2)?.max(0) as u64,
+                row.get(3)?,
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Save only when the indexed file still has the fingerprint that was
+    /// analyzed. A scan may modify it while the background worker is busy.
+    pub fn save_mix_analysis(
+        &self,
+        track_id: &str,
+        analysis: crate::audio::mix::TrackAnalysis,
+        size: u64,
+        modified: i64,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO track_mix_analysis
+                (track_id,bpm,confidence,energy_rms,file_size,modified_ns,algorithm_version)
+             SELECT id,?2,?3,?4,?5,?6,?7 FROM tracks
+             WHERE id=?1 AND available=1 AND file_size=?5 AND modified_ns=?6
+             ON CONFLICT(track_id) DO UPDATE SET
+                bpm=excluded.bpm,
+                confidence=excluded.confidence,
+                energy_rms=excluded.energy_rms,
+                file_size=excluded.file_size,
+                modified_ns=excluded.modified_ns,
+                algorithm_version=excluded.algorithm_version",
+            params![
+                track_id,
+                analysis.bpm,
+                analysis.confidence,
+                analysis.energy_rms,
+                size.min(i64::MAX as u64) as i64,
+                modified,
+                crate::audio::mix::ANALYSIS_VERSION,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn mix_analysis_for_path(
+        &self,
+        path: &Path,
+    ) -> Result<Option<crate::audio::mix::TrackAnalysis>> {
+        Ok(self.conn
+            .query_row(
+                "SELECT a.bpm,a.confidence,a.energy_rms
+                 FROM tracks t JOIN track_mix_analysis a ON a.track_id=t.id
+                 WHERE t.path=?1 AND t.available=1
+                   AND a.file_size=t.file_size
+                   AND a.modified_ns=t.modified_ns
+                   AND a.algorithm_version=?2",
+                params![path.to_string_lossy(), crate::audio::mix::ANALYSIS_VERSION],
+                |row| {
+                    Ok(crate::audio::mix::TrackAnalysis {
+                        bpm: row.get(0)?,
+                        confidence: row.get(1)?,
+                        energy_rms: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Count cached descriptors without decoding, including uncertain BPMs.
+    pub fn mix_analysis_status(&self) -> Result<(usize, usize, usize)> {
+        let available: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE available=1",
+            [],
+            |row| row.get(0),
+        )?;
+        let (analyzed, with_bpm): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*),COUNT(a.bpm)
+             FROM tracks t JOIN track_mix_analysis a ON t.id=a.track_id
+             WHERE t.available=1 AND a.file_size=t.file_size
+               AND a.modified_ns=t.modified_ns AND a.algorithm_version=?1",
+            [crate::audio::mix::ANALYSIS_VERSION],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((available as usize, analyzed as usize, with_bpm as usize))
     }
 
     pub fn gain_analysis_candidates(
