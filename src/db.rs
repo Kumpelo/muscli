@@ -1462,38 +1462,48 @@ impl Database {
                 // COLLATE NOCASE rather than lower(): lower() on both sides
                 // makes the comparison opaque to the index, turning every
                 // track load into a full join over the library.
-                "SELECT peer.gain_db,peer.true_peak_db,peer.duration_ms
+                "SELECT peer.gain_db,peer.true_peak_db,peer.duration_ms,
+                        CASE WHEN peer.gain_db IS NOT NULL
+                                  AND peer.true_peak_db IS NOT NULL
+                                  AND peer.gain_file_size=peer.file_size
+                                  AND peer.gain_modified_ns=peer.modified_ns
+                             THEN 1 ELSE 0 END
                  FROM tracks current JOIN tracks peer
                    ON peer.album=current.album COLLATE NOCASE
                   AND peer.album_artist=current.album_artist COLLATE NOCASE
-                 WHERE current.id=?1
-                   AND peer.gain_db IS NOT NULL
-                   AND peer.gain_file_size=peer.file_size
-                   AND peer.gain_modified_ns=peer.modified_ns",
+                 WHERE current.id=?1 AND peer.available=1",
             )?;
             let rows = stmt
                 .query_map([track_id], |row| {
                     Ok((
-                        row.get::<_, f64>(0)?,
-                        row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                        row.get::<_, Option<f64>>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
                         row.get::<_, i64>(2)?.max(1) as f64,
+                        row.get::<_, i64>(3)? != 0,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             if rows.is_empty() {
                 return Ok(None);
             }
-            let total_weight = rows.iter().map(|(_, _, weight)| weight).sum::<f64>();
+            // Never treat a partly scanned/analysed album as a complete one:
+            // adding even a single track changes its integrated loudness.
+            // Until all available peers are ready, use this track's own
+            // up-to-date analysis rather than a misleading partial album gain.
+            if rows.iter().any(|(_, _, _, valid)| !valid) {
+                return self.track_gain(track_id, false);
+            }
+            let total_weight = rows.iter().map(|(_, _, weight, _)| weight).sum::<f64>();
             let energy = rows
                 .iter()
-                .map(|(gain, _, weight)| weight * 10f64.powf(-gain / 10.0))
+                .map(|(gain, _, weight, _)| weight * 10f64.powf(-gain.unwrap_or(0.0) / 10.0))
                 .sum::<f64>()
                 / total_weight;
             Ok(Some(ReplayGainAnalysis {
                 gain_db: -10.0 * energy.log10(),
                 true_peak_db: rows
                     .iter()
-                    .map(|(_, peak, _)| *peak)
+                    .filter_map(|(_, peak, _, _)| *peak)
                     .fold(f64::NEG_INFINITY, f64::max),
             }))
         } else {
