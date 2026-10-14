@@ -496,11 +496,19 @@ fn the_backend_plays_a_file_through_its_own_thread() {
         "what the device was handed is not what is in the file"
     );
 
-    // And the position has to have followed the device rather than the
-    // decoder, which by now is most of a second ahead.
-    thread::sleep(Duration::from_millis(50));
-    let position = player.position_ms();
+    // The engine refreshes the position at most every 50 ms, and Windows
+    // scheduler jitter may delay that wakeup. Poll with a bounded deadline
+    // instead of assuming that exactly one 50 ms sleep reaches the next tick.
+    use std::time::Instant;
     let played = 4 * BLOCK as u64 * 1_000 / u64::from(RATE);
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let position = loop {
+        let position = player.position_ms();
+        if position.abs_diff(played) < 30 || Instant::now() >= deadline {
+            break position;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
     assert!(
         position.abs_diff(played) < 30,
         "after {played} ms of audio the position reads {position} ms"
