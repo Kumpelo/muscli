@@ -9,10 +9,11 @@ use muscli::{t, tn};
 
 use muscli::{
     cli::{
-        Cli, Command, LibraryCommand, LyricsCommand, PlaylistCommand,
+        Cli, Command, LibraryCommand, LyricsCommand, MixCommand, PlaylistCommand,
         RemoteCommand as CliRemoteCommand, SetupCommand, VolumeCommand,
     },
     config::{Config, all_sources},
+    audio::mix::{self, MixPreset},
     control::{self, RemoteCommand},
     db::Database,
     doctor, i18n, library,
@@ -38,6 +39,80 @@ fn main() -> Result<()> {
     ));
 
     match cli.command {
+        Some(Command::Mix { command }) => match command {
+            MixCommand::Presets => {
+                if config.mix_presets.is_empty() {
+                    println!("No MIX presets saved. Use 'muscli mix demo --help'.");
+                }
+                for (name, preset) in &config.mix_presets {
+                    println!(
+                        "{name}: {:?} / {:?} / {:.2}s / {} beats / BPM {:?}",
+                        preset.mode, preset.curve, preset.seconds, preset.beats, preset.bpm_hint
+                    );
+                }
+            }
+            MixCommand::Demo {
+                first,
+                second,
+                output,
+                mode,
+                seconds,
+                curve,
+                beats,
+                bpm,
+                preset,
+                save_preset,
+            } => {
+                let mut settings = match preset {
+                    Some(ref name) => config
+                        .mix_presets
+                        .get(name)
+                        .cloned()
+                        .with_context(|| format!("no MIX preset called '{name}'"))?,
+                    None => MixPreset::default(),
+                };
+                if let Some(mode) = mode {
+                    settings.mode = mode;
+                }
+                if let Some(seconds) = seconds {
+                    settings.seconds = seconds;
+                }
+                if let Some(curve) = curve {
+                    settings.curve = curve;
+                }
+                if let Some(beats) = beats {
+                    settings.beats = beats;
+                }
+                if let Some(bpm) = bpm {
+                    settings.bpm_hint = Some(bpm);
+                }
+                let report = mix::render_preview(&first, &second, &output, &settings)?;
+                if let Some(name) = save_preset {
+                    let name = name.trim();
+                    if name.is_empty() || name.len() > 64 {
+                        anyhow::bail!("preset name must contain 1 to 64 characters");
+                    }
+                    config.mix_presets.insert(name.to_owned(), settings);
+                    config.save(&paths)?;
+                    println!("Saved MIX preset '{name}' to local config.");
+                }
+                println!(
+                    "MIX preview: {} ({:.1}s, transition {:.2}s, {:?} curve)",
+                    output.display(),
+                    report.output_seconds,
+                    report.transition_seconds,
+                    settings.curve
+                );
+                if settings.mode == mix::MixMode::Auto {
+                    println!(
+                        "Estimated BPM: first {:?}, second {:?}; similar tempo: {}",
+                        report.first_bpm, report.second_bpm, report.tempo_compatible
+                    );
+                    println!("Preview aligns the fade duration to beats; it does not yet beat-match, time-stretch or sync beat phase.");
+                }
+                println!("Inputs were not modified. Render is a demo file, not live TUI mixing.");
+            }
+        },
         Some(Command::Library { command }) => match command {
             LibraryCommand::Add { path } => {
                 if config.add_source(&path)? {
