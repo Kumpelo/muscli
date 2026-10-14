@@ -86,6 +86,90 @@ fn auto_mix_detects_a_click_track_and_quantizes_to_beats() {
 }
 
 #[test]
+fn dj_filter_eq_and_scratch_render_different_audio_without_changing_sources() {
+    use muscli::audio::mix_fx::MixFilter;
+
+    let dir = TempDir::new().expect("temp directory");
+    let first = dir.path().join("first.flac");
+    let second = dir.path().join("second.flac");
+    write_tone(&first, 220.0, 3_000);
+    write_tone(&second, 990.0, 3_000);
+    let originals = (fs::read(&first).unwrap(), fs::read(&second).unwrap());
+
+    let clean_file = dir.path().join("clean.wav");
+    let clean = MixPreset {
+        seconds: 1.0,
+        ..MixPreset::default()
+    };
+    render_preview(&first, &second, &clean_file, &clean).expect("clean crossfade");
+    let clean_audio = fs::read(&clean_file).expect("read clean");
+
+    for filter in [
+        MixFilter::LowPass,
+        MixFilter::HighPass,
+        MixFilter::Sweep,
+    ] {
+        let destination = dir.path().join(format!("{filter:?}.wav"));
+        let settings = MixPreset {
+            seconds: 1.0,
+            filter,
+            intensity: 1.0,
+            bass_db: 6.0,
+            mid_db: -4.0,
+            treble_db: -6.0,
+            scratch: true,
+            ..MixPreset::default()
+        };
+        let report = render_preview(&first, &second, &destination, &settings)
+            .expect("render effect");
+        assert_eq!(report.applied_filter, filter);
+        assert!(report.scratch_applied);
+        let audio = fs::read(&destination).expect("read effect render");
+        assert_eq!(audio.len(), clean_audio.len());
+        assert_ne!(&audio[44..], &clean_audio[44..]);
+        assert_eq!(&audio[..4], b"RIFF");
+        assert_eq!(&audio[8..12], b"WAVE");
+    }
+    assert_eq!(fs::read(&first).unwrap(), originals.0);
+    assert_eq!(fs::read(&second).unwrap(), originals.1);
+}
+
+#[test]
+fn scratch_can_be_combined_with_eq_or_disabled() {
+    let dir = TempDir::new().expect("temp directory");
+    let first = dir.path().join("a.flac");
+    let second = dir.path().join("b.flac");
+    write_tone(&first, 150.0, 1_000);
+    write_tone(&second, 800.0, 1_000);
+
+    let bare = dir.path().join("bare.wav");
+    let with_scratch = dir.path().join("scratch.wav");
+    let settings = MixPreset {
+        seconds: 0.6,
+        intensity: 1.0,
+        bass_db: -5.0,
+        treble_db: 4.0,
+        ..MixPreset::default()
+    };
+    render_preview(&first, &second, &bare, &settings).unwrap();
+    let output = render_preview(
+        &first,
+        &second,
+        &with_scratch,
+        &MixPreset {
+            scratch: true,
+            ..settings
+        },
+    )
+    .expect("render scratch");
+    assert!(output.scratch_applied);
+    assert_ne!(
+        fs::read(bare).unwrap(),
+        fs::read(with_scratch).unwrap()
+    );
+}
+
+#[test]
 fn mixed_sample_rates_are_rejected_before_writing_output() {
     let dir = TempDir::new().expect("temp directory");
     let first = dir.path().join("first.flac");
