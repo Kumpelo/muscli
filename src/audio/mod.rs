@@ -11,6 +11,7 @@ pub mod decode;
 pub mod dsp;
 pub mod hybrid;
 pub mod measure;
+pub mod mix;
 pub mod mpv;
 pub mod native;
 
