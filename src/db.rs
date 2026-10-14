@@ -1962,6 +1962,70 @@ mod tests {
     }
 
     #[test]
+    fn mix_analysis_is_incremental_and_preserves_valid_unknown_bpm() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let scanned = (0..20).map(|n| ScannedTrack {
+            track: track(&format!("mix-{n}"), n + 1),
+            file_size: 100,
+            modified_ns: 10,
+        }).collect::<Vec<_>>();
+        db.upsert_scan("s", Path::new("/music"), "Music", &scanned, &[])?;
+        assert_eq!(db.mix_analysis_candidates(false)?.len(), 20);
+        let analysis = crate::audio::mix::TrackAnalysis {
+            bpm: Some(128.0), confidence: 0.85, energy_rms: 0.12
+        };
+        for n in 0..19 {
+            assert!(db.save_mix_analysis(&format!("mix-{n}"), analysis, 100, 10)?);
+        }
+        assert!(db.save_mix_analysis(
+            "mix-19",
+            crate::audio::mix::TrackAnalysis { bpm: None, confidence: 0.0, energy_rms: 0.01 },
+            100,
+            10
+        )?);
+        assert_eq!(db.mix_analysis_status()?, (20, 20, 19, 0));
+        assert!(db.mix_analysis_candidates(false)?.is_empty());
+
+        let added = (20..25).map(|n| ScannedTrack {
+            track: track(&format!("mix-{n}"), n + 1),
+            file_size: 100,
+            modified_ns: 10,
+        }).collect::<Vec<_>>();
+        db.upsert_scan("s", Path::new("/music"), "Music", &added, &[])?;
+        assert_eq!(db.mix_analysis_candidates(false)?.len(), 5);
+        db.upsert_scan("s", Path::new("/music"), "Music",
+            &[ScannedTrack { track: track("mix-0", 1), file_size: 101, modified_ns: 11 }],
+            &[])?;
+        assert_eq!(db.mix_analysis_candidates(false)?.len(), 6);
+        assert!(!db.save_mix_analysis("mix-0", analysis, 100, 10)?,
+            "a stale worker must not overwrite analysis after a rescan");
+        assert_eq!(db.mix_analysis_for_path(Path::new("/mix-0.flac"))?, None);
+        assert!(db.save_mix_analysis("mix-0", analysis, 101, 11)?);
+        assert_eq!(db.mix_analysis_for_path(Path::new("/mix-0.flac"))?, Some(analysis));
+        assert_eq!(db.mix_analysis_candidates(false)?.len(), 5);
+        assert_eq!(db.mix_analysis_candidates(true)?.len(), 25);
+        Ok(())
+    }
+
+    #[test]
+    fn mix_analysis_failure_is_cached_until_file_changes() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        db.upsert_scan("s", Path::new("/music"), "Music",
+            &[ScannedTrack { track: track("unsupported", 1), file_size: 42, modified_ns: 7 }],
+            &[])?;
+        assert!(db.save_mix_failure("unsupported", "unsupported codec", 42, 7)?);
+        assert_eq!(db.mix_analysis_status()?, (1, 1, 0, 1));
+        assert!(db.mix_analysis_candidates(false)?.is_empty());
+        assert_eq!(db.mix_analysis_for_path(Path::new("/unsupported.flac"))?, None);
+        db.upsert_scan("s", Path::new("/music"), "Music",
+            &[ScannedTrack { track: track("unsupported", 1), file_size: 43, modified_ns: 8 }],
+            &[])?;
+        assert_eq!(db.mix_analysis_candidates(false)?.len(), 1);
+        assert!(!db.save_mix_failure("unsupported", "stale failure", 42, 7)?);
+        Ok(())
+    }
+
+    #[test]
     fn schema_persists_tracks_and_playlists() -> Result<()> {
         let mut db = Database::open_memory()?;
         let scanned = vec![ScannedTrack {
