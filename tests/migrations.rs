@@ -1,5 +1,5 @@
 //! Schema migration coverage: `Database::migrate` walks user_version 0
-//! through 4 and refuses anything newer.
+//! through 7 and refuses anything newer.
 
 mod common;
 
@@ -9,7 +9,7 @@ use muscli::db::Database;
 use rusqlite::Connection;
 
 /// The newest schema version this build understands.
-const CURRENT_VERSION: i64 = 6;
+const CURRENT_VERSION: i64 = 7;
 
 fn user_version(path: &Path) -> i64 {
     let conn = Connection::open(path).expect("opening the database directly");
@@ -76,6 +76,7 @@ fn a_fresh_database_lands_on_the_current_schema() {
         "smart_playlists",
         "sources",
         "track_stats",
+        "track_mix_analysis",
         "tracks",
     ] {
         assert!(
