@@ -631,10 +631,12 @@ impl App {
             } => {
                 match analysis {
                     Ok(analysis) => {
-                        self.db.save_mix_analysis(&track_id, analysis, size, modified)?;
+                        self.db
+                            .save_mix_analysis(&track_id, analysis, size, modified)?;
                     }
                     Err(error) => {
-                        self.db.save_mix_failure(&track_id, &error, size, modified)?;
+                        self.db
+                            .save_mix_failure(&track_id, &error, size, modified)?;
                     }
                 }
                 self.mix_analysis_progress = Some((completed, total));
