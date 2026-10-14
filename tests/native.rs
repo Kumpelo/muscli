@@ -314,6 +314,52 @@ fn a_seek_keeps_the_device_and_costs_one_buffer() {
 }
 
 #[test]
+fn rapid_consecutive_seeks_land_on_the_latest_requested_position() {
+    let mut harness = harness(8_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+
+    // Several 5-second and shorter scrubs can arrive before the output has
+    // acknowledged the previous flush. Only the final position may be heard.
+    for wanted in [5_000, 0, 5_000, 1_000, 6_500, 2_000, 5_500] {
+        harness.engine.handle(Command::SeekAbsolute(wanted));
+    }
+    assert_eq!(harness.capture.starts(), 1, "seek reopened the device");
+    assert!(harness.position.ms().abs_diff(5_500) < 100);
+
+    harness.engine.step();
+    assert!(
+        harness.capture.pull(BLOCK).iter().all(|sample| *sample == 0.0),
+        "stale audio escaped during the final seek"
+    );
+    harness.engine.step();
+
+    let mut captured = Vec::new();
+    for _ in 0..8 {
+        captured.extend(harness.capture.pull(BLOCK));
+        harness.engine.step();
+    }
+    let mut decoder = Decoder::open(&harness.path).expect("open fixture");
+    decoder.seek_ms(5_500).expect("seek fixture");
+    let mut expected = Vec::new();
+    while expected.len() < captured.len() {
+        expected.extend_from_slice(
+            decoder.next_block().expect("decode fixture").expect("more audio"),
+        );
+    }
+    let latency = (RATE as usize * 2) / 1_000;
+    let compared = captured.len() - latency - BLOCK;
+    assert_eq!(
+        &captured[latency..latency + compared],
+        &expected[..compared],
+        "the output came from an earlier seek"
+    );
+    assert!(errors(&mut harness.events).is_empty());
+}
+
+#[test]
 fn a_seek_moves_the_reported_position() {
     let mut harness = harness(3_000, &[RATE]);
     harness.engine.handle(Command::Load {
