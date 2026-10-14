@@ -1672,6 +1672,33 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
         })
         .collect::<BTreeSet<_>>();
 
+    // A remaster with a different year in a separate directory is not the
+    // same release. Keep ambiguous cases together unless both independent
+    // clues (year and folder) disagree, to avoid splitting multi-disc albums.
+    let mut release_variants: BTreeMap<_, (BTreeSet<i32>, BTreeSet<(String, String)>)> =
+        BTreeMap::new();
+    for track in tracks {
+        let artist = if track.album_artist.is_empty() {
+            &track.artist
+        } else {
+            &track.album_artist
+        };
+        let variants = release_variants
+            .entry((artist.to_lowercase(), track.album.to_lowercase()))
+            .or_default();
+        if let Some(year) = track.year {
+            variants.0.insert(year);
+        }
+        let folder = album_folder_key(track);
+        variants.1.insert((folder.0, folder.1));
+    }
+    let distinct_editions = release_variants
+        .into_iter()
+        .filter_map(|(key, (years, folders))| {
+            (years.len() > 1 && folders.len() > 1).then_some(key)
+        })
+        .collect::<BTreeSet<_>>();
+
     let mut grouped: BTreeMap<(String, String, Option<String>), Album> = BTreeMap::new();
     for track in tracks {
         let folder_key = album_folder_key(track);
@@ -1683,13 +1710,19 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
         } else {
             &track.album_artist
         };
-        let edition = inferred_compilation.then(|| {
-            format!(
+        let artist_key = artist.to_lowercase();
+        let title_key = track.album.to_lowercase();
+        let edition = if inferred_compilation {
+            Some(format!(
                 "{}\u{1f}{}\u{1f}{:?}",
                 folder_key.0, folder_key.1, folder_key.3
-            )
-        });
-        let key = (artist.to_lowercase(), track.album.to_lowercase(), edition);
+            ))
+        } else if distinct_editions.contains(&(artist_key.clone(), title_key.clone())) {
+            Some(format!("release-year:{:?}", track.year))
+        } else {
+            None
+        };
+        let key = (artist_key, title_key, edition);
         let album_key = match &key.2 {
             Some(edition) => format!("{}\u{1f}{}\u{1f}{edition}", key.0, key.1),
             None => format!("{}\u{1f}{}", key.0, key.1),
@@ -2040,6 +2073,27 @@ mod tests {
                 .expect("separate edition")
                 .track_ids,
             ["song-c"]
+        );
+    }
+
+    #[test]
+    fn separate_year_editions_do_not_merge_when_the_folders_also_differ() {
+        let mut original = track("original", 1);
+        original.album = "Same Title".into();
+        original.year = Some(1998);
+        original.path = "/music/Original/01.flac".into();
+
+        let mut remaster = track("remaster", 1);
+        remaster.album = original.album.clone();
+        remaster.year = Some(2024);
+        remaster.path = "/music/Remaster/01.flac".into();
+
+        let albums = group_albums(&[original, remaster]);
+        assert_eq!(albums.len(), 2);
+        assert_ne!(albums[0].key, albums[1].key);
+        assert_eq!(
+            albums.iter().map(|album| album.year).collect::<BTreeSet<_>>(),
+            BTreeSet::from([Some(1998), Some(2024)])
         );
     }
 
