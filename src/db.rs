@@ -1737,7 +1737,12 @@ mod tests {
             true_peak_db: -1.0,
         };
         for entry in &existing {
-            db.save_gain(&entry.track.id, analyzed, entry.file_size, entry.modified_ns)?;
+            db.save_gain(
+                &entry.track.id,
+                analyzed,
+                entry.file_size,
+                entry.modified_ns,
+            )?;
         }
         assert!(db.gain_analysis_candidates(false)?.is_empty());
 
@@ -1753,7 +1758,9 @@ mod tests {
         let candidates = db.gain_analysis_candidates(false)?;
         assert_eq!(candidates.len(), 5, "existing analyzed tracks stay cached");
         assert!(
-            candidates.iter().all(|(id, _, _, _)| id.starts_with("new-")),
+            candidates
+                .iter()
+                .all(|(id, _, _, _)| id.starts_with("new-")),
             "only newly imported tracks should need analysis"
         );
 
