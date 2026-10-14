@@ -47,8 +47,16 @@ fn main() -> Result<()> {
                 for (name, preset) in &config.mix_presets {
                     println!(
                         "{name}: {:?} / {:?} / {:.2}s / {} beats / BPM {:?} / filter {:?} / scratch {} / EQ [{:.1},{:.1},{:.1}]",
-                        preset.mode, preset.curve, preset.seconds, preset.beats, preset.bpm_hint, preset.filter,
-                        preset.scratch, preset.bass_db, preset.mid_db, preset.treble_db
+                        preset.mode,
+                        preset.curve,
+                        preset.seconds,
+                        preset.beats,
+                        preset.bpm_hint,
+                        preset.filter,
+                        preset.scratch,
+                        preset.bass_db,
+                        preset.mid_db,
+                        preset.treble_db
                     );
                 }
             }
