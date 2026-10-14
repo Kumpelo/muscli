@@ -104,11 +104,7 @@ fn dj_filter_eq_and_scratch_render_different_audio_without_changing_sources() {
     render_preview(&first, &second, &clean_file, &clean).expect("clean crossfade");
     let clean_audio = fs::read(&clean_file).expect("read clean");
 
-    for filter in [
-        MixFilter::LowPass,
-        MixFilter::HighPass,
-        MixFilter::Sweep,
-    ] {
+    for filter in [MixFilter::LowPass, MixFilter::HighPass, MixFilter::Sweep] {
         let destination = dir.path().join(format!("{filter:?}.wav"));
         let settings = MixPreset {
             seconds: 1.0,
@@ -120,8 +116,8 @@ fn dj_filter_eq_and_scratch_render_different_audio_without_changing_sources() {
             scratch: true,
             ..MixPreset::default()
         };
-        let report = render_preview(&first, &second, &destination, &settings)
-            .expect("render effect");
+        let report =
+            render_preview(&first, &second, &destination, &settings).expect("render effect");
         assert_eq!(report.applied_filter, filter);
         assert!(report.scratch_applied);
         let audio = fs::read(&destination).expect("read effect render");
@@ -163,10 +159,7 @@ fn scratch_can_be_combined_with_eq_or_disabled() {
     )
     .expect("render scratch");
     assert!(output.scratch_applied);
-    assert_ne!(
-        fs::read(bare).unwrap(),
-        fs::read(with_scratch).unwrap()
-    );
+    assert_ne!(fs::read(bare).unwrap(), fs::read(with_scratch).unwrap());
 }
 
 #[test]
