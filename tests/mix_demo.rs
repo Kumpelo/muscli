@@ -58,7 +58,8 @@ fn auto_mix_detects_a_click_track_and_quantizes_to_beats() {
 
     let mut clicks = vec![0i16; RATE as usize * 12];
     for start in (0..clicks.len()).step_by(RATE as usize / 2) {
-        for sample in &mut clicks[start..(start + 120).min(clicks.len())] {
+        let end = (start + 120).min(clicks.len());
+        for sample in &mut clicks[start..end] {
             *sample = 15_000;
         }
     }
