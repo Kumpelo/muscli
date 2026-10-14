@@ -1684,7 +1684,10 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
             &track.album_artist
         };
         let edition = inferred_compilation.then(|| {
-            format!("{}\u{1f}{}\u{1f}{:?}", folder_key.0, folder_key.1, folder_key.3)
+            format!(
+                "{}\u{1f}{}\u{1f}{:?}",
+                folder_key.0, folder_key.1, folder_key.3
+            )
         });
         let key = (artist.to_lowercase(), track.album.to_lowercase(), edition);
         let album_key = match &key.2 {
@@ -1712,7 +1715,9 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
         .collect::<HashMap<_, _>>();
     for ((_, _, edition), album) in &mut grouped {
         if edition.is_some() {
-            album.track_ids.sort_by_key(|id| order.get(id.as_str()).copied());
+            album
+                .track_ids
+                .sort_by_key(|id| order.get(id.as_str()).copied());
         }
     }
     grouped.into_values().collect()
