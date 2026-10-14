@@ -118,6 +118,10 @@ impl App {
         self.dirty = true;
     }
     pub(super) fn load_current(&mut self, position_ms: u64) -> Result<()> {
+        self.load_current_with_pause(position_ms, false)
+    }
+
+    fn load_current_with_pause(&mut self, position_ms: u64, paused: bool) -> Result<()> {
         self.flush_history(false)?;
         let Some(track) = self.current_track().cloned() else {
             return Ok(());
@@ -133,8 +137,15 @@ impl App {
         self.player.load(&track.path, position_ms)?;
         // A replace wipes mpv's playlist, so whatever was queued behind is gone.
         self.prefetched = None;
-        self.player.pause(false)?;
-        self.playback.status = PlaybackStatus::Playing;
+        // Keep the native player's atomic pause set before its background
+        // worker starts the new stream. Briefly unpausing first can leak sound
+        // when Previous is pressed while the player is paused.
+        self.player.pause(paused)?;
+        self.playback.status = if paused {
+            PlaybackStatus::Paused
+        } else {
+            PlaybackStatus::Playing
+        };
         self.playback.position_ms = position_ms;
         self.playback.duration_ms = track.duration_ms;
         if self.config.history_enabled {
@@ -295,13 +306,7 @@ impl App {
         }) {
             let was_paused = self.playback.status == PlaybackStatus::Paused;
             self.queue_index = Some(index);
-            self.load_current(0)?;
-            if was_paused {
-                // Changing tracks while paused must not begin playing.
-                self.player.pause(true)?;
-                self.playback.status = PlaybackStatus::Paused;
-            }
-            return Ok(());
+            return self.load_current_with_pause(0, was_paused);
         }
 
         // Restart by seeking, not reopening the decoder and audio device.
