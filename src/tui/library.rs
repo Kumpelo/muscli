@@ -573,6 +573,10 @@ impl App {
                     // Rebuilt off-thread; the summary lands with the snapshot.
                     self.status = t!("status.updating_library").into();
                     self.request_reload();
+                    // A scan can finish while the previous ReplayGain batch is
+                    // still running. Defer another candidate lookup until it
+                    // completes, instead of silently skipping new tracks.
+                    self.schedule_gain_analysis()?;
                     self.dirty = true;
                 } else {
                     self.status = t!(
@@ -585,6 +589,15 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn schedule_gain_analysis(&mut self) -> Result<()> {
+        if self.gain_running {
+            self.gain_rescan_pending = true;
+            Ok(())
+        } else {
+            self.start_gain_analysis()
+        }
     }
 
     pub(super) fn start_gain_analysis(&mut self) -> Result<()> {
@@ -630,6 +643,10 @@ impl App {
                 self.gain_progress = None;
                 self.status = t!("status.gain_finished").into();
                 self.dirty = true;
+                if self.gain_rescan_pending {
+                    self.gain_rescan_pending = false;
+                    self.start_gain_analysis()?;
+                }
             }
         }
         Ok(())
