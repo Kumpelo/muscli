@@ -331,7 +331,11 @@ fn rapid_consecutive_seeks_land_on_the_latest_requested_position() {
 
     harness.engine.step();
     assert!(
-        harness.capture.pull(BLOCK).iter().all(|sample| *sample == 0.0),
+        harness
+            .capture
+            .pull(BLOCK)
+            .iter()
+            .all(|sample| *sample == 0.0),
         "stale audio escaped during the final seek"
     );
     harness.engine.step();
@@ -346,7 +350,10 @@ fn rapid_consecutive_seeks_land_on_the_latest_requested_position() {
     let mut expected = Vec::new();
     while expected.len() < captured.len() {
         expected.extend_from_slice(
-            decoder.next_block().expect("decode fixture").expect("more audio"),
+            decoder
+                .next_block()
+                .expect("decode fixture")
+                .expect("more audio"),
         );
     }
     let latency = (RATE as usize * 2) / 1_000;
