@@ -92,7 +92,7 @@ fn main() -> Result<()> {
                     if name.is_empty() || name.len() > 64 {
                         anyhow::bail!("preset name must contain 1 to 64 characters");
                     }
-                    config.mix_presets.insert(name.to_owned(), settings);
+                    config.mix_presets.insert(name.to_owned(), settings.clone());
                     config.save(&paths)?;
                     println!("Saved MIX preset '{name}' to local config.");
                 }
