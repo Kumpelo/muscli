@@ -87,6 +87,37 @@ fn errors(events: &mut UnboundedReceiver<PlayerEvent>) -> Vec<String> {
 }
 
 #[test]
+fn unavailable_prefetch_reports_a_notice_without_aborting_current_audio() {
+    let mut harness = harness(2_000, &[RATE]);
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    let missing = harness.path.with_file_name("next-not-found.flac");
+    harness.engine.handle(Command::Prefetch(Some(missing)));
+
+    let mut noticed = false;
+    while let Ok(event) = harness.events.try_recv() {
+        match event {
+            PlayerEvent::Notice(message) => {
+                noticed |= message.contains("Gapless prefetch unavailable");
+            }
+            PlayerEvent::Error(message) => {
+                panic!("prefetch must not emit a fatal playback error: {message}");
+            }
+            _ => {}
+        }
+    }
+    assert!(noticed, "the failure must still be reported to the user");
+    harness.engine.step();
+    let samples = harness.capture.pull(BLOCK);
+    assert!(
+        samples.iter().any(|sample| *sample != 0.0),
+        "the active track must keep playing when the next one cannot be decoded"
+    );
+}
+
+#[test]
 fn what_reaches_the_device_is_what_was_in_the_file() {
     // Neutral settings, so anything that differs is the path itself losing or
     // altering samples rather than the processing doing its job.
