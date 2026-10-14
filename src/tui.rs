@@ -288,6 +288,9 @@ struct App {
     gain_tx: tokio_mpsc::UnboundedSender<GainMessage>,
     gain_rx: tokio_mpsc::UnboundedReceiver<GainMessage>,
     gain_running: bool,
+    /// A scan changed the library during gain analysis. Run one more pass when
+    /// the current batch finishes so new and modified tracks are not missed.
+    gain_rescan_pending: bool,
     gain_progress: Option<(usize, usize)>,
     scan_rx: tokio_mpsc::UnboundedReceiver<ScanMessage>,
     scan_tx: tokio_mpsc::UnboundedSender<ScanMessage>,
@@ -524,6 +527,7 @@ async fn run_inner(
         gain_tx,
         gain_rx,
         gain_running: false,
+        gain_rescan_pending: false,
         gain_progress: None,
         scan_rx,
         scan_tx,
