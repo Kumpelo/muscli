@@ -44,7 +44,10 @@ fn manual_crossfade_renders_valid_wav_without_touching_the_source_files() {
     );
     assert_eq!(wav.len(), 44 + 5 * RATE as usize * 2);
     assert_eq!(first_original, fs::read(&first).expect("first unchanged"));
-    assert_eq!(second_original, fs::read(&second).expect("second unchanged"));
+    assert_eq!(
+        second_original,
+        fs::read(&second).expect("second unchanged")
+    );
 
     assert!(render_preview(&first, &second, &output, &preset).is_err());
 }
@@ -67,7 +70,9 @@ fn auto_mix_detects_a_click_track_and_quantizes_to_beats() {
     fs::write(&first, &fixture).expect("first click");
     fs::write(&second, &fixture).expect("second click");
 
-    let bpm = estimate_bpm(&first).expect("analyze").expect("regular tempo");
+    let bpm = estimate_bpm(&first)
+        .expect("analyze")
+        .expect("regular tempo");
     assert!((bpm - 120.0).abs() <= 2.0, "detected {bpm} instead of 120");
 
     let preset = MixPreset {
