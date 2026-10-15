@@ -235,6 +235,9 @@ pub enum PlayerEvent {
     /// mpv moved within its playlist, which happens on its own when it rolls
     /// into a prefetched entry.
     PlaylistPosition(i64),
+    /// The native device reached a queued file. Keep its identity even if the
+    /// application has edited the queue since the decoder crossed the boundary.
+    PrefetchedTrack(std::path::PathBuf),
     Duration(u64),
     Paused(bool),
     Volume(f64),

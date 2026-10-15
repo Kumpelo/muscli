@@ -272,8 +272,8 @@ struct App {
     queue: Vec<String>,
     queue_index: Option<usize>,
     queue_dirty: bool,
-    /// Queue index of the track handed to mpv to play next, when one is armed.
-    prefetched: Option<usize>,
+    /// Queue position and file armed for the next backend transition.
+    prefetched: Option<(usize, PathBuf)>,
     shuffle: bool,
     repeat: RepeatMode,
     playback: PlaybackState,

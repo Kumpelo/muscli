@@ -148,7 +148,7 @@ struct Stream {
     /// Samples the ring holds, so the staging area knows when to stop.
     capacity: usize,
     /// Output frames at which a following track begins, in order.
-    handovers: VecDeque<u64>,
+    handovers: VecDeque<(u64, PathBuf)>,
     /// A flush the output has been asked for and not yet carried out. While
     /// set, the engine decodes but does not push: what it wrote would be
     /// thrown away with the audio it is replacing.
@@ -215,7 +215,7 @@ pub struct Engine {
     stream: Option<Stream>,
     /// The track queued behind the one playing, opened early so the join
     /// costs no file opening at the moment it has to be seamless.
-    prefetch: Option<Decoder>,
+    prefetch: Option<(PathBuf, Decoder)>,
     /// The optional live transition only holds a single prefetched packet.
     crossfade: CrossfadeBuffer,
     crossfade_seconds: f64,
@@ -305,7 +305,7 @@ impl Engine {
                     // opening a file is the one thing in the handover that
                     // could take long enough to be heard.
                     Some(path) => match Decoder::open(&path) {
-                        Ok(decoder) => Some(decoder),
+                        Ok(decoder) => Some((path, decoder)),
                         Err(error) => {
                             // A failed *next* decoder must not abort the currently
                             // playing track. The queue will fall back to a normal
@@ -572,7 +572,7 @@ impl Engine {
             for mark in &mut stream.marks {
                 mark.output_frame += resumes_at;
             }
-            for handover in &mut stream.handovers {
+            for (handover, _) in &mut stream.handovers {
                 *handover += resumes_at;
             }
             // Whatever silence the seek itself cost is the seek, not the
@@ -613,14 +613,15 @@ impl Engine {
                 // announced, so appending it keeps the audio continuous
                 // however long the application took to arm it.
                 if !stream.announced_end
-                    && let Some(next) = self
+                    && let Some((next_path, next)) = self
                         .prefetch
-                        .take_if(|next| next.spec() == stream.decoder.spec())
+                        .take_if(|(_, next)| next.spec() == stream.decoder.spec())
                 {
                     if let Some(duration) = next.duration_ms() {
                         let _ = self.events.send(PlayerEvent::Duration(duration));
                     }
                     stream.decoder = next;
+                    stream.path = next_path.clone();
                     // Announce the handover when the old track finishes, not
                     // when the buffered remainder of the next one finishes.
                     let handover_frame = stream.pushed
@@ -650,7 +651,7 @@ impl Engine {
                     stream.ends_at = None;
                     // Plus the chain's delay: at that frame the device is
                     // still playing the limiter's hold of the last track.
-                    stream.handovers.push_back(handover_frame);
+                    stream.handovers.push_back((handover_frame, next_path));
                     worked = true;
                     continue;
                 }
@@ -729,7 +730,7 @@ impl Engine {
                 && !self.settings.bit_perfect
                 && stream.resampler.is_none()
                 && !stream.duplicate
-                && let Some(next) = self.prefetch.as_mut()
+                && let Some((_, next)) = self.prefetch.as_mut()
                 && next.spec() == stream.source_spec
             {
                 self.crossfade.apply(
@@ -779,12 +780,11 @@ impl Engine {
         while stream
             .handovers
             .front()
-            .is_some_and(|frame| *frame <= played)
+            .is_some_and(|(frame, _)| *frame <= played)
         {
-            stream.handovers.pop_front();
-            // The same signal mpv gives when it rolls into the next playlist
-            // entry, so the application's bookkeeping is the same either way.
-            let _ = self.events.send(PlayerEvent::PlaylistPosition(1));
+            if let Some((_, path)) = stream.handovers.pop_front() {
+                let _ = self.events.send(PlayerEvent::PrefetchedTrack(path));
+            }
         }
 
         // Running dry at the very end is not a fault: the track finished and

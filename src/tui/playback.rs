@@ -7,6 +7,21 @@
 use super::*;
 use crate::t;
 
+/// Cache the identity of the armed file as well as its position. Inserting or
+/// shuffling can replace a queue entry without changing its index.
+fn sync_prefetch_target(
+    armed: &mut Option<(usize, PathBuf)>,
+    wanted: Option<(usize, PathBuf)>,
+    mut set_prefetch: impl FnMut(Option<&Path>) -> Result<()>,
+) -> Result<()> {
+    if *armed == wanted {
+        return Ok(());
+    }
+    set_prefetch(wanted.as_ref().map(|(_, path)| path.as_path()))?;
+    *armed = wanted;
+    Ok(())
+}
+
 /// Listening accounting for the track currently loaded. Grouped because they
 /// move together: a load resets all of them, and a flush has to clear the
 /// pending delta and restart the clock in the same breath.
@@ -112,7 +127,6 @@ impl App {
             shuffle_upcoming(&mut self.queue, self.queue_index, &mut rng);
 
             self.queue_dirty = true;
-            self.prefetched = None;
         }
 
         self.dirty = true;
@@ -252,19 +266,11 @@ impl App {
         } else {
             None
         };
-        if wanted == self.prefetched {
-            return Ok(());
-        }
-        match wanted.and_then(|index| self.queue_track_path(index)) {
-            Some(path) => {
-                self.player.set_prefetch(Some(&path))?;
-                self.prefetched = wanted;
-            }
-            None => {
-                self.player.set_prefetch(None)?;
-                self.prefetched = None;
-            }
-        }
+        let wanted =
+            wanted.and_then(|index| self.queue_track_path(index).map(|path| (index, path)));
+        sync_prefetch_target(&mut self.prefetched, wanted, |path| {
+            self.player.set_prefetch(path)
+        })?;
         Ok(())
     }
 
@@ -272,11 +278,18 @@ impl App {
     ///
     /// The audio is already playing, so this only catches the application up:
     /// reloading here would undo the very gap this avoids.
-    fn adopt_prefetched(&mut self) -> Result<()> {
-        let Some(index) = self.prefetched.take() else {
+    fn adopt_prefetched(&mut self, started: Option<&Path>) -> Result<()> {
+        let Some((index, path)) = self.prefetched.take() else {
             return Ok(());
         };
         self.flush_history(true)?;
+        // A transition event can already be waiting when a queue edit lands.
+        // Never label audio from the old prefetch as the newly inserted track.
+        if self.queue_track_path(index).as_ref() != Some(&path)
+            || started.is_some_and(|started| started != path)
+        {
+            return self.next();
+        }
         self.queue_index = Some(index);
         let Some(track) = self.current_track().cloned() else {
             return Ok(());
@@ -596,11 +609,12 @@ impl App {
             // curve, and showing one as the other would make it jump every
             // time mpv echoed back what it was told.
             PlayerEvent::Volume(gain) => self.playback.volume = self.config.volume_position(gain),
+            PlayerEvent::PrefetchedTrack(path) => self.adopt_prefetched(Some(&path))?,
             PlayerEvent::PlaylistPosition(position) => {
                 // Anything past the first entry means mpv rolled into the track
                 // queued behind this one.
                 if position >= 1 {
-                    self.adopt_prefetched()?;
+                    self.adopt_prefetched(None)?;
                 }
             }
             PlayerEvent::EndOfFile if self.repeat == RepeatMode::Track => {
@@ -717,6 +731,64 @@ mod tests {
     use super::*;
     use rand::{SeedableRng, rngs::StdRng};
     const ALL: fn(usize) -> bool = |_| true;
+
+    #[test]
+    fn play_next_replaces_a_prefetched_file_at_the_same_index() -> Result<()> {
+        let mut queue = vec!["current.flac", "radiohead.flac"];
+        let mut armed = Some((1, PathBuf::from(queue[1])));
+        queue.insert(1, "marea.flac");
+        let mut commands = Vec::new();
+        sync_prefetch_target(&mut armed, Some((1, queue[1].into())), |path| {
+            commands.push(path.map(Path::to_path_buf));
+            Ok(())
+        })?;
+        assert_eq!(commands, vec![Some(PathBuf::from("marea.flac"))]);
+        assert_eq!(armed, Some((1, PathBuf::from("marea.flac"))));
+        Ok(())
+    }
+
+    #[test]
+    fn reordering_upcoming_tracks_rearms_the_new_file() -> Result<()> {
+        let mut queue = ["current.flac", "radiohead.flac", "marea.flac"];
+        let mut armed = Some((1, PathBuf::from(queue[1])));
+        queue.swap(1, 2);
+        let mut commanded = None;
+        sync_prefetch_target(&mut armed, Some((1, queue[1].into())), |path| {
+            commanded = path.map(Path::to_path_buf);
+            Ok(())
+        })?;
+        assert_eq!(commanded, Some(PathBuf::from("marea.flac")));
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_prefetch_does_not_restart_the_decoder() -> Result<()> {
+        let mut armed = Some((1, PathBuf::from("marea.flac")));
+        let wanted = armed.clone();
+        sync_prefetch_target(&mut armed, wanted, |_| panic!("unchanged file rearmed"))
+    }
+
+    #[test]
+    fn a_failed_prefetch_update_is_retried_and_can_be_withdrawn() -> Result<()> {
+        let original = Some((1, PathBuf::from("radiohead.flac")));
+        let mut armed = original.clone();
+        let wanted = Some((1, PathBuf::from("marea.flac")));
+        assert!(
+            sync_prefetch_target(&mut armed, wanted.clone(), |_| {
+                anyhow::bail!("backend unavailable")
+            })
+            .is_err()
+        );
+        assert_eq!(armed, original);
+        sync_prefetch_target(&mut armed, wanted.clone(), |_| Ok(()))?;
+        assert_eq!(armed, wanted);
+        sync_prefetch_target(&mut armed, None, |path| {
+            assert!(path.is_none());
+            Ok(())
+        })?;
+        assert!(armed.is_none());
+        Ok(())
+    }
 
     #[test]
     fn previous_restarts_when_past_five_seconds() {

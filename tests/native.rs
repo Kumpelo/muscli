@@ -593,6 +593,105 @@ fn live_mix_blends_the_last_200ms_into_the_prefetched_song() {
 }
 
 #[test]
+fn a_buffered_handover_keeps_its_file_identity_after_prefetch_changes() {
+    let mut harness = harness(50, &[RATE]);
+    let first_next = harness.path.with_file_name("already-buffered.flac");
+    let new_next = harness.path.with_file_name("new-next.flac");
+    for path in [&first_next, &new_next] {
+        fs::write(
+            path,
+            common::flac_bytes(RATE, &common::sine(RATE, 880.0, 1_000)),
+        )
+        .expect("write next track");
+    }
+    harness.engine.handle(Command::Load {
+        path: harness.path.clone(),
+        position_ms: 0,
+    });
+    harness
+        .engine
+        .handle(Command::Prefetch(Some(first_next.clone())));
+    // The short outgoing file and the start of its successor fit in the ring.
+    // No samples have reached the device, so the handover event is still pending.
+    harness.engine.step();
+    harness.engine.handle(Command::Prefetch(Some(new_next)));
+    let mut started = Vec::new();
+    for _ in 0..15 {
+        harness.capture.pull(BLOCK);
+        harness.engine.step();
+        while let Ok(event) = harness.events.try_recv() {
+            match event {
+                PlayerEvent::PrefetchedTrack(path) => started.push(path),
+                PlayerEvent::Error(message) => panic!("{message}"),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(started, vec![first_next]);
+}
+
+#[test]
+fn replacing_prefetch_with_mix_enabled_plays_the_selected_file() {
+    use muscli::audio::mix::MixCurve;
+
+    for seconds in [0.0, 0.2] {
+        let mut harness = harness(1_000, &[RATE]);
+        let stale = harness.path.with_file_name("radiohead.flac");
+        let selected = harness.path.with_file_name("marea.flac");
+        for (path, frequency) in [(&stale, 220.0), (&selected, 880.0)] {
+            fs::write(
+                path,
+                common::flac_bytes(RATE, &common::sine(RATE, frequency, 1_000)),
+            )
+            .expect("write next track");
+        }
+        harness.engine.handle(Command::Crossfade {
+            seconds,
+            curve: MixCurve::Smooth,
+        });
+        harness.engine.handle(Command::Load {
+            path: harness.path.clone(),
+            position_ms: 0,
+        });
+        harness.engine.handle(Command::Prefetch(Some(stale)));
+        // Decode some outgoing audio before Play Next replaces the armed file.
+        harness.engine.step();
+        let mut heard = harness.capture.pull(BLOCK);
+        harness
+            .engine
+            .handle(Command::Prefetch(Some(selected.clone())));
+        while heard.len() < RATE as usize * 2 {
+            harness.engine.step();
+            heard.extend(harness.capture.pull(BLOCK));
+        }
+        let latency = RATE as usize * 2 / 1_000;
+        let offset = RATE as usize * 150 / 1_000;
+        let overlap = (RATE as f64 * seconds) as usize;
+        let expected = decoded(&selected);
+        let actual = &heard[latency + RATE as usize + offset..][..BLOCK];
+        let expected = &expected[overlap + offset..][..BLOCK];
+        let maximum_error = actual
+            .iter()
+            .zip(expected)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            maximum_error < 0.005,
+            "wrong incoming audio with MIX={seconds}: {maximum_error}"
+        );
+        let mut transitioned = Vec::new();
+        while let Ok(event) = harness.events.try_recv() {
+            match event {
+                PlayerEvent::PrefetchedTrack(path) => transitioned.push(path),
+                PlayerEvent::Error(message) => panic!("{message}"),
+                _ => {}
+            }
+        }
+        assert_eq!(transitioned, vec![selected]);
+    }
+}
+
+#[test]
 fn a_queued_track_joins_the_one_playing_without_a_gap() {
     // The whole point of prefetching: an album side that was mastered to run
     // together has to run together, with no silence and no restart of the
@@ -655,7 +754,7 @@ fn a_queued_track_joins_the_one_playing_without_a_gap() {
     let mut ends = 0;
     while let Ok(event) = events.try_recv() {
         match event {
-            PlayerEvent::PlaylistPosition(position) if position >= 1 => handovers += 1,
+            PlayerEvent::PrefetchedTrack(_) => handovers += 1,
             PlayerEvent::EndOfFile => ends += 1,
             _ => {}
         }
@@ -712,7 +811,7 @@ fn a_queued_track_of_another_shape_is_not_forced_to_join() {
     while let Ok(event) = events.try_recv() {
         match event {
             PlayerEvent::EndOfFile => ends += 1,
-            PlayerEvent::PlaylistPosition(position) if position >= 1 => handovers += 1,
+            PlayerEvent::PrefetchedTrack(_) => handovers += 1,
             _ => {}
         }
     }
