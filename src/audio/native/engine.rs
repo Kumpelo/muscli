@@ -23,6 +23,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     audio::{
         decode::{Decoder, StreamSpec},
+        mix::MixCurve,
+        native::crossfade::CrossfadeBuffer,
         dsp::{Chain, Settings, resample::Resampler},
         native::sink::{Output, OutputFormat, SinkState, Volume},
     },
@@ -99,6 +101,7 @@ pub enum Command {
     ReplayGain(Option<f64>),
     Equalizer(Vec<(u32, f32)>),
     BitPerfect(bool),
+    Crossfade { seconds: f64, curve: MixCurve },
     Stop,
 }
 
@@ -213,6 +216,10 @@ pub struct Engine {
     /// The track queued behind the one playing, opened early so the join
     /// costs no file opening at the moment it has to be seamless.
     prefetch: Option<Decoder>,
+    /// The optional live transition only holds a single prefetched packet.
+    crossfade: CrossfadeBuffer,
+    crossfade_seconds: f64,
+    crossfade_curve: MixCurve,
     /// Applied on the way out rather than here, so it reaches audio that is
     /// already decoded and waiting.
     volume: Arc<Volume>,
@@ -247,6 +254,9 @@ impl Engine {
             paused,
             stream: None,
             prefetch: None,
+            crossfade: CrossfadeBuffer::default(),
+            crossfade_seconds: 0.0,
+            crossfade_curve: MixCurve::Smooth,
             needs_reload: false,
             reported_starved: 0,
             last_starve_notice: None,
@@ -285,9 +295,11 @@ impl Engine {
         let outcome = match command {
             Command::Load { path, position_ms } => {
                 self.prefetch = None;
+                self.crossfade.reset();
                 self.load(&path, position_ms)
             }
             Command::Prefetch(path) => {
+                self.crossfade.reset();
                 self.prefetch = match path {
                     // Opened now rather than when the current track ends:
                     // opening a file is the one thing in the handover that
@@ -332,6 +344,12 @@ impl Engine {
                 if let Some(stream) = &mut self.stream {
                     stream.chain.set_equalizer(&self.settings.equalizer);
                 }
+                Ok(())
+            }
+            Command::Crossfade { seconds, curve } => {
+                self.crossfade_seconds = seconds.clamp(0.0, 12.0);
+                self.crossfade_curve = curve;
+                self.crossfade.reset();
                 Ok(())
             }
             Command::BitPerfect(on) => {
@@ -499,6 +517,9 @@ impl Engine {
         };
 
         stream.decoder.seek_ms(position_ms)?;
+        self.crossfade.reset();
+        // A seek into the middle of the fade must not unexpectedly resume
+        // playing a partially consumed next decoder.
         stream.chain.reset();
         if let Some(resampler) = &mut stream.resampler {
             resampler.reset();
@@ -527,6 +548,7 @@ impl Engine {
     }
 
     fn stop(&mut self) {
+        self.crossfade.reset();
         self.output.stop();
         self.stream = None;
         self.position.report(self.epoch, 0);
@@ -599,6 +621,7 @@ impl Engine {
                         let _ = self.events.send(PlayerEvent::Duration(duration));
                     }
                     stream.decoder = next;
+                    self.crossfade.reset();
                     stream.exhausted = false;
                     stream.needs_flush = false;
                     stream.ends_at = None;
@@ -641,6 +664,7 @@ impl Engine {
             let latency_ms =
                 stream.chain.latency_frames() as u64 * 1_000 / u64::from(stream.sample_rate.max(1));
             let source_ms = stream.decoder.position_ms().saturating_sub(latency_ms);
+            let source_frame = stream.decoder.position_frames();
 
             match stream.decoder.next_block() {
                 Ok(Some(block)) => {
@@ -678,6 +702,27 @@ impl Engine {
             if stream.converted.is_empty() {
                 // The converter is still filling; nothing to stage yet.
                 continue;
+            }
+            // Crossfade only when the prefetched stream is exactly the same
+            // native format, with no resampling or channel duplication. If
+            // not, leave the proven gapless/normal transition untouched.
+            if self.crossfade_seconds > 0.0
+                && !self.settings.bit_perfect
+                && stream.resampler.is_none()
+                && !stream.duplicate
+                && let Some(next) = self.prefetch.as_mut()
+                && next.spec() == stream.source_spec
+            {
+                self.crossfade.apply(
+                    &mut stream.converted,
+                    source_frame,
+                    stream.decoder.duration_ms(),
+                    stream.source_spec.sample_rate,
+                    usize::from(stream.source_spec.channels),
+                    next,
+                    self.crossfade_seconds,
+                    self.crossfade_curve,
+                );
             }
             stream.stage(source_ms);
             worked = true;
