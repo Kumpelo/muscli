@@ -11,6 +11,17 @@ use crate::audio::{
     mix::{MixCurve, blend_gains},
 };
 
+/// Parameters that describe an outgoing block and the transition window.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CrossfadeWindow {
+    pub source_frame: u64,
+    pub duration_ms: Option<u64>,
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub seconds: f64,
+    pub curve: MixCurve,
+}
+
 /// Holds only one decoded packet of the next track.
 #[derive(Default)]
 pub(super) struct CrossfadeBuffer {
@@ -66,14 +77,17 @@ impl CrossfadeBuffer {
     pub fn apply(
         &mut self,
         outgoing: &mut [f32],
-        first_source_frame: u64,
-        source_duration_ms: Option<u64>,
-        source_rate: u32,
-        channels: usize,
         next: &mut Decoder,
-        seconds: f64,
-        curve: MixCurve,
+        window: CrossfadeWindow,
     ) -> usize {
+        let CrossfadeWindow {
+            source_frame: first_source_frame,
+            duration_ms: source_duration_ms,
+            sample_rate: source_rate,
+            channels,
+            seconds,
+            curve,
+        } = window;
         if self.abandoned || seconds <= 0.0 || source_rate == 0 || channels == 0 {
             return 0;
         }
