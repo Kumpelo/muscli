@@ -621,6 +621,11 @@ impl Engine {
                         let _ = self.events.send(PlayerEvent::Duration(duration));
                     }
                     stream.decoder = next;
+                    // Announce the handover when the old track finishes, not
+                    // when the buffered remainder of the next one finishes.
+                    let handover_frame = stream.pushed
+                        + stream.pending() as u64 / u64::from(stream.channels)
+                        + stream.chain.latency_frames() as u64;
                     // The MIX decoder reads in packets. Some samples from its
                     // last decoded packet may not yet have joined the fade;
                     // stage that remainder before requesting the next packet,
@@ -643,11 +648,7 @@ impl Engine {
                     stream.ends_at = None;
                     // Plus the chain's delay: at that frame the device is
                     // still playing the limiter's hold of the last track.
-                    stream.handovers.push_back(
-                        stream.pushed
-                            + stream.pending() as u64 / u64::from(stream.channels)
-                            + stream.chain.latency_frames() as u64,
-                    );
+                    stream.handovers.push_back(handover_frame);
                     worked = true;
                     continue;
                 }
