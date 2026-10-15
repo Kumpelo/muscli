@@ -197,6 +197,12 @@ impl AudioBackend for HybridPlayer {
         self.active().set_equalizer(bands)
     }
 
+    fn set_crossfade(&mut self, seconds: f64, curve: crate::audio::mix::MixCurve) -> Result<()> {
+        // MPV does not yet support the native live mixer. Preserve the
+        // setting on native when the current track needs the MPV fallback.
+        self.native.set_crossfade(seconds, curve)
+    }
+
     fn set_bit_perfect(&mut self, on: bool) -> Result<()> {
         self.bit_perfect = on;
         self.native.set_bit_perfect(on)
