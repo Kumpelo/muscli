@@ -295,9 +295,9 @@ impl App {
                 if !horizontal {
                     return Ok(());
                 }
-                self.config.mix_crossfade_seconds =
-                    (self.config.mix_crossfade_seconds + if increase { 1.0 } else { -1.0 })
-                        .clamp(0.0, 12.0);
+                self.config.mix_crossfade_seconds = (self.config.mix_crossfade_seconds
+                    + if increase { 1.0 } else { -1.0 })
+                .clamp(0.0, 12.0);
             }
             SettingId::AudioBackend => {
                 self.config.audio_backend = match self.config.audio_backend {
