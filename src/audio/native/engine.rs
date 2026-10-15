@@ -292,6 +292,28 @@ impl Engine {
         // the application declaring a new position, so the engine adopts the
         // stamp as it takes the command up.
         self.epoch = self.position.epoch();
+        if let Some(log) = super::diagnostics::recorder() {
+            // Deliberately omit filenames and queue contents from diagnostics.
+            let kind = match &command {
+                Command::Load { .. } => "load",
+                Command::Prefetch(_) => "prefetch",
+                Command::Pause(_) | Command::Toggle => "pause_toggle",
+                Command::SeekAbsolute(_) => "seek",
+                Command::Volume(_) => "volume",
+                Command::ReplayGain(_) => "replaygain",
+                Command::Equalizer(_) => "equalizer",
+                Command::BitPerfect(_) => "bit_perfect",
+                Command::Crossfade { .. } => "crossfade",
+                Command::Stop => "stop",
+            };
+            log.record(
+                serde_json::json!({"event":"engine_command", "kind":kind, "command":match &command {
+                    Command::Load { position_ms, .. } => format!("load at {position_ms} ms"),
+                    Command::Prefetch(path) => format!("prefetch armed={}", path.is_some()),
+                    _ => format!("{command:?}"),
+                }}),
+            );
+        }
         let outcome = match command {
             Command::Load { path, position_ms } => {
                 self.prefetch = None;
@@ -368,6 +390,11 @@ impl Engine {
         };
 
         if let Err(error) = outcome {
+            if let Some(log) = super::diagnostics::recorder() {
+                log.record(
+                    serde_json::json!({"event":"engine_error", "message":error.to_string()}),
+                );
+            }
             let _ = self.events.send(PlayerEvent::Error(error.to_string()));
         }
     }
@@ -424,6 +451,12 @@ impl Engine {
             )));
         }
 
+        if let Some(log) = super::diagnostics::recorder() {
+            log.record(serde_json::json!({"event":"pipeline_format", "source_rate":spec.sample_rate,
+                "source_channels":source_channels, "output_rate":sample_rate,"output_channels":channels,
+                "bit_perfect_requested":self.settings.bit_perfect,"bit_perfect_active":self.settings.bit_perfect && untouched,
+                "replaygain_db":self.settings.replay_gain_db,"crossfade_seconds":self.crossfade_seconds}));
+        }
         let resampler = (sample_rate != spec.sample_rate)
             .then(|| Resampler::new(spec.sample_rate, sample_rate, usize::from(source_channels)))
             .transpose()?;
@@ -783,6 +816,9 @@ impl Engine {
             .is_some_and(|(frame, _)| *frame <= played)
         {
             if let Some((_, path)) = stream.handovers.pop_front() {
+                if let Some(log) = super::diagnostics::recorder() {
+                    log.record(serde_json::json!({"event":"native_handover"}));
+                }
                 let _ = self.events.send(PlayerEvent::PrefetchedTrack(path));
             }
         }
@@ -794,6 +830,12 @@ impl Engine {
         let starved = stream.state.starved.load(Ordering::Relaxed);
         if inside_the_track && starved > self.reported_starved {
             let missed = starved - self.reported_starved;
+            if let Some(log) = super::diagnostics::recorder() {
+                log.record(
+                    serde_json::json!({"event":"ring_starved", "missing_delta_frames":missed,
+                    "ring_missing_frames":starved, "output_rate":stream.sample_rate}),
+                );
+            }
             let due = self
                 .last_starve_notice
                 .is_none_or(|at| at.elapsed() >= STARVE_NOTICE_EVERY);

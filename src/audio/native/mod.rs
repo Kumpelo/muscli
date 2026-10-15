@@ -3,6 +3,7 @@
 mod buffering;
 mod crossfade;
 pub mod device;
+mod diagnostics;
 pub mod engine;
 pub mod player;
 pub mod sink;

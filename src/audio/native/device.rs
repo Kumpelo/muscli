@@ -21,6 +21,7 @@ use crate::{
         dsp::{dither::Dither, gain::Gain},
         native::{
             buffering::{device_error_callback, playback_buffer_size},
+            diagnostics::{self, StreamLog},
             sink::{Output, OutputFormat, SinkState, choose_channels, choose_rate, fill},
         },
     },
@@ -57,6 +58,7 @@ pub struct CpalOutput {
     name: String,
     configs: Vec<SupportedStreamConfigRange>,
     stream: Option<Stream>,
+    diagnostics: Option<StreamLog>,
     /// Whether dither on an integer output is shaped out of the band the ear
     /// is most sensitive in.
     noise_shaping: bool,
@@ -93,6 +95,7 @@ impl CpalOutput {
             name,
             configs,
             stream: None,
+            diagnostics: None,
             noise_shaping,
             events,
         })
@@ -159,6 +162,7 @@ impl CpalOutput {
             Arc::clone(&state),
             self.name.clone(),
             config,
+            self.diagnostics.clone(),
         );
 
         self.device
@@ -209,6 +213,7 @@ impl CpalOutput {
             Arc::clone(&state),
             self.name.clone(),
             config,
+            self.diagnostics.clone(),
         );
         self.device
             .build_output_stream::<f32, _, _>(
@@ -247,7 +252,7 @@ impl Output for CpalOutput {
     ) -> Result<()> {
         // Dropping the old stream first closes the device; some drivers will
         // not hand out a second one while the first is open.
-        self.stream = None;
+        self.stop();
 
         let OutputFormat {
             sample_rate,
@@ -276,6 +281,11 @@ impl Output for CpalOutput {
             sample_rate,
             buffer_size,
         };
+        self.diagnostics = diagnostics::recorder().map(|recorder| recorder.stream(&state, serde_json::json!({
+            "device":self.name, "sample_rate":sample_rate,"channels":channels,
+            "sample_format":format!("{sample_format:?}"), "requested_period":format!("{buffer_size:?}"),
+            "supported_periods":self.configs.iter().find(|range| range.channels()==channels && range.contains_rate(sample_rate) && range.sample_format()==sample_format).map(|range| format!("{:?}",range.buffer_size())),
+        })));
         let dither =
             || bits.map(|bits| Dither::new(bits, usize::from(channels.max(1)), self.noise_shaping));
 
@@ -287,12 +297,28 @@ impl Output for CpalOutput {
             SampleFormat::I16 => self.build::<i16>(config, frames, state, dither())?,
             other => bail!("{} asked for {other}, which is not supported", self.name),
         };
+        if let Some(log) = &self.diagnostics {
+            log.record(serde_json::json!({"event":"stream_negotiated", "negotiated_period_frames":stream.buffer_size().ok()}));
+        }
         stream.play().context("the device would not start")?;
+        if let Some(log) = &self.diagnostics {
+            log.record(serde_json::json!({"event":"stream_started"}));
+        }
         self.stream = Some(stream);
         Ok(())
     }
 
     fn stop(&mut self) {
         self.stream = None;
+        if let Some(log) = self.diagnostics.take() {
+            log.end();
+        }
+    }
+}
+
+impl Drop for CpalOutput {
+    fn drop(&mut self) {
+        self.stop();
+        diagnostics::flush();
     }
 }

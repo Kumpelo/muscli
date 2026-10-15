@@ -26,12 +26,16 @@ pub(super) fn device_error_callback(
     state: std::sync::Arc<super::sink::SinkState>,
     device: String,
     config: cpal::StreamConfig,
+    diagnostics: Option<super::diagnostics::StreamLog>,
 ) -> impl FnMut(cpal::Error) + Send + 'static {
     use std::sync::atomic::Ordering;
     let mut xruns = 0u64;
     move |error| {
         if error.kind() == cpal::ErrorKind::Xrun {
             xruns = xruns.saturating_add(1);
+        }
+        if let Some(log) = &diagnostics {
+            log.record(serde_json::json!({"event":"device_fault", "kind":format!("{:?}", error.kind()), "message":error.to_string(), "device_xruns":xruns}));
         }
         let missing = state.starved.load(Ordering::Relaxed);
         let _ = events.send(crate::model::PlayerEvent::Notice(format!(
@@ -116,6 +120,7 @@ mod tests {
                 sample_rate: 44_100,
                 buffer_size: BufferSize::Fixed(2048),
             },
+            None,
         );
         report(cpal::ErrorKind::Xrun.into());
         let PlayerEvent::Notice(message) = received.try_recv().unwrap() else {
