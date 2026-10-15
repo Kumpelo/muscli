@@ -256,6 +256,8 @@ struct App {
     view: View,
     focus: Focus,
     selected: usize,
+    sidebar_hitbox: Rect,
+    sidebar_offset: usize,
     /// Open detail views, outermost first. Empty means a top-level view.
     nav: Vec<NavFrame>,
     /// Albums and singles of the innermost open artist; derived from `nav`.
@@ -507,6 +509,8 @@ async fn run_inner(
         view: View::Home,
         focus: Focus::Content,
         selected: 0,
+        sidebar_hitbox: Rect::default(),
+        sidebar_offset: 0,
         nav: Vec::new(),
         artist_release_keys: Vec::new(),
         genre_tab: 0,

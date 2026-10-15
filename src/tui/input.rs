@@ -418,9 +418,11 @@ impl App {
             MouseEventKind::ScrollUp => self.move_selection(-1),
             MouseEventKind::ScrollDown => self.move_selection(1),
             MouseEventKind::Down(MouseButton::Left)
-                if mouse.column < 22 && (4..(4 + VIEWS.len() as u16)).contains(&mouse.row) =>
+                if self
+                    .sidebar_hitbox
+                    .contains(ratatui::layout::Position::new(mouse.column, mouse.row)) =>
             {
-                let index = (mouse.row - 4) as usize;
+                let index = self.sidebar_offset + usize::from(mouse.row - self.sidebar_hitbox.y);
                 if let Some(view) = VIEWS.get(index) {
                     self.view = *view;
                     self.clear_nav();

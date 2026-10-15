@@ -21,6 +21,14 @@ fn note_cover_placement(signature: &mut u64, key: &str, area: Rect) {
     *signature = signature.rotate_left(13) ^ h.finish();
 }
 
+/// Leave room around the interface when the terminal can afford it.
+fn content_area(area: Rect) -> Rect {
+    area.inner(Margin {
+        horizontal: if area.width >= 64 { 2 } else { 0 },
+        vertical: if area.height >= 20 { 1 } else { 0 },
+    })
+}
+
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.covers.pending_signature = 0;
     let area = frame.area();
@@ -32,6 +40,8 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         ),
         area,
     );
+    let area = content_area(area);
+    app.sidebar_hitbox = Rect::default();
     if app.compact {
         draw_compact(frame, app);
         if app.input.is_some() {
@@ -73,7 +83,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn draw_compact(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
+    let area = content_area(frame.area());
     let rows = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(8),
@@ -159,7 +169,7 @@ fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let items = VIEWS
         .iter()
         .map(|view| {
@@ -205,6 +215,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
             } else {
                 Style::default().fg(app.theme.border)
             });
+    app.sidebar_hitbox = block.inner(area);
     frame.render_stateful_widget(
         List::new(items).block(block).highlight_style(
             Style::default()
@@ -215,6 +226,7 @@ fn draw_sidebar(frame: &mut Frame<'_>, area: Rect, app: &App) {
         area,
         &mut state,
     );
+    app.sidebar_offset = state.offset();
 }
 
 fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
@@ -619,7 +631,8 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             area.y + row as u16 * card_height,
             card_width,
             card_height,
-        );
+        )
+        .intersection(area);
         let selected = position == app.selected;
         let style = if selected {
             Style::default()
@@ -1220,6 +1233,25 @@ mod tests {
 
     fn slot(x: u16, y: u16) -> Rect {
         Rect::new(x, y, 20, 10)
+    }
+
+    #[test]
+    fn outer_spacing_adapts_to_small_terminals() {
+        assert_eq!(
+            content_area(Rect::new(0, 0, 100, 30)),
+            Rect::new(2, 1, 96, 28)
+        );
+        assert_eq!(
+            content_area(Rect::new(0, 0, 40, 12)),
+            Rect::new(0, 0, 40, 12)
+        );
+        for width in 0..120 {
+            for height in 0..40 {
+                let area = Rect::new(3, 5, width, height);
+                let inner = content_area(area);
+                assert_eq!(inner.intersection(area), inner);
+            }
+        }
     }
 
     #[test]

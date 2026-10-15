@@ -425,17 +425,17 @@ starting.
 
 ## Themes
 
-The interface ships with a light palette, and that is the default on Linux and
-on Windows alike. Change it from the settings view (`,`), with the left and
+The interface defaults to `system`: it follows Omarchy on Linux and uses a
+neutral light palette elsewhere. Existing explicit theme choices are preserved. Change it from the settings view (`,`), with the left and
 right arrows on the **Theme** row, or set `theme` in `config.toml`:
 
 | `theme` | |
 |---|---|
-| `light` | white background, the default |
+| `light` | neutral white background |
 | `dark` | the terminal's own palette |
 | `high-contrast` | black on white, for bright rooms and projectors |
 | `nord`, `gruvbox`, `solarized-light` | fixed palettes, identical everywhere |
-| `system` | follow the desktop: the current Omarchy theme on Linux, light elsewhere |
+| `system` | default; follow the desktop: the current Omarchy theme on Linux, light elsewhere |
 
 With `system` on Linux the palette follows Omarchy live: switching theme there
 repaints muscli without restarting it. `muscli --theme dark` tries a palette

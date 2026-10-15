@@ -2,8 +2,8 @@
 //!
 //! The palette is chosen by the `theme` setting and is the same set of choices
 //! on every platform, so a Windows user is not left with whatever the terminal
-//! happens to do. The default is the light palette: a white background reads on
-//! the terminals people meet muscli in without any configuration.
+//! happens to do. The default follows the desktop when available and uses
+//! a neutral light palette elsewhere.
 //!
 //! `system` is the one platform-dependent choice. On Linux it tracks the
 //! current Omarchy theme, re-read when the file on disk changes; anywhere else,
@@ -28,8 +28,8 @@ pub(super) struct UiTheme {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum ThemeChoice {
     /// Follow the desktop: the Omarchy palette on Linux, light elsewhere.
-    System,
     #[default]
+    System,
     Light,
     Dark,
     HighContrast,
@@ -151,8 +151,8 @@ impl UiTheme {
     /// because the selected row draws `foreground` on top of it.
     pub(super) const fn light() -> Self {
         Self {
-            accent: rgb(0x6d31a8),
-            selection: rgb(0xe2d9f3),
+            accent: rgb(0x434b57),
+            selection: rgb(0xe5e7eb),
             foreground: rgb(0x1c1e21),
             background: rgb(0xffffff),
             muted: rgb(0x6b7280),
@@ -347,9 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn the_default_theme_is_the_light_one() {
+    fn the_default_follows_the_desktop_with_a_neutral_fallback() {
         assert_eq!(UiTheme::default(), UiTheme::light());
-        assert_eq!(ThemeChoice::default(), ThemeChoice::Light);
+        assert_eq!(ThemeChoice::default(), ThemeChoice::System);
     }
 
     #[test]
@@ -363,7 +363,7 @@ mod tests {
     fn a_misspelled_theme_falls_back_to_the_default() {
         assert_eq!(
             ThemeChoice::parse_or_default("chartreuse"),
-            ThemeChoice::Light
+            ThemeChoice::System
         );
         // Spellings a hand-edited file is likely to contain.
         assert_eq!(

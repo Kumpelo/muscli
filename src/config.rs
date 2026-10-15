@@ -62,8 +62,8 @@ pub struct Config {
     /// Interface language: "auto", "en" or "es". Auto follows the system
     /// locale and falls back to English.
     pub language: String,
-    /// Colour theme: "light" (the default), "dark", "high-contrast", "nord",
-    /// "gruvbox", "solarized-light", or "system" to follow the desktop — the
+    /// Colour theme: "light", "dark", "high-contrast", "nord",
+    /// "gruvbox", "solarized-light", or "system" (the default) to follow the desktop — the
     /// current Omarchy palette on Linux, light everywhere else.
     pub theme: String,
     /// File extensions to index. Empty means the built-in list.
@@ -110,7 +110,7 @@ impl Default for Config {
             scan_threads: 0,
             gapless: true,
             language: "auto".into(),
-            theme: "light".into(),
+            theme: "system".into(),
             audio_extensions: Vec::new(),
             equalizer: Vec::new(),
             audio_backend: AudioBackendChoice::default(),
@@ -419,8 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_theme_is_light() {
-        assert_eq!(Config::default().theme, "light");
+    fn the_default_theme_follows_the_system() {
+        assert_eq!(Config::default().theme, "system");
     }
 
     #[test]
