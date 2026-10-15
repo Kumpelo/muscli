@@ -439,6 +439,14 @@ async fn run_inner(
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     player.set_volume(config.volume_gain(saved_volume))?;
     player.set_equalizer(&config.equalizer_bands())?;
+    player.set_crossfade(
+        if config.bit_perfect || !config.gapless {
+            0.0
+        } else {
+            config.mix_crossfade_seconds
+        },
+        crate::audio::mix::MixCurve::Smooth,
+    )?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
