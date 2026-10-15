@@ -245,6 +245,40 @@ A correct BPM estimate does not yet imply beat alignment or mixing in the TUI.
 Back up the library database before trying an older muscli binary, since
 older versions cannot open a newer index.
 
+## Experimental live MIX (native backend)
+
+The native player can now blend the last few seconds of one local song
+with the already-prefetched next song **while listening**. This early,
+opt-in feature does not render a WAV or modify the original files.
+
+Open muscli and select **Settings → MIX en vivo** (Off by default).
+Toggle the switch, then use **MIX: duración** with the left/right arrows
+to choose a 0–12 second overlap. The configuration is saved locally as
+`mix_crossfade_seconds` (0 = Off, 6 seconds when first enabled).
+
+```sh
+# Try this work branch locally on Linux:
+git fetch origin work/audio-stability-ux-20261014
+git switch --track origin/work/audio-stability-ux-20261014
+cargo run --release --locked
+```
+
+For this initial version, crossfade works only when the current and
+prefetched files decode to **matching formats**, the native output needs
+**no resampling/channel duplication**, gapless prefetch is enabled, and
+bit-perfect mode is **off**. If those conditions are not met (or the
+incoming file has not been prefetched in time), muscli uses the old
+gapless/ordinary handover. Files played through the mpv fallback do not
+receive native crossfades. No tempo matching, beat phase, DJ filters,
+or scratch are yet hooked up to **live** audio; those currently work
+only in `muscli mix demo`.
+
+This is a beta experiment, not yet a validated production AutoDJ:
+test with real library tracks and headphones before distributing.
+You can disable live MIX immediately from the settings screen.
+Backup your local SQLite library database before switching back to
+older binaries (this work branch already uses index schema v7).
+
 ## Experimental MIX preview (offline)
 
 The early MIX demo renders a new WAV from two local files; it does **not**
