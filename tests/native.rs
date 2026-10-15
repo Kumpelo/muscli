@@ -573,8 +573,7 @@ fn live_mix_blends_the_last_200ms_into_the_prefetched_song() {
     // 880 Hz tone starting at its own zero, rather than waiting for EOF.
     let middle = (RATE as usize * 900) / 1_000;
     let incoming_middle = middle - (RATE as usize * 800) / 1_000;
-    let t = (middle - (RATE as usize * 800) / 1_000) as f64
-        / (overlap.saturating_sub(1)) as f64;
+    let t = (middle - (RATE as usize * 800) / 1_000) as f64 / (overlap.saturating_sub(1)) as f64;
     let (a, b) = muscli::audio::mix::blend_gains(MixCurve::Smooth, t);
     let expected = source_a[middle] * a + source_b[incoming_middle] * b;
     assert!(
@@ -586,8 +585,7 @@ fn live_mix_blends_the_last_200ms_into_the_prefetched_song() {
     // From the old track's EOF the new one is already 200 ms in.
     let after_handover = source_a.len() + (RATE as usize * 150) / 1_000;
     assert!(
-        (heard[latency + after_handover] - source_b[overlap + (RATE as usize * 150) / 1_000])
-            .abs()
+        (heard[latency + after_handover] - source_b[overlap + (RATE as usize * 150) / 1_000]).abs()
             < 0.005,
         "the next decoder must carry on after the overlap, without replaying it"
     );
