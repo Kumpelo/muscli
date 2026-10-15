@@ -20,6 +20,8 @@ pub(super) enum SettingId {
     ShowCovers,
     VolumeStep,
     Gapless,
+    LiveMix,
+    MixDuration,
     ReplayGain,
     ReplayGainMode,
     TargetLufs,
@@ -50,7 +52,7 @@ const fn band(index: usize) -> SettingRow {
     row(SettingId::EqualizerBand(index), "setting.equalizer_band")
 }
 
-pub(super) const SETTINGS: [SettingRow; 28] = [
+pub(super) const SETTINGS: [SettingRow; 30] = [
     row(SettingId::Theme, "setting.theme"),
     row(SettingId::Language, "setting.language"),
     row(SettingId::CompactDefault, "setting.compact_default"),
@@ -59,6 +61,8 @@ pub(super) const SETTINGS: [SettingRow; 28] = [
     row(SettingId::AudioBackend, "setting.audio_backend"),
     row(SettingId::BitPerfect, "setting.bit_perfect"),
     row(SettingId::Gapless, "setting.gapless"),
+    row(SettingId::LiveMix, "setting.mix_live"),
+    row(SettingId::MixDuration, "setting.mix_duration"),
     row(SettingId::ReplayGain, "setting.replaygain"),
     row(SettingId::ReplayGainMode, "setting.replaygain_mode"),
     row(SettingId::TargetLufs, "setting.target_lufs"),
@@ -146,6 +150,8 @@ impl App {
     /// label key alone.
     pub(super) fn setting_label(&self, row: &SettingRow) -> String {
         match row.id {
+            SettingId::LiveMix => "MIX en vivo".to_owned(),
+            SettingId::MixDuration => "MIX: duración".to_owned(),
             SettingId::EqualizerBand(index) => t!(
                 row.label,
                 value = frequency_label(EQUALIZER_BANDS[index.min(EQUALIZER_BANDS.len() - 1)])
@@ -174,6 +180,14 @@ impl App {
             SettingId::ShowCovers => switch(self.config.show_covers),
             SettingId::VolumeStep => t!("setting.value.percent", value = self.config.volume_step),
             SettingId::Gapless => switch(self.config.gapless),
+            SettingId::LiveMix if self.player.capabilities().name == "mpv" => {
+                t!("setting.value.unavailable").to_owned()
+            }
+            SettingId::LiveMix if self.config.bit_perfect || !self.config.gapless => {
+                t!("setting.value.bypassed").to_owned()
+            }
+            SettingId::LiveMix => switch(self.config.mix_crossfade_seconds > 0.0),
+            SettingId::MixDuration => format!("{:.0} s", self.config.mix_crossfade_seconds),
             SettingId::AudioBackend => t!(match self.config.audio_backend {
                 AudioBackendChoice::Mpv => "setting.value.mpv",
                 AudioBackendChoice::Native => "setting.value.native",
@@ -266,6 +280,25 @@ impl App {
                 }
             }
             SettingId::Gapless => self.config.gapless = !self.config.gapless,
+            SettingId::LiveMix => {
+                if self.player.capabilities().name == "mpv" {
+                    self.status = "MIX en vivo requiere el motor nativo".into();
+                    return Ok(());
+                }
+                self.config.mix_crossfade_seconds = if self.config.mix_crossfade_seconds > 0.0 {
+                    0.0
+                } else {
+                    6.0
+                };
+            }
+            SettingId::MixDuration => {
+                if !horizontal {
+                    return Ok(());
+                }
+                self.config.mix_crossfade_seconds =
+                    (self.config.mix_crossfade_seconds + if increase { 1.0 } else { -1.0 })
+                        .clamp(0.0, 12.0);
+            }
             SettingId::AudioBackend => {
                 self.config.audio_backend = match self.config.audio_backend {
                     AudioBackendChoice::Mpv => AudioBackendChoice::Native,
@@ -372,6 +405,14 @@ impl App {
                 self.start_gain_analysis()?;
             }
         }
+        self.player.set_crossfade(
+            if self.config.bit_perfect || !self.config.gapless {
+                0.0
+            } else {
+                self.config.mix_crossfade_seconds
+            },
+            crate::audio::mix::MixCurve::Smooth,
+        )?;
         self.config.save(&self.paths)?;
         self.status = t!("status.settings_saved").into();
         self.dirty = true;
