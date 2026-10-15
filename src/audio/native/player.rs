@@ -250,6 +250,10 @@ impl AudioBackend for NativePlayer {
         self.send(Command::Equalizer(bands.to_vec()))
     }
 
+    fn set_crossfade(&mut self, seconds: f64, curve: crate::audio::mix::MixCurve) -> Result<()> {
+        self.send(Command::Crossfade { seconds, curve })
+    }
+
     fn set_bit_perfect(&mut self, on: bool) -> Result<()> {
         self.bit_perfect = on;
         // Untouched means untouched: the volume is given up while it is on,
