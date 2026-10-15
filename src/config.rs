@@ -83,6 +83,8 @@ pub struct Config {
     pub mix_presets: BTreeMap<String, MixPreset>,
     /// Analyze BPM and energy incrementally, without blocking playback.
     pub mix_analysis_enabled: bool,
+    /// Live native-only crossfade (0 means off, maximum 12 seconds).
+    pub mix_crossfade_seconds: f64,
 }
 
 /// Centre frequencies of the equaliser bands, an octave apart.
@@ -116,6 +118,7 @@ impl Default for Config {
             bit_perfect: false,
             mix_presets: BTreeMap::new(),
             mix_analysis_enabled: true,
+            mix_crossfade_seconds: 0.0,
         }
     }
 }
