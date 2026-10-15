@@ -2233,6 +2233,71 @@ mod tests {
     }
 
     #[test]
+    fn incremental_gain_survives_restart_and_rejects_late_results() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("library.db");
+        let analyzed = ReplayGainAnalysis {
+            gain_db: -4.0,
+            true_peak_db: -1.0,
+        };
+        {
+            let mut db = Database::open(&database)?;
+            db.upsert_scan(
+                "s",
+                Path::new("/music"),
+                "Music",
+                &[ScannedTrack {
+                    track: track("existing", 1),
+                    file_size: 100,
+                    modified_ns: 1,
+                }],
+                &[],
+            )?;
+            db.save_gain("existing", analyzed, 100, 1)?;
+        }
+        let mut db = Database::open(&database)?;
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+        assert!(db.track_gain("existing", false)?.is_some());
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[ScannedTrack {
+                track: track("new", 2),
+                file_size: 100,
+                modified_ns: 1,
+            }],
+            &[],
+        )?;
+        let candidates = db.gain_analysis_candidates(false)?;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0, "new");
+        // The file changes while its original analysis is still in flight.
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[ScannedTrack {
+                track: track("new", 2),
+                file_size: 101,
+                modified_ns: 2,
+            }],
+            &[],
+        )?;
+        db.save_gain("new", analyzed, 100, 1)?;
+        assert!(db.track_gain("new", false)?.is_none());
+        let candidates = db.gain_analysis_candidates(false)?;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!((candidates[0].2, candidates[0].3), (101, 2));
+        db.save_gain("new", analyzed, 101, 2)?;
+        drop(db);
+        let db = Database::open(&database)?;
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+        assert!(db.track_gain("new", false)?.is_some());
+        Ok(())
+    }
+
+    #[test]
     fn album_gain_waits_for_all_available_tracks_and_recalculates_on_rescan() -> Result<()> {
         let mut db = Database::open_memory()?;
         let first = ScannedTrack {
