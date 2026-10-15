@@ -25,7 +25,7 @@ use crate::{
         decode::{Decoder, StreamSpec},
         dsp::{Chain, Settings, resample::Resampler},
         mix::MixCurve,
-        native::crossfade::CrossfadeBuffer,
+        native::crossfade::{CrossfadeBuffer, CrossfadeWindow},
         native::sink::{Output, OutputFormat, SinkState, Volume},
     },
     model::PlayerEvent,
@@ -732,13 +732,15 @@ impl Engine {
             {
                 self.crossfade.apply(
                     &mut stream.converted,
-                    source_frame,
-                    stream.decoder.duration_ms(),
-                    stream.source_spec.sample_rate,
-                    usize::from(stream.source_spec.channels),
                     next,
-                    self.crossfade_seconds,
-                    self.crossfade_curve,
+                    CrossfadeWindow {
+                        source_frame,
+                        duration_ms: stream.decoder.duration_ms(),
+                        sample_rate: stream.source_spec.sample_rate,
+                        channels: usize::from(stream.source_spec.channels),
+                        seconds: self.crossfade_seconds,
+                        curve: self.crossfade_curve,
+                    },
                 );
             }
             stream.stage(source_ms);
