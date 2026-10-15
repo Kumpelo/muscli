@@ -516,6 +516,85 @@ fn the_backend_plays_a_file_through_its_own_thread() {
 }
 
 #[test]
+fn live_mix_blends_the_last_200ms_into_the_prefetched_song() {
+    use muscli::audio::mix::MixCurve;
+
+    let directory = TempDir::new().expect("a temporary directory");
+    let first = directory.path().join("first.flac");
+    let second = directory.path().join("second.flac");
+    fs::write(
+        &first,
+        common::flac_bytes(RATE, &common::sine(RATE, 220.0, 1_000)),
+    )
+    .expect("write outgoing track");
+    fs::write(
+        &second,
+        common::flac_bytes(RATE, &common::sine(RATE, 880.0, 1_000)),
+    )
+    .expect("write incoming track");
+    let source_a = decoded(&first);
+    let source_b = decoded(&second);
+
+    let (output, capture) = CaptureOutput::new(&[RATE]);
+    let (sender, mut events) = unbounded_channel();
+    let mut engine = Engine::new(
+        Box::new(output),
+        Settings::default(),
+        sender,
+        Arc::new(Position::default()),
+        Arc::new(Volume::default()),
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    engine.handle(Command::Crossfade {
+        seconds: 0.2,
+        curve: MixCurve::Smooth,
+    });
+    engine.handle(Command::Load {
+        path: first.clone(),
+        position_ms: 0,
+    });
+    engine.handle(Command::Prefetch(Some(second.clone())));
+
+    let overlap = (RATE as usize * 200) / 1_000;
+    let total = source_a.len() + source_b.len() - overlap;
+    let mut heard = Vec::new();
+    while heard.len() < total + BLOCK {
+        engine.step();
+        heard.extend(capture.pull(BLOCK));
+    }
+    let latency = (RATE as usize * 2) / 1_000;
+    let outgoing_before_mix = (RATE as usize * 600) / 1_000;
+    assert!(
+        (heard[latency + outgoing_before_mix] - source_a[outgoing_before_mix]).abs() < 0.002,
+        "the unaffected outgoing section should remain bit-transparent"
+    );
+    // The half-way mix combines the outgoing 220 Hz tone with the incoming
+    // 880 Hz tone starting at its own zero, rather than waiting for EOF.
+    let middle = (RATE as usize * 900) / 1_000;
+    let incoming_middle = middle - (RATE as usize * 800) / 1_000;
+    let t = (middle - (RATE as usize * 800) / 1_000) as f64
+        / (overlap.saturating_sub(1)) as f64;
+    let (a, b) = muscli::audio::mix::blend_gains(MixCurve::Smooth, t);
+    let expected = source_a[middle] * a + source_b[incoming_middle] * b;
+    assert!(
+        (heard[latency + middle] - expected).abs() < 0.03,
+        "heard {:.3}, expected mixed {:.3} at mid-fade",
+        heard[latency + middle],
+        expected
+    );
+    // From the old track's EOF the new one is already 200 ms in.
+    let after_handover = source_a.len() + (RATE as usize * 150) / 1_000;
+    assert!(
+        (heard[latency + after_handover] - source_b[overlap + (RATE as usize * 150) / 1_000])
+            .abs()
+            < 0.005,
+        "the next decoder must carry on after the overlap, without replaying it"
+    );
+    assert!(errors(&mut events).is_empty());
+}
+
+#[test]
 fn a_queued_track_joins_the_one_playing_without_a_gap() {
     // The whole point of prefetching: an album side that was mastered to run
     // together has to run together, with no silence and no restart of the
