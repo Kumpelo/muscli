@@ -49,6 +49,16 @@ impl CrossfadeBuffer {
         Some(&self.pending[start..start + channels])
     }
 
+    /// Samples decoded in the prefetched packet but not yet heard. The
+    /// handover must play these before decoding the following packet.
+    pub fn unplayed(&self) -> &[f32] {
+        if self.active {
+            &self.pending[self.offset..]
+        } else {
+            &[]
+        }
+    }
+
     /// Overlay incoming audio only when the exact crossfade start is reached.
     /// A late prefetch never starts halfway through a fade.
     ///
