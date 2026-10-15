@@ -909,6 +909,41 @@ fn a_track_queued_late_still_joins() {
 }
 
 #[test]
+fn continuous_playback_keeps_samples_through_producer_jitter_without_mix() {
+    // Drive time by consuming frames: no sleeping or sound card is needed.
+    // Every burst stays within the half-second ring, even if decoding does
+    // not get scheduled for 350 ms. Filling a full ring must never overwrite it.
+    for gap_ms in [5, 50, 150, 350] {
+        let mut harness = harness(3_000, &[RATE]);
+        harness.engine.handle(Command::Load {
+            path: harness.path.clone(),
+            position_ms: 0,
+        });
+        let expected = decoded(&harness.path);
+        let mut heard = Vec::new();
+        let burst = RATE as usize * gap_ms / 1_000;
+        while heard.len() < RATE as usize * 2 {
+            for _ in 0..8 {
+                harness.engine.step();
+            }
+            heard.extend(harness.capture.pull(burst));
+        }
+        assert_eq!(
+            harness.engine.starved_frames(),
+            0,
+            "ring ran dry at {gap_ms} ms"
+        );
+        let latency = RATE as usize * 2 / 1_000;
+        assert_eq!(
+            &heard[latency..],
+            &expected[..heard.len() - latency],
+            "samples lost or overwritten at {gap_ms} ms"
+        );
+        assert!(errors(&mut harness.events).is_empty());
+    }
+}
+
+#[test]
 fn running_dry_in_the_middle_of_a_track_is_reported() {
     // A dropout is audible, and a listener who hears one deserves to be told
     // why rather than left wondering whether the file is damaged.

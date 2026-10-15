@@ -1,8 +1,8 @@
 //! The cpal output.
 //!
-//! Untestable here, since a build container has no sound card, so it holds as
-//! little logic as possible: what to do with a short ring lives in
-//! [`super::sink::fill`], which the capture output shares.
+//! Short-ring handling lives in [`super::sink::fill`], shared with the capture
+//! output. Period negotiation and an opt-in silent ALSA deadline reproduction
+//! live in the buffering module; ordinary tests need no sound card.
 
 use std::sync::{Arc, atomic::Ordering};
 
@@ -19,7 +19,10 @@ use crate::{
     audio::{
         decode::StreamSpec,
         dsp::{dither::Dither, gain::Gain},
-        native::sink::{Output, OutputFormat, SinkState, choose_channels, choose_rate, fill},
+        native::{
+            buffering::{device_error_callback, playback_buffer_size},
+            sink::{Output, OutputFormat, SinkState, choose_channels, choose_rate, fill},
+        },
     },
     model::PlayerEvent,
 };
@@ -151,7 +154,12 @@ impl CpalOutput {
         let mut scratch = vec![0.0f32; SCRATCH_FRAMES * usize::from(channels.max(1))];
         let mut volume = Gain::new(config.sample_rate, state.volume.get());
         let starved = Arc::clone(&state);
-        let complaints = self.events.clone();
+        let complaints = device_error_callback(
+            self.events.clone(),
+            Arc::clone(&state),
+            self.name.clone(),
+            config,
+        );
 
         self.device
             .build_output_stream::<T, _, _>(
@@ -182,9 +190,7 @@ impl CpalOutput {
                 // A notice, not an error: the application answers an error by
                 // skipping the track, and a device that hiccups has not said
                 // anything about the file being played.
-                move |error| {
-                    let _ = complaints.send(PlayerEvent::Notice(error.to_string()));
-                },
+                complaints,
                 None,
             )
             .context("the device refused the stream")
@@ -198,16 +204,19 @@ impl CpalOutput {
     ) -> Result<Stream> {
         let channels = config.channels;
         let mut volume = Gain::new(config.sample_rate, state.volume.get());
-        let complaints = self.events.clone();
+        let complaints = device_error_callback(
+            self.events.clone(),
+            Arc::clone(&state),
+            self.name.clone(),
+            config,
+        );
         self.device
             .build_output_stream::<f32, _, _>(
                 config,
                 move |buffer: &mut [f32], _| {
                     fill(buffer, &mut frames, &state, channels, &mut volume)
                 },
-                move |error| {
-                    let _ = complaints.send(PlayerEvent::Notice(error.to_string()));
-                },
+                complaints,
                 None,
             )
             .context("the device refused the stream")
@@ -251,10 +260,21 @@ impl Output for CpalOutput {
                 self.name
             );
         };
+        let buffer_size = self
+            .configs
+            .iter()
+            .find(|config| {
+                config.channels() == channels
+                    && config.contains_rate(sample_rate)
+                    && config.sample_format() == sample_format
+            })
+            .map_or(BufferSize::Default, |config| {
+                playback_buffer_size(sample_rate, config.buffer_size())
+            });
         let config = StreamConfig {
             channels,
             sample_rate,
-            buffer_size: BufferSize::Default,
+            buffer_size,
         };
         let dither =
             || bits.map(|bits| Dither::new(bits, usize::from(channels.max(1)), self.noise_shaping));
