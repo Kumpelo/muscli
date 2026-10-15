@@ -634,8 +634,10 @@ impl Engine {
                     if !unplayed.is_empty() {
                         let remaining_frames =
                             (unplayed.len() / usize::from(stream.channels)) as u64;
-                        let first_frame =
-                            stream.decoder.position_frames().saturating_sub(remaining_frames);
+                        let first_frame = stream
+                            .decoder
+                            .position_frames()
+                            .saturating_sub(remaining_frames);
                         let source_ms =
                             first_frame * 1_000 / u64::from(stream.source_spec.sample_rate.max(1));
                         stream.converted.clear();
