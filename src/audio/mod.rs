@@ -62,6 +62,11 @@ pub trait AudioBackend: Send {
     /// Apply equaliser gains in decibels, as (centre frequency, gain) pairs.
     fn set_equalizer(&mut self, bands: &[(u32, f32)]) -> Result<()>;
 
+    /// Optional live crossfade. Backends without overlap keep normal playback.
+    fn set_crossfade(&mut self, _seconds: f64, _curve: mix::MixCurve) -> Result<()> {
+        Ok(())
+    }
+
     /// Hand the decoder's samples to the device untouched, or stop doing so.
     /// Only called when [`Capabilities::bit_perfect`] is set.
     fn set_bit_perfect(&mut self, _on: bool) -> Result<()> {
