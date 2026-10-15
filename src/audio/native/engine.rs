@@ -621,6 +621,22 @@ impl Engine {
                         let _ = self.events.send(PlayerEvent::Duration(duration));
                     }
                     stream.decoder = next;
+                    // The MIX decoder reads in packets. Some samples from its
+                    // last decoded packet may not yet have joined the fade;
+                    // stage that remainder before requesting the next packet,
+                    // or the handover would silently skip up to a full block.
+                    let unplayed = self.crossfade.unplayed();
+                    if !unplayed.is_empty() {
+                        let remaining_frames =
+                            (unplayed.len() / usize::from(stream.channels)) as u64;
+                        let first_frame =
+                            stream.decoder.position_frames().saturating_sub(remaining_frames);
+                        let source_ms =
+                            first_frame * 1_000 / u64::from(stream.source_spec.sample_rate.max(1));
+                        stream.converted.clear();
+                        stream.converted.extend_from_slice(unplayed);
+                        stream.stage(source_ms);
+                    }
                     self.crossfade.reset();
                     stream.exhausted = false;
                     stream.needs_flush = false;
