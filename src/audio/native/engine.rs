@@ -23,9 +23,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     audio::{
         decode::{Decoder, StreamSpec},
+        dsp::{Chain, Settings, resample::Resampler},
         mix::MixCurve,
         native::crossfade::CrossfadeBuffer,
-        dsp::{Chain, Settings, resample::Resampler},
         native::sink::{Output, OutputFormat, SinkState, Volume},
     },
     model::PlayerEvent,
