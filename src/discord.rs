@@ -119,18 +119,7 @@ impl Drop for DiscordPresence {
 
 fn activity<'a>(presence: &'a Presence, large_image: &'a str, show_images: bool) -> Activity<'a> {
     let details = limited(&presence.title, 120);
-    let artist_album = [&presence.artist, &presence.album]
-        .into_iter()
-        .filter(|value| !value.trim().is_empty())
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(" · ");
-    let artist = limited(&artist_album, 120);
-    let state = if presence.status == PlaybackStatus::Paused {
-        limited(&crate::t!("label.paused_presence", artist = artist), 120)
-    } else {
-        artist
-    };
+    let state = limited(&presence.artist, 120);
     let mut activity = Activity::new()
         .name("muscli")
         .activity_type(ActivityType::Listening)
@@ -329,10 +318,57 @@ mod tests {
     }
 
     #[test]
-    fn professional_presence_includes_album_without_images() {
+    fn deutschland_preserves_tags_without_combining_artist_and_album() {
+        let (tx, rx) = mpsc::channel();
+        let discord = DiscordPresence { tx, worker: None };
+        let mut track = sample_track();
+        track.title = "Deutschland".into();
+        track.artist = "Rammstein".into();
+        track.album = "Rammstein".into();
+        for status in [
+            PlaybackStatus::Playing,
+            PlaybackStatus::Paused,
+            PlaybackStatus::Playing,
+        ] {
+            let state = PlaybackState {
+                status,
+                duration_ms: track.duration_ms,
+                ..PlaybackState::default()
+            };
+            discord.sync(Some(&track), &state);
+            let Command::Update(presence) = rx.recv().unwrap() else {
+                panic!("missing presence");
+            };
+            let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
+            assert_eq!(payload["details"], "Deutschland");
+            assert_eq!(payload["state"], "Rammstein");
+            assert_eq!(payload["assets"]["large_text"], "Rammstein");
+            assert_eq!(
+                payload.get("timestamps").is_some(),
+                status == PlaybackStatus::Playing
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_casing_is_preserved_in_each_discord_field() {
+        let presence = Presence {
+            title: "deutschland".into(),
+            artist: "RAMMSTEIN".into(),
+            album: "Rammstein".into(),
+            ..sample_presence()
+        };
+        let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
+        assert_eq!(payload["details"], "deutschland");
+        assert_eq!(payload["state"], "RAMMSTEIN");
+        assert_eq!(payload["assets"]["large_text"], "Rammstein");
+    }
+
+    #[test]
+    fn presence_without_images_keeps_only_title_and_artist() {
         let value = serde_json::to_value(activity(&sample_presence(), "peter", false)).unwrap();
         assert_eq!(value["details"], "Song");
-        assert_eq!(value["state"], "Artist · Album");
+        assert_eq!(value["state"], "Artist");
         assert!(value.get("assets").is_none());
         assert_eq!(value["name"], "muscli");
     }
@@ -351,7 +387,7 @@ mod tests {
         presence.status = PlaybackStatus::Paused;
         let paused = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
         assert_eq!(paused["details"], "Song");
-        assert!(paused["state"].as_str().unwrap().contains("Artist · Album"));
+        assert_eq!(paused["state"], "Artist");
         assert!(paused.get("timestamps").is_none());
         presence.status = PlaybackStatus::Playing;
         presence.title = "Next song".into();
@@ -359,12 +395,12 @@ mod tests {
         presence.position_ms = 1_000;
         let resumed = serde_json::to_value(activity(&presence, "peter", false)).unwrap();
         assert_eq!(resumed["details"], "Next song");
-        assert_eq!(resumed["state"], "Artist · Next album");
+        assert_eq!(resumed["state"], "Artist");
         assert!(resumed.get("timestamps").is_some());
     }
 
     #[test]
-    fn missing_artist_or_album_does_not_leave_a_separator() {
+    fn missing_artist_is_omitted_without_using_album_as_a_fallback() {
         let mut presence = sample_presence();
         presence.album.clear();
         assert_eq!(
@@ -373,10 +409,9 @@ mod tests {
         );
         presence.album = "Album".into();
         presence.artist.clear();
-        assert_eq!(
-            serde_json::to_value(activity(&presence, "peter", false)).unwrap()["state"],
-            "Album"
-        );
+        let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
+        assert!(payload.get("state").is_none());
+        assert_eq!(payload["assets"]["large_text"], "Album");
     }
 
     #[test]

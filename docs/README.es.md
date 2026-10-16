@@ -141,7 +141,10 @@ tiene que crear ni configurar una aplicación. No utiliza bot, token ni OAuth.
 Publica canción, artista, álbum y progreso por IPC local. Puede elegir los assets `peter_metal`, `peter_dj` y `daft_punk`.
 En instalaciones nuevas está activado por defecto; se conservan las preferencias
 existentes. En Ajustes (`,`) puedes desactivar Rich Presence u ocultar las imágenes
-para usar una presentación de texto con canción, artista y álbum. Al pausar se
+para mostrar solo canción y artista. El título se envía en `details`, el artista
+en `state` y el álbum en el tooltip de la imagen (`assets.large_text`) cuando las
+imágenes están activadas. Se conserva el casing de los tags y no se combinan
+artista y álbum en una misma línea. Al pausar se
 mantienen los datos sin un reloj en marcha; al detener se borra la actividad.
 Discord no es necesario para reproducir audio. Nunca se suben portadas locales:
 Discord admite recursos de la aplicación o imágenes alojadas en una URL externa,

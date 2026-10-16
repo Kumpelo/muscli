@@ -346,7 +346,10 @@ create or configure a Discord application. No bot token or OAuth is needed. The
 local Discord/Vesktop IPC displays title, artist, album and progress. New
 installations enable it by default; existing opt-out preferences are preserved.
 Settings (`,`) includes switches for Rich Presence and Discord images. Turning
-images off keeps a text presentation with song, artist and album. Pausing keeps
+images off keeps a text presentation with song and artist. The song title is
+sent as `details`, the artist as `state`, and the album as the image tooltip
+(`assets.large_text`) when images are enabled. Metadata casing is preserved;
+artist and album are never combined into one line. Pausing keeps
 metadata visible without a running clock; stopping clears the activity. Discord
 is optional and is never required for audio playback. Assets named `peter_metal`, `peter_dj`, and
 `daft_punk` are selected for their matching genres/artist; otherwise the
