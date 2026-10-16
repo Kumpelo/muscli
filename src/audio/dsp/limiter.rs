@@ -166,6 +166,22 @@ mod tests {
     }
 
     #[test]
+    fn isolated_transients_are_limited_across_block_boundaries() {
+        for rate in [8_000, 44_100, 48_000, 192_000] {
+            let mut limiter = Limiter::new(rate, 2, -1.0);
+            let mut samples = vec![0.0; rate as usize / 5 * 2];
+            for frame in [0, 127, 128, 129, 511, 1023] {
+                samples[frame * 2] = 8.0;
+                samples[frame * 2 + 1] = -4.0;
+            }
+            for block in samples.chunks_mut(256) {
+                limiter.process(block);
+            }
+            assert!(peak(&samples) <= 10.0f64.powf(-1.0 / 20.0) + 1e-6);
+        }
+    }
+
+    #[test]
     fn nothing_gets_past_the_ceiling() {
         let mut limiter = Limiter::new(RATE, 2, 0.0);
         // A tone well over full scale, as an equaliser boost would produce.
