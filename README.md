@@ -424,7 +424,8 @@ starting.
 ## Themes
 
 The interface defaults to `system`: it follows Omarchy on Linux and uses a
-neutral light palette elsewhere. Existing explicit theme choices are preserved. Change it from the settings view (`,`), with the left and
+Steel Blue (`#8FA8B8`) on graphite (`#111318`) elsewhere, with light text
+(`#E8EBEF`) and subdued borders (`#39424B`). Existing explicit theme choices are preserved. Change it from the settings view (`,`), with the left and
 right arrows on the **Theme** row, or set `theme` in `config.toml`:
 
 | `theme` | |

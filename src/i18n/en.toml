@@ -115,7 +115,6 @@
 "label.decibels" = "{value} dB"
 "label.default_playlist" = "My playlist"
 "label.genre_summary" = "{tracks} songs"
-"label.header_counts" = "{tracks} songs  ·  {albums} albums  ·  {artists} artists  "
 "label.image_protocol" = "{protocol} (auto-detected)"
 "label.image_protocol_fallback" = "Halfblocks (fallback: {error})"
 "label.offline" = "  [offline]"
@@ -281,3 +280,11 @@
 "view.smart_playlists" = "Smart playlists"
 "view.tracks" = "Songs"
 
+
+"mix.mode.off" = "Off"
+"mix.mode.classic" = "Classic"
+"mix.mode.smart" = "Smart"
+"mix.mode.auto_dj" = "AutoDJ"
+"mix.paused_album" = "{mode} · paused in album"
+"setting.mix_live" = "Live MIX"
+"setting.mix_duration" = "MIX duration"

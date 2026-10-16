@@ -64,7 +64,7 @@ pub struct Config {
     pub language: String,
     /// Colour theme: "light", "dark", "high-contrast", "nord",
     /// "gruvbox", "solarized-light", or "system" (the default) to follow the desktop — the
-    /// current Omarchy palette on Linux, light everywhere else.
+    /// current Omarchy palette on Linux, Steel Blue elsewhere.
     pub theme: String,
     /// File extensions to index. Empty means the built-in list.
     pub audio_extensions: Vec<String>,

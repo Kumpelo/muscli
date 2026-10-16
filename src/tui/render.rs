@@ -86,7 +86,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         return;
     }
     let rows = interface_rows(area);
-    draw_header(frame, rows[0], app);
+    draw_header(frame, rows[0], app.theme);
     let body = body_columns(rows[1]);
     draw_sidebar(frame, body[0], app);
     draw_content(frame, body[1], app);
@@ -106,7 +106,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 fn draw_compact(frame: &mut Frame<'_>, app: &mut App) {
     let area = content_area(frame.area());
     let rows = interface_rows(area);
-    draw_header(frame, rows[0], app);
+    draw_header(frame, rows[0], app.theme);
     let body =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(rows[1]);
     draw_details(frame, body[0], app);
@@ -146,41 +146,28 @@ fn draw_compact(frame: &mut Frame<'_>, app: &mut App) {
     );
 }
 
-fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn draw_header(frame: &mut Frame<'_>, area: Rect, theme: UiTheme) {
     let title = Line::from(vec![
         Span::styled(
             "  mus",
             Style::default()
-                .fg(app.theme.foreground)
+                .fg(theme.foreground)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "cli",
             Style::default()
-                .fg(app.theme.accent)
+                .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
-    let stats = t!(
-        "label.header_counts",
-        tracks = app.tracks.len(),
-        albums = app.albums.len(),
-        artists = app.artists.len()
-    );
     frame.render_widget(
         Paragraph::new(title).block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(app.theme.border)),
+                .border_style(Style::default().fg(theme.border)),
         ),
         area,
-    );
-    let stats_area = Rect::new(area.x, area.y + 1, area.width, 1);
-    frame.render_widget(
-        Paragraph::new(stats)
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(app.theme.muted)),
-        stats_area,
     );
 }
 
@@ -1245,6 +1232,19 @@ mod tests {
 
     fn slot(x: u16, y: u16) -> Rect {
         Rect::new(x, y, 20, 10)
+    }
+
+    #[test]
+    fn header_keeps_lowercase_name_and_empty_space() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(80, 3)).unwrap();
+        terminal
+            .draw(|frame| draw_header(frame, frame.area(), UiTheme::default()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let line = |y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(line(0).trim(), "muscli");
+        assert!(line(1).trim().is_empty());
     }
 
     #[test]

@@ -93,6 +93,21 @@ impl App {
     }
 }
 
+fn mix_label(mode: crate::audio::smart_mix::LiveMixMode, album: bool) -> String {
+    use crate::audio::smart_mix::LiveMixMode;
+    let label = t!(match mode {
+        LiveMixMode::Off => "mix.mode.off",
+        LiveMixMode::Classic => "mix.mode.classic",
+        LiveMixMode::Smart => "mix.mode.smart",
+        LiveMixMode::AutoDj => "mix.mode.auto_dj",
+    });
+    if album && mode != LiveMixMode::Off {
+        t!("mix.paused_album", mode = label)
+    } else {
+        label.to_owned()
+    }
+}
+
 fn switch(enabled: bool) -> String {
     t!(if enabled {
         "setting.value.on"
@@ -150,8 +165,6 @@ impl App {
     /// label key alone.
     pub(super) fn setting_label(&self, row: &SettingRow) -> String {
         match row.id {
-            SettingId::LiveMix => "MIX en vivo".to_owned(),
-            SettingId::MixDuration => "MIX: duración".to_owned(),
             SettingId::EqualizerBand(index) => t!(
                 row.label,
                 value = frequency_label(EQUALIZER_BANDS[index.min(EQUALIZER_BANDS.len() - 1)])
@@ -180,14 +193,19 @@ impl App {
             SettingId::ShowCovers => switch(self.config.show_covers),
             SettingId::VolumeStep => t!("setting.value.percent", value = self.config.volume_step),
             SettingId::Gapless => switch(self.config.gapless),
+            SettingId::LiveMix if self.playback_context.is_album() => {
+                mix_label(self.config.live_mix_mode(), true)
+            }
             SettingId::LiveMix if self.player.capabilities().name == "mpv" => {
                 t!("setting.value.unavailable").to_owned()
             }
             SettingId::LiveMix if self.config.bit_perfect || !self.config.gapless => {
                 t!("setting.value.bypassed").to_owned()
             }
-            SettingId::LiveMix if self.playback_context.is_album() => "ALBUM · OFF".into(),
-            SettingId::LiveMix => self.config.live_mix_mode().label().into(),
+            SettingId::LiveMix => mix_label(
+                self.config.live_mix_mode(),
+                self.playback_context.is_album(),
+            ),
             SettingId::MixDuration => format!("{:.0} s", self.config.mix_crossfade_seconds),
             SettingId::AudioBackend => t!(match self.config.audio_backend {
                 AudioBackendChoice::Mpv => "setting.value.mpv",
@@ -417,6 +435,31 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn album_label_keeps_the_saved_mix_preference() {
+        use crate::audio::smart_mix::LiveMixMode;
+        for mode in [
+            LiveMixMode::Off,
+            LiveMixMode::Classic,
+            LiveMixMode::Smart,
+            LiveMixMode::AutoDj,
+        ] {
+            let config = Config {
+                live_mix_mode: Some(mode),
+                ..Config::default()
+            };
+            let normal = mix_label(config.live_mix_mode(), false);
+            let album = mix_label(config.live_mix_mode(), true);
+            if mode == LiveMixMode::Off {
+                assert_eq!(album, normal);
+            } else {
+                assert_eq!(album, t!("mix.paused_album", mode = normal));
+            }
+            assert_eq!(config.live_mix_mode(), mode);
+            assert!(!normal.contains('_'));
+        }
+    }
 
     #[test]
     fn every_row_has_a_distinct_identity() {

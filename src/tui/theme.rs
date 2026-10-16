@@ -3,11 +3,11 @@
 //! The palette is chosen by the `theme` setting and is the same set of choices
 //! on every platform, so a Windows user is not left with whatever the terminal
 //! happens to do. The default follows the desktop when available and uses
-//! a neutral light palette elsewhere.
+//! the Steel Blue palette elsewhere.
 //!
 //! `system` is the one platform-dependent choice. On Linux it tracks the
 //! current Omarchy theme, re-read when the file on disk changes; anywhere else,
-//! and on a Linux machine without Omarchy, it falls back to the light palette.
+//! and on a Linux machine without Omarchy, it falls back to the Steel Blue palette.
 
 use super::*;
 
@@ -27,7 +27,7 @@ pub(super) struct UiTheme {
 /// palette here cannot silently repaint somebody else's interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum ThemeChoice {
-    /// Follow the desktop: the Omarchy palette on Linux, light elsewhere.
+    /// Follow the desktop: the Omarchy palette on Linux, Steel Blue elsewhere.
     #[default]
     System,
     Light,
@@ -142,12 +142,23 @@ const fn rgb(value: u32) -> Color {
 
 impl Default for UiTheme {
     fn default() -> Self {
-        Self::light()
+        Self::steel_blue()
     }
 }
 
 impl UiTheme {
-    /// The default. `selection` is a tint rather than a saturated colour
+    pub(super) const fn steel_blue() -> Self {
+        Self {
+            accent: rgb(0x8fa8b8),
+            selection: rgb(0x39424b),
+            foreground: rgb(0xe8ebef),
+            background: rgb(0x111318),
+            muted: rgb(0x8fa8b8),
+            border: rgb(0x39424b),
+        }
+    }
+
+    /// `selection` is a tint rather than a saturated colour
     /// because the selected row draws `foreground` on top of it.
     pub(super) const fn light() -> Self {
         Self {
@@ -255,14 +266,14 @@ impl UiTheme {
                 return (theme, Some(path), modified);
             }
         }
-        (Self::light(), None, None)
+        (Self::steel_blue(), None, None)
     }
 
     /// Windows has no Omarchy theme to follow, so `system` is the default
     /// palette there.
     #[cfg(not(unix))]
     fn load_from_desktop() -> (Self, Option<PathBuf>, Option<SystemTime>) {
-        (Self::light(), None, None)
+        (Self::steel_blue(), None, None)
     }
 
     #[cfg(any(unix, test))]
@@ -309,6 +320,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fallback_uses_official_colors_and_terminal_theme_remains_available() {
+        let fallback = UiTheme::default();
+        assert_eq!(fallback.accent, rgb(0x8fa8b8));
+        assert_eq!(fallback.background, rgb(0x111318));
+        assert_eq!(fallback.foreground, rgb(0xe8ebef));
+        assert_eq!(fallback.border, rgb(0x39424b));
+        assert_ne!(fallback.selection, fallback.background);
+        assert_eq!(UiTheme::load(ThemeChoice::Dark).0, UiTheme::dark());
+    }
+
+    #[test]
     fn parses_omarchy_hex_colors() {
         assert_eq!(parse_hex_color("#ff2ec1"), Some(Color::Rgb(255, 46, 193)));
         assert_eq!(parse_hex_color("ff2ec1"), None);
@@ -348,7 +370,7 @@ mod tests {
 
     #[test]
     fn the_default_follows_the_desktop_with_a_neutral_fallback() {
-        assert_eq!(UiTheme::default(), UiTheme::light());
+        assert_eq!(UiTheme::default(), UiTheme::steel_blue());
         assert_eq!(ThemeChoice::default(), ThemeChoice::System);
     }
 

@@ -240,6 +240,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mix_labels_and_album_suspension_are_localized() {
+        for (catalogue, labels, suspended) in [
+            (
+                &catalogues().english,
+                ["Off", "Classic", "Smart", "AutoDJ"],
+                "Smart · paused in album",
+            ),
+            (
+                &catalogues().spanish,
+                ["Desactivado", "Clásico", "Inteligente", "AutoDJ"],
+                "Inteligente · pausado en álbum",
+            ),
+        ] {
+            for (key, label) in ["off", "classic", "smart", "auto_dj"]
+                .into_iter()
+                .zip(labels)
+            {
+                assert_eq!(catalogue[&format!("mix.mode.{key}")], label);
+            }
+            assert_eq!(
+                format_template(&catalogue["mix.paused_album"], &[("mode", &labels[2])]),
+                suspended
+            );
+        }
+    }
+
+    #[test]
     fn language_tags_are_parsed_leniently() {
         // Locale environment variables carry territory and encoding suffixes.
         for tag in ["es", "ES", "es_ES.UTF-8", "es-419", "es@valencia"] {
