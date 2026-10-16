@@ -143,7 +143,7 @@ impl App {
         self.load_current_with_pause(position_ms, false)
     }
 
-    fn load_current_with_pause(&mut self, position_ms: u64, paused: bool) -> Result<()> {
+    pub(super) fn load_current_with_pause(&mut self, position_ms: u64, paused: bool) -> Result<()> {
         self.flush_audible_mix()?;
         self.flush_history(false)?;
         let Some(track) = self.current_track().cloned() else {
@@ -892,17 +892,21 @@ impl App {
     }
 
     pub(super) async fn sync_mpris(&mut self) {
-        let index = self.queue_index.unwrap_or(0);
+        let presented = self.presented_playback();
+        let index = self
+            .audible_mix
+            .as_ref()
+            .and(self.prefetched.as_ref())
+            .map_or(self.queue_index.unwrap_or(0), |(index, _)| *index);
         let state_signature = MediaSessionSignature {
             track_hash: self.current_track_hash(),
             status: self.playback.status,
             volume_bits: self.playback.volume.to_bits(),
             shuffle: self.shuffle && !self.playback_context.is_album(),
             repeat: self.repeat,
-            can_previous: index > 0,
+            can_previous: index > 0 || presented.position_ms > 5_000,
             can_next: index + 1 < self.queue.len(),
         };
-        let presented = self.presented_playback();
         let position_signature = (presented.duration_ms, presented.position_ms / 1000);
 
         if let Some(mpris) = &self.mpris {

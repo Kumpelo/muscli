@@ -36,12 +36,14 @@ pub(super) enum ScanMessage {
 pub(super) struct CoverDecodeRequest {
     pub(super) path: PathBuf,
     pub(super) size: u32,
+    pub(super) blend_from: Option<PathBuf>,
 }
 
 pub(super) struct CoverDecodeResult {
     pub(super) path: PathBuf,
     pub(super) size: u32,
     pub(super) image: Option<image::DynamicImage>,
+    pub(super) blend_frames: Vec<image::DynamicImage>,
 }
 
 #[derive(Debug)]
@@ -238,6 +240,31 @@ pub(super) fn start_search_worker(
         .ok();
 }
 
+/// Five bounded frames, built on the cover worker rather than the draw loop.
+fn blend_cover_frames(
+    old: &image::DynamicImage,
+    new: &image::DynamicImage,
+) -> Vec<image::DynamicImage> {
+    let old = old
+        .resize_to_fill(256, 256, image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    let new = new
+        .resize_to_fill(256, 256, image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    (1..=5u16)
+        .map(|step| {
+            let image = image::RgbaImage::from_fn(256, 256, |x, y| {
+                let a = old.get_pixel(x, y).0;
+                let b = new.get_pixel(x, y).0;
+                image::Rgba(std::array::from_fn(|channel| {
+                    ((u16::from(a[channel]) * (5 - step) + u16::from(b[channel]) * step) / 5) as u8
+                }))
+            });
+            image::DynamicImage::ImageRgba8(image)
+        })
+        .collect()
+}
+
 pub(super) fn start_cover_decode_worker(
     requests: Receiver<CoverDecodeRequest>,
     results: tokio_mpsc::UnboundedSender<CoverDecodeResult>,
@@ -250,11 +277,18 @@ pub(super) fn start_cover_decode_worker(
                     .ok()
                     .and_then(|reader| reader.decode().ok())
                     .map(|image| image.thumbnail(request.size, request.size));
+                let blend_frames = request
+                    .blend_from
+                    .as_ref()
+                    .and_then(|path| image::ImageReader::open(path).ok()?.decode().ok())
+                    .zip(image.as_ref())
+                    .map_or_else(Vec::new, |(old, new)| blend_cover_frames(&old, new));
                 if results
                     .send(CoverDecodeResult {
                         path: request.path,
                         size: request.size,
                         image,
+                        blend_frames,
                     })
                     .is_err()
                 {
@@ -347,6 +381,25 @@ pub(super) fn start_library_worker(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cover_blending_is_bounded_and_finishes_on_the_incoming_image() {
+        let old = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([0, 0, 0, 255]),
+        ));
+        let new = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            2,
+            2,
+            image::Rgba([200, 100, 50, 255]),
+        ));
+        let frames = super::blend_cover_frames(&old, &new);
+        assert_eq!(frames.len(), 5);
+        assert_eq!(frames[0].to_rgba8().get_pixel(0, 0).0, [40, 20, 10, 255]);
+        assert_eq!(frames[4].to_rgba8().get_pixel(0, 0).0, [200, 100, 50, 255]);
+        assert_eq!((frames[0].width(), frames[0].height()), (256, 256));
+    }
+
     use super::*;
 
     #[test]

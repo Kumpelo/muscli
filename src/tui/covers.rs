@@ -16,6 +16,7 @@ pub(super) struct Covers {
     pub(super) picker: Picker,
     /// Art for the track being shown in the detail pane.
     pub(super) current: Option<CoverState>,
+    pub(super) animation: Option<CoverAnimation>,
     /// Signature of where covers sat in the last frame, and where the next
     /// frame will put them.
     ///
@@ -35,9 +36,15 @@ pub(super) struct Covers {
     pub(super) in_flight: HashSet<(PathBuf, u32)>,
 }
 
+pub(super) struct CoverAnimation {
+    path: PathBuf,
+    frames: VecDeque<(usize, StatefulProtocol)>,
+}
+
 impl App {
     pub(super) fn refresh_cover(&mut self) {
         if !self.config.show_covers {
+            self.covers.animation = None;
             self.covers.current = None;
             self.covers.grid.clear();
             self.covers.grid_order.clear();
@@ -48,6 +55,31 @@ impl App {
         let path = self
             .detail_track()
             .and_then(|track| track.cover_path.clone());
+        if let Some(animation) = &mut self.covers.animation {
+            if path.as_ref() == Some(&animation.path) {
+                let step = self
+                    .audible_mix
+                    .as_ref()
+                    .map_or(5, |mix| (mix.progress.clamp(0.0, 1.0) * 5.0) as usize);
+                while animation
+                    .frames
+                    .front()
+                    .is_some_and(|(index, _)| *index <= step)
+                {
+                    if let Some((_, protocol)) = animation.frames.pop_front() {
+                        self.covers.current = Some(CoverState {
+                            path: animation.path.clone(),
+                            protocol,
+                        });
+                    }
+                }
+                if animation.frames.is_empty() {
+                    self.covers.animation = None;
+                }
+            } else {
+                self.covers.animation = None;
+            }
+        }
         match path {
             Some(path)
                 if self
@@ -70,7 +102,15 @@ impl App {
         if self
             .covers
             .requests
-            .send(CoverDecodeRequest { path, size })
+            .send(CoverDecodeRequest {
+                path,
+                size,
+                blend_from: (size == 512
+                    && self.audible_mix.is_some()
+                    && !cover_layout_requires_full_repaint(self.covers.picker.protocol_type()))
+                .then(|| self.covers.current.as_ref().map(|cover| cover.path.clone()))
+                .flatten(),
+            })
             .is_err()
         {
             self.covers.in_flight.remove(&key);
@@ -91,10 +131,31 @@ impl App {
                     .detail_track()
                     .and_then(|track| track.cover_path.as_ref());
                 if wanted.is_some_and(|path| path == &result.path) {
-                    self.covers.current = Some(CoverState {
-                        path: result.path,
-                        protocol: self.covers.picker.new_resize_protocol(image),
-                    });
+                    if self.audible_mix.is_some() && !result.blend_frames.is_empty() {
+                        let mut frames: VecDeque<_> = result
+                            .blend_frames
+                            .into_iter()
+                            .take(4)
+                            .enumerate()
+                            .map(|(index, image)| {
+                                (index + 1, self.covers.picker.new_resize_protocol(image))
+                            })
+                            .collect();
+                        frames.push_back((5, self.covers.picker.new_resize_protocol(image)));
+                        self.covers.animation = Some(CoverAnimation {
+                            path: result.path.clone(),
+                            frames,
+                        });
+                        // Mark the request fulfilled while the old picture is held.
+                        if let Some(cover) = &mut self.covers.current {
+                            cover.path = result.path;
+                        }
+                    } else {
+                        self.covers.current = Some(CoverState {
+                            path: result.path,
+                            protocol: self.covers.picker.new_resize_protocol(image),
+                        });
+                    }
                     self.dirty = true;
                 }
             }

@@ -580,6 +580,7 @@ async fn run_inner(
         covers: Covers {
             picker,
             current: None,
+            animation: None,
             drawn_signature: 0,
             pending_signature: 0,
             grid: HashMap::new(),

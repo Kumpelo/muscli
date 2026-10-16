@@ -240,7 +240,17 @@ impl App {
                             self.queue = queue.track_ids.clone();
                             self.queue_index = (!self.queue.is_empty()).then_some(0);
                             self.queue_dirty = true;
-                            self.status = t!("status.queue_loaded", name = queue.name);
+                            let name = queue.name.clone();
+                            if self.queue.is_empty() {
+                                self.handle_action(PlayerAction::Stop)?;
+                            } else {
+                                self.load_current_with_pause(
+                                    0,
+                                    self.playback.status != PlaybackStatus::Playing,
+                                )?;
+                            }
+                            self.persist_playback()?;
+                            self.status = t!("status.queue_loaded", name = name);
                         }
                         self.input = None;
                     }
