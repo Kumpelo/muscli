@@ -227,10 +227,10 @@ muscli library analyze-mix --force  # recompute all indexed tracks
 
 For each indexed track the cache includes estimated BPM (nullable if
 uncertain), autocorrelation confidence, RMS energy, file size, modification
-timestamp and algorithm version. Unsupported/corrupt files are recorded as
+timestamp, endpoint RMS/silences and algorithm version. Unsupported/corrupt files are recorded as
 failed rather than retried at every startup. Changing a track or upgrading
 the analysis algorithm automatically invalidates that row. The analyzer
-decodes at most the first 30 seconds per song and processes one song at
+decodes at most the first 30 seconds and two four-second endpoints per song and processes one song at
 a time to keep background work bounded. On large libraries, initial analysis
 can take time; playback does not wait for it. Set
 `mix_analysis_enabled = false` in config.toml to disable automatic
@@ -239,9 +239,9 @@ background analysis. The manual CLI command remains available.
 Cached BPM values are reused by `muscli mix demo` when both songs
 are indexed. This basic BPM detector is approximate, especially with
 half/double tempos, long introductions or songs without regular percussion.
-A correct BPM estimate does not yet imply beat alignment or mixing in the TUI.
+A correct BPM estimate does not imply beat alignment or musical compatibility.
 
-**Database note:** this feature upgrades the index schema to version 7.
+**Database note:** this feature upgrades the index schema to version 9.
 Back up the library database before trying an older muscli binary, since
 older versions cannot open a newer index.
 
@@ -251,33 +251,31 @@ The native player can now blend the last few seconds of one local song
 with the already-prefetched next song **while listening**. This early,
 opt-in feature does not render a WAV or modify the original files.
 
-Open muscli and select **Settings → MIX en vivo** (Off by default).
-Toggle the switch, then use **MIX: duración** with the left/right arrows
-to choose a 0–12 second overlap. The configuration is saved locally as
-`mix_crossfade_seconds` (0 = Off, 6 seconds when first enabled).
+Open **Settings → MIX en vivo** to cycle **OFF → CLASSIC → SMART → AUTO_DJ**.
+CLASSIC uses the configured duration. SMART keeps queue order and uses a short
+fade only with confident tempo, energy and endpoint evidence; otherwise it falls
+back to normal playback. AUTO_DJ may append a compatible library track after the
+user's queued selections run out. It never replaces Play Next or reorders the queue.
+Album sessions suspend MIX, AutoDJ and shuffle without changing global preferences.
+The duration row sets `mix_crossfade_seconds`; `live_mix_mode` stores the mode.
 
-```sh
-# Try this work branch locally on Linux:
-git fetch origin work/audio-stability-ux-20261014
-git switch --track origin/work/audio-stability-ux-20261014
-cargo run --release --locked
-```
+See [album playback, MIX policies and optional desktop widget](docs/playback-and-widget.es.md)
+for context rules, library grouping, backend limits and validation steps.
 
-For this initial version, crossfade works only when the current and
+Live crossfade works only when the current and
 prefetched files decode to **matching formats**, the native output needs
 **no resampling/channel duplication**, gapless prefetch is enabled, and
 bit-perfect mode is **off**. If those conditions are not met (or the
 incoming file has not been prefetched in time), muscli uses the old
 gapless/ordinary handover. Files played through the mpv fallback do not
-receive native crossfades. No tempo matching, beat phase, DJ filters,
-or scratch are yet hooked up to **live** audio; those currently work
-only in `muscli mix demo`.
+receive native crossfades. Live playback does not change tempo, align beat phase, add DJ filters or scratch.
+The offline demo remains separate from the conservative live policy.
 
-This is a beta experiment, not yet a validated production AutoDJ:
+The live transition and recommendation policies remain beta features:
 test with real library tracks and headphones before distributing.
 You can disable live MIX immediately from the settings screen.
 Backup your local SQLite library database before switching back to
-older binaries (this work branch already uses index schema v7).
+older binaries (this work branch already uses index schema v9).
 
 ## Experimental MIX preview (offline)
 

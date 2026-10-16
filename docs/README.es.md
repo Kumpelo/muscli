@@ -215,3 +215,9 @@ cargo build --release
 
 El workflow de release puede crear un RC manual. Los tags `v*` crean un
 prerelease borrador con artefactos Linux y Windows, SHA-256 y SBOM CycloneDX.
+
+## Álbumes, Smart MIX y widget
+
+La guía de [reproducción y widget](playback-and-widget.es.md) explica el contexto
+ALBUM, la agrupación por lanzamiento, OFF/CLASSIC/SMART/AUTO_DJ, las transiciones
+visuales y el widget opcional de Quickshell. Incluye límites y validación manual.
