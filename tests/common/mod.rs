@@ -221,6 +221,8 @@ pub struct TrackSpec {
     pub artist: String,
     pub album: String,
     pub album_artist: String,
+    pub release_id: String,
+    pub compilation: bool,
     pub genre: String,
     pub year: Option<i32>,
     pub track_number: u32,
@@ -237,6 +239,8 @@ impl Default for TrackSpec {
             artist: "Test Artist".into(),
             album: "Test Album".into(),
             album_artist: "Test Artist".into(),
+            release_id: String::new(),
+            compilation: false,
             genre: "Test Genre".into(),
             year: Some(2024),
             track_number: 1,
@@ -302,6 +306,11 @@ pub fn write_track(path: &Path, spec: &TrackSpec) {
     tag.insert_text(ItemKey::TrackArtist, spec.artist.clone());
     tag.insert_text(ItemKey::AlbumTitle, spec.album.clone());
     tag.insert_text(ItemKey::AlbumArtist, spec.album_artist.clone());
+    tag.insert_text(ItemKey::MusicBrainzReleaseId, spec.release_id.clone());
+    tag.insert_text(
+        ItemKey::FlagCompilation,
+        if spec.compilation { "1" } else { "0" }.into(),
+    );
     tag.insert_text(ItemKey::Genre, spec.genre.clone());
     tag.insert_text(ItemKey::TrackNumber, spec.track_number.to_string());
     tag.insert_text(ItemKey::DiscNumber, spec.disc_number.to_string());

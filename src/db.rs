@@ -170,7 +170,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 7 {
+        if version > 8 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -417,6 +417,19 @@ impl Database {
             )?;
             tx.commit()?;
         }
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 7 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN release_id TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE tracks ADD COLUMN compilation INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE tracks ADD COLUMN metadata_version INTEGER NOT NULL DEFAULT 0;
+                 PRAGMA user_version = 8;",
+            )?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -523,14 +536,15 @@ impl Database {
             let mut stmt = tx.prepare_cached(
                 "INSERT INTO tracks(
                     id, source_id, relative_path, path, title, artist, album_artist, album, genre,
-                    year, disc_number, track_number, duration_ms, cover_path, file_size, modified_ns, available
-                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1)
+                    year, disc_number, track_number, duration_ms, cover_path, file_size, modified_ns, available, release_id, compilation, metadata_version
+                 ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1,?17,?18,1)
                  ON CONFLICT(id) DO UPDATE SET
                     path=excluded.path, title=excluded.title, artist=excluded.artist,
                     album_artist=excluded.album_artist, album=excluded.album, genre=excluded.genre,
                     year=excluded.year, disc_number=excluded.disc_number, track_number=excluded.track_number,
                     duration_ms=excluded.duration_ms, cover_path=excluded.cover_path,
-                    file_size=excluded.file_size, modified_ns=excluded.modified_ns, available=1",
+                    file_size=excluded.file_size, modified_ns=excluded.modified_ns, available=1,
+                    release_id=excluded.release_id, compilation=excluded.compilation, metadata_version=1",
             )?;
             for item in tracks {
                 stmt.execute(params![
@@ -553,6 +567,8 @@ impl Database {
                         .map(|p| p.to_string_lossy().into_owned()),
                     item.file_size.min(i64::MAX as u64) as i64,
                     item.modified_ns,
+                    item.track.release_id,
+                    item.track.compilation,
                 ])?;
             }
         }
@@ -868,7 +884,7 @@ impl Database {
                     t.album, t.genre, t.year, t.disc_number, t.track_number, t.duration_ms,
                     t.cover_path, t.available, t.favorite, t.added_at,
                     s.track_id, s.play_count, s.total_listen_ms, s.last_played_at,
-                    s.resume_position_ms
+                    s.resume_position_ms, t.release_id, t.compilation
              FROM tracks t
              LEFT JOIN track_stats s ON s.track_id=t.id
              ORDER BY t.album_artist COLLATE NOCASE, t.album COLLATE NOCASE,
@@ -909,7 +925,7 @@ impl Database {
     pub fn load_tracks(&self) -> Result<Vec<Track>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, relative_path, path, title, artist, album_artist, album, genre,
-                    year, disc_number, track_number, duration_ms, cover_path, available, favorite
+                    year, disc_number, track_number, duration_ms, cover_path, available, favorite, release_id, compilation
              FROM tracks
              ORDER BY album_artist COLLATE NOCASE, album COLLATE NOCASE, disc_number, track_number, title COLLATE NOCASE",
         )?;
@@ -921,7 +937,7 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, source_id, relative_path, path, title, artist, album_artist, album, genre,
                     year, disc_number, track_number, duration_ms, cover_path, available, favorite,
-                    file_size, modified_ns
+                    file_size, CASE WHEN metadata_version=0 THEN -1 ELSE modified_ns END, release_id, compilation
              FROM tracks WHERE source_id=?1",
         )?;
         let rows = stmt.query_map([source_id], |row| {
@@ -1766,6 +1782,8 @@ fn row_to_track(row: &rusqlite::Row<'_>) -> rusqlite::Result<Track> {
         cover_path: row.get::<_, Option<String>>(13)?.map(Into::into),
         available: row.get(14)?,
         favorite: row.get(15)?,
+        release_id: row.get("release_id")?,
+        compilation: row.get("compilation")?,
     })
 }
 
@@ -1776,123 +1794,102 @@ pub struct ScannedTrack {
     pub modified_ns: i64,
 }
 
-/// An album's source and folder provide a conservative compilation boundary:
-/// unrelated editions in different directories must never be merged just
-/// because their titles match.
+/// Only conventional numbered disc directories are lifted to a release folder.
+/// Arbitrary sibling folders are separate editions even when title/year agree.
+fn release_folder(track: &Track) -> String {
+    let parent = track.path.parent().unwrap_or_else(|| Path::new(""));
+    let name = parent
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    let compact = name.replace([' ', '-', '_'], "");
+    let disc_folder = ["cd", "disc", "disk"].iter().any(|prefix| {
+        compact.strip_prefix(prefix).is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.parse::<u32>().ok() == Some(track.disc_number)
+                && track.disc_number > 0
+        })
+    });
+    if disc_folder {
+        parent.parent().unwrap_or(parent)
+    } else {
+        parent
+    }
+    .to_string_lossy()
+    .into_owned()
+}
+
 fn album_folder_key(track: &Track) -> (String, String, String, Option<i32>) {
     (
         track.source_id.clone(),
-        track
-            .path
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .to_string_lossy()
-            .into_owned(),
-        track.album.to_lowercase(),
+        release_folder(track),
+        crate::model::normalize_text(&track.album).to_lowercase(),
         track.year,
     )
 }
 
-#[derive(Default)]
-struct ReleaseVariants {
-    years: BTreeSet<i32>,
-    folders: BTreeSet<(String, String)>,
-}
-
 pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
-    let mut folder_tracks: BTreeMap<_, Vec<&Track>> = BTreeMap::new();
+    let mut folders: BTreeMap<_, Vec<&Track>> = BTreeMap::new();
     for track in tracks {
-        if !track.album.trim().is_empty() {
-            folder_tracks
-                .entry(album_folder_key(track))
-                .or_default()
-                .push(track);
-        }
+        folders
+            .entry(album_folder_key(track))
+            .or_default()
+            .push(track);
     }
-
-    // Only infer a various-artists compilation when its track numbers are
-    // unambiguous, multiple performers AND album artists occur in one folder,
-    // and every member agrees on the title/year. Never guess across folders.
-    let compilations = folder_tracks
+    let compilations = folders
         .into_iter()
         .filter_map(|(key, members)| {
             let performers = members
                 .iter()
                 .map(|track| track.artist.to_lowercase())
                 .collect::<BTreeSet<_>>();
-            let album_artists = members
-                .iter()
-                .map(|track| track.album_artist.to_lowercase())
-                .collect::<BTreeSet<_>>();
             let positions = members
                 .iter()
-                .map(|track| (track.disc_number, track.track_number))
+                .map(|track| (track.disc_number.max(1), track.track_number))
                 .collect::<BTreeSet<_>>();
-            (members.len() >= 2
+            let inferred = members.len() >= 2
                 && performers.len() >= 2
-                && album_artists.len() >= 2
                 && positions.len() == members.len()
-                && members.iter().all(|track| track.track_number > 0))
-            .then_some(key)
+                && members.iter().all(|track| {
+                    track.track_number > 0
+                        && (track.album_artist.is_empty()
+                            || track.album_artist.eq_ignore_ascii_case(&track.artist))
+                });
+            (inferred || members.iter().any(|track| track.compilation)).then_some(key)
         })
         .collect::<BTreeSet<_>>();
 
-    // A remaster with a different year in a separate directory is not the
-    // same release. Keep ambiguous cases together unless both independent
-    // clues (year and folder) disagree, to avoid splitting multi-disc albums.
-    let mut release_variants: BTreeMap<_, ReleaseVariants> = BTreeMap::new();
-    for track in tracks {
-        let artist = if track.album_artist.is_empty() {
-            &track.artist
-        } else {
-            &track.album_artist
-        };
-        let variants = release_variants
-            .entry((artist.to_lowercase(), track.album.to_lowercase()))
-            .or_default();
-        if let Some(year) = track.year {
-            variants.years.insert(year);
-        }
+    let mut grouped: BTreeMap<String, Album> = BTreeMap::new();
+    // Stable ordering also makes representative metadata and cover deterministic.
+    let mut ordered = tracks.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|track| {
+        (
+            track.disc_number.max(1),
+            track.track_number,
+            &track.path,
+            &track.id,
+        )
+    });
+    for track in ordered {
         let folder = album_folder_key(track);
-        variants.folders.insert((folder.0, folder.1));
-    }
-    let distinct_editions = release_variants
-        .into_iter()
-        .filter_map(|(key, variants)| {
-            (variants.years.len() > 1 && variants.folders.len() > 1).then_some(key)
-        })
-        .collect::<BTreeSet<_>>();
-
-    let mut grouped: BTreeMap<(String, String, Option<String>), Album> = BTreeMap::new();
-    for track in tracks {
-        let folder_key = album_folder_key(track);
-        let inferred_compilation = compilations.contains(&folder_key);
-        let artist = if inferred_compilation {
+        let artist = if compilations.contains(&folder) {
             "Various Artists"
         } else if track.album_artist.is_empty() {
-            &track.artist
+            track.display_artist()
         } else {
             &track.album_artist
         };
-        let artist_key = artist.to_lowercase();
-        let title_key = track.album.to_lowercase();
-        let edition = if inferred_compilation {
-            Some(format!(
-                "{}\u{1f}{}\u{1f}{:?}",
-                folder_key.0, folder_key.1, folder_key.3
-            ))
-        } else if distinct_editions.contains(&(artist_key.clone(), title_key.clone())) {
-            Some(format!("release-year:{:?}", track.year))
+        let key = if track.release_id.trim().is_empty() {
+            format!(
+                "folder:{folder:?}\u{1f}{}",
+                crate::model::normalize_text(artist).to_lowercase()
+            )
         } else {
-            None
+            format!("mbid:{}", track.release_id.trim().to_lowercase())
         };
-        let key = (artist_key, title_key, edition);
-        let album_key = match &key.2 {
-            Some(edition) => format!("{}\u{1f}{}\u{1f}{edition}", key.0, key.1),
-            None => format!("{}\u{1f}{}", key.0, key.1),
-        };
-        let album = grouped.entry(key).or_insert_with(|| Album {
-            key: album_key,
+        let album = grouped.entry(key.clone()).or_insert_with(|| Album {
+            key,
             title: track.album.clone(),
             artist: artist.to_owned(),
             year: track.year,
@@ -1906,18 +1903,15 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
             album.cover_path = track.cover_path.clone();
         }
     }
-    let order = tracks
-        .iter()
-        .map(|track| (track.id.as_str(), (track.disc_number, track.track_number)))
-        .collect::<HashMap<_, _>>();
-    for ((_, _, edition), album) in &mut grouped {
-        if edition.is_some() {
-            album
-                .track_ids
-                .sort_by_key(|id| order.get(id.as_str()).copied());
-        }
-    }
-    grouped.into_values().collect()
+    let mut albums = grouped.into_values().collect::<Vec<_>>();
+    albums.sort_by(|a, b| {
+        (a.artist.to_lowercase(), a.title.to_lowercase(), &a.key).cmp(&(
+            b.artist.to_lowercase(),
+            b.title.to_lowercase(),
+            &b.key,
+        ))
+    });
+    albums
 }
 
 pub fn group_artists(tracks: &[Track]) -> Vec<Artist> {
@@ -1956,6 +1950,8 @@ mod tests {
             artist: "Artist".into(),
             album_artist: "Artist".into(),
             album: "Album".into(),
+            release_id: String::new(),
+            compilation: false,
             genre: String::new(),
             year: Some(2026),
             disc_number: 1,
@@ -2369,6 +2365,66 @@ mod tests {
             "album normalization must reflect its new track"
         );
         Ok(())
+    }
+
+    #[test]
+    fn release_ids_override_artist_folder_and_title_but_separate_editions() {
+        let mut first = track("first", 2);
+        first.release_id = "release-a".into();
+        first.path = "/music/a/2.flac".into();
+        let mut second = track("second", 1);
+        second.release_id = "release-a".into();
+        second.album_artist = "Guest credit".into();
+        second.path = "/music/b/1.flac".into();
+        let mut other = first.clone();
+        other.id = "other".into();
+        other.release_id = "release-b".into();
+        let albums = group_albums(&[first, second, other]);
+        assert_eq!(albums.len(), 2);
+        assert_eq!(
+            albums
+                .iter()
+                .find(|a| a.key == "mbid:release-a")
+                .unwrap()
+                .track_ids,
+            ["second", "first"]
+        );
+    }
+
+    #[test]
+    fn numbered_disc_folders_group_and_same_year_editions_stay_separate() {
+        let mut first = track("disc1", 1);
+        first.path = "/music/Release/CD1/01.flac".into();
+        first.disc_number = 1;
+        let mut second = track("disc2", 1);
+        second.path = "/music/Release/CD2/01.flac".into();
+        second.disc_number = 2;
+        let mut other = first.clone();
+        other.id = "other".into();
+        other.path = "/music/Other Edition/01.flac".into();
+        let albums = group_albums(&[second, other, first]);
+        assert_eq!(albums.len(), 2);
+        assert!(
+            albums
+                .iter()
+                .any(|album| album.track_ids == ["disc1", "disc2"])
+        );
+    }
+
+    #[test]
+    fn missing_album_artist_compilation_retains_individual_performers() {
+        let mut first = track("one", 1);
+        first.album_artist.clear();
+        first.artist = "One".into();
+        let mut second = track("two", 2);
+        second.album_artist.clear();
+        second.artist = "Two".into();
+        let tracks = [second, first];
+        let albums = group_albums(&tracks);
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].artist, "Various Artists");
+        assert_eq!(albums[0].track_ids, ["one", "two"]);
+        assert_eq!(tracks[0].artist, "Two");
     }
 
     #[test]

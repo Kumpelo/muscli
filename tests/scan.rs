@@ -805,3 +805,49 @@ fn lyrics_beside_the_audio_are_never_absorbed_by_the_scan() {
     let lyrics = muscli::lyrics::load(fixture.paths(), track).expect("the imported lyrics");
     assert_eq!(lyrics.lines.len(), 1);
 }
+
+#[test]
+fn release_metadata_refresh_preserves_track_references_and_cached_analysis() {
+    let fixture = Fixture::new();
+    let mut spec = TrackSpec::new("First").artist("Guest One");
+    spec.album_artist = "Various Artists".into();
+    spec.release_id = "c1234567-1234-1234-1234-123456789abc".into();
+    spec.compilation = true;
+    write_track(&fixture.source().join("Compilation/01.flac"), &spec);
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    let original = db.load_tracks().unwrap().remove(0);
+    assert_eq!(original.release_id, spec.release_id);
+    assert!(original.compilation);
+    let playlist = db.create_playlist("Keep").unwrap();
+    db.add_to_playlist(playlist, &original.id).unwrap();
+    db.toggle_favorite(&original.id).unwrap();
+    let history = db.start_history(&original.id).unwrap();
+    let (id, _, size, modified) = db.mix_analysis_candidates(false).unwrap().remove(0);
+    let analysis = muscli::audio::mix::TrackAnalysis {
+        bpm: Some(120.0),
+        confidence: 0.8,
+        energy_rms: 0.1,
+    };
+    db.save_mix_analysis(&id, analysis, size, modified).unwrap();
+    // A migrated row must have its tags read again even if the file is unchanged.
+    let conn = rusqlite::Connection::open(fixture.paths().database_file()).unwrap();
+    conn.execute("UPDATE tracks SET release_id='', metadata_version=0", [])
+        .unwrap();
+    scan(&fixture, &mut db);
+    let tracks = db.load_tracks().unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].id, original.id);
+    assert_eq!(tracks[0].release_id, spec.release_id);
+    assert!(tracks[0].favorite);
+    assert_eq!(
+        db.load_playlists().unwrap()[0].track_ids,
+        [original.id.clone()]
+    );
+    assert!(history > 0);
+    assert_eq!(
+        db.mix_analysis_for_path(&original.path).unwrap(),
+        Some(analysis)
+    );
+    assert!(scan(&fixture, &mut db).errors.is_empty());
+}

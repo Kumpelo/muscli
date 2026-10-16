@@ -21,6 +21,8 @@ fn synthetic_tracks(count: usize) -> Vec<Track> {
             artist: format!("Artist {:04}", index % 900),
             album_artist: format!("Artist {:04}", index % 900),
             album: format!("Album {:04}", index % 3_000),
+            release_id: String::new(),
+            compilation: false,
             genre: match index % 8 {
                 0 => "Classical",
                 1 => "Electronic",

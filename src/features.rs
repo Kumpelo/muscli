@@ -307,6 +307,8 @@ mod tests {
             artist: "Artist".into(),
             album_artist: "Artist".into(),
             album: "Album".into(),
+            release_id: String::new(),
+            compilation: false,
             genre: genre.into(),
             year: None,
             disc_number: 1,

@@ -12,6 +12,10 @@ pub struct Track {
     pub artist: String,
     pub album_artist: String,
     pub album: String,
+    #[serde(default)]
+    pub release_id: String,
+    #[serde(default)]
+    pub compilation: bool,
     pub genre: String,
     pub year: Option<i32>,
     pub disc_number: u32,

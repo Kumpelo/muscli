@@ -524,7 +524,7 @@ fn read_track(
         .unwrap_or_else(|| parent_album.to_owned());
     let album_artist = value(ItemKey::AlbumArtist)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| artist.clone());
+        .unwrap_or_default();
     let genre = value(ItemKey::Genre).unwrap_or_default();
     let year = value(ItemKey::RecordingDate)
         .or_else(|| value(ItemKey::Year))
@@ -556,6 +556,12 @@ fn read_track(
             artist,
             album_artist,
             album,
+            release_id: value(ItemKey::MusicBrainzReleaseId)
+                .unwrap_or_default()
+                .to_lowercase(),
+            compilation: tag
+                .and_then(|tag| tag.get_string(ItemKey::FlagCompilation))
+                .is_some_and(|value| matches!(value, "1" | "true")),
             genre,
             year,
             disc_number,
