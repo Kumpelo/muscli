@@ -405,14 +405,7 @@ impl App {
                 self.start_gain_analysis()?;
             }
         }
-        self.player.set_crossfade(
-            if self.config.bit_perfect || !self.config.gapless {
-                0.0
-            } else {
-                self.config.mix_crossfade_seconds
-            },
-            crate::audio::mix::MixCurve::Smooth,
-        )?;
+        self.sync_crossfade()?;
         self.config.save(&self.paths)?;
         self.status = t!("status.settings_saved").into();
         self.dirty = true;

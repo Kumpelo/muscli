@@ -749,7 +749,7 @@ fn replacing_prefetch_with_mix_enabled_plays_the_selected_file() {
 }
 
 #[test]
-fn a_queued_track_joins_the_one_playing_without_a_gap() {
+fn an_album_with_global_mix_keeps_every_sample_at_the_join() {
     // The whole point of prefetching: an album side that was mastered to run
     // together has to run together, with no silence and no restart of the
     // device at the join.
@@ -758,12 +758,12 @@ fn a_queued_track_joins_the_one_playing_without_a_gap() {
     let second = directory.path().join("two.flac");
     fs::write(
         &first,
-        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 200)),
+        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 2_000)),
     )
     .expect("write the first fixture");
     fs::write(
         &second,
-        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 200)),
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 2_000)),
     )
     .expect("write the second fixture");
 
@@ -779,6 +779,13 @@ fn a_queued_track_joins_the_one_playing_without_a_gap() {
         Arc::new(AtomicBool::new(false)),
     );
 
+    let context = muscli::model::PlaybackContext::Album {
+        key: "continuous".into(),
+    };
+    engine.handle(Command::Crossfade {
+        seconds: context.crossfade_seconds(0.6, false, true),
+        curve: muscli::audio::mix::MixCurve::Smooth,
+    });
     engine.handle(Command::Load {
         path: first.clone(),
         position_ms: 0,

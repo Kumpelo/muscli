@@ -122,7 +122,7 @@ impl App {
 
         self.shuffle = enabled;
 
-        if enabled {
+        if enabled && !self.playback_context.is_album() {
             let mut rng = rand::rng();
             shuffle_upcoming(&mut self.queue, self.queue_index, &mut rng);
 
@@ -153,6 +153,7 @@ impl App {
             // Load command can open a new output stream.
             self.player.pause(true)?;
         }
+        self.sync_crossfade()?;
         self.player.load(&track.path, position_ms)?;
         // A replace wipes mpv's playlist, so whatever was queued behind is gone.
         self.prefetched = None;
@@ -257,8 +258,23 @@ impl App {
     /// Driven from the event loop rather than from each mutation, since the
     /// queue changes from a dozen places. Comparing against what is already
     /// armed means no work when nothing moved.
+    pub(super) fn sync_crossfade(&mut self) -> Result<()> {
+        let seconds = self.playback_context.crossfade_seconds(
+            self.config.mix_crossfade_seconds,
+            self.config.bit_perfect,
+            self.config.gapless,
+        );
+        if self.applied_crossfade != Some(seconds) {
+            self.player
+                .set_crossfade(seconds, crate::audio::mix::MixCurve::Smooth)?;
+            self.applied_crossfade = Some(seconds);
+        }
+        Ok(())
+    }
+
     pub(super) fn sync_prefetch(&mut self) -> Result<()> {
-        let wanted = if self.config.gapless
+        self.sync_crossfade()?;
+        let wanted = if (self.config.gapless || self.playback_context.is_album())
             && self.repeat != RepeatMode::Track
             && self.playback.status != PlaybackStatus::Stopped
         {
@@ -654,7 +670,7 @@ impl App {
             track_hash: self.current_track_hash(),
             status: self.playback.status,
             volume_bits: self.playback.volume.to_bits(),
-            shuffle: self.shuffle,
+            shuffle: self.shuffle && !self.playback_context.is_album(),
             repeat: self.repeat,
             can_previous: index > 0,
             can_next: index + 1 < self.queue.len(),
@@ -706,6 +722,7 @@ impl App {
     pub(super) fn playback_snapshot(&self) -> SavedPlayback {
         SavedPlayback {
             queue: Vec::new(),
+            context: self.playback_context.clone(),
             current_index: self.queue_index,
             position_ms: self.playback.position_ms,
             volume: self.playback.volume,

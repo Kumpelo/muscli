@@ -151,10 +151,37 @@ impl RepeatMode {
     }
 }
 
+/// Origin of the active queue. Edits and inserted tracks retain album protection
+/// until a new selection explicitly starts a different listening session.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackContext {
+    #[default]
+    Songs,
+    Album {
+        key: String,
+    },
+}
+
+impl PlaybackContext {
+    pub fn is_album(&self) -> bool {
+        matches!(self, Self::Album { .. })
+    }
+
+    pub fn crossfade_seconds(&self, configured: f64, bit_perfect: bool, gapless: bool) -> f64 {
+        if self.is_album() || bit_perfect || !gapless {
+            0.0
+        } else {
+            configured.clamp(0.0, 12.0)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedPlayback {
     pub queue: Vec<String>,
+    pub context: PlaybackContext,
     pub current_index: Option<usize>,
     pub position_ms: u64,
     /// Where the volume control sits, from `0.0` to `1.0`. Not an amplitude:
@@ -175,6 +202,7 @@ impl Default for SavedPlayback {
     fn default() -> Self {
         Self {
             queue: Vec::new(),
+            context: PlaybackContext::default(),
             current_index: None,
             position_ms: 0,
             volume: 1.0,
@@ -263,6 +291,34 @@ pub fn normalize_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn album_context_survives_session_roundtrip_and_queue_edits() {
+        let mut saved = SavedPlayback {
+            context: PlaybackContext::Album {
+                key: "release".into(),
+            },
+            queue: vec!["disc1".into(), "disc2".into()],
+            shuffle: true,
+            ..Default::default()
+        };
+        saved.queue.insert(1, "play-next".into());
+        saved.queue.swap(0, 2);
+        let restored: SavedPlayback =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(restored.context, saved.context);
+        assert_eq!(restored.context.crossfade_seconds(6.0, false, true), 0.0);
+        assert!(
+            restored.shuffle,
+            "the global shuffle preference is retained"
+        );
+        assert_eq!(
+            PlaybackContext::Songs.crossfade_seconds(6.0, false, true),
+            6.0
+        );
+        let legacy: SavedPlayback = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.context, PlaybackContext::Songs);
+    }
 
     #[test]
     fn parses_track_fraction() {

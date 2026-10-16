@@ -236,6 +236,7 @@ impl App {
                     }
                     KeyCode::Enter => {
                         if let Some(queue) = self.saved_queues.get(selected) {
+                            self.playback_context = PlaybackContext::Songs;
                             self.queue = queue.track_ids.clone();
                             self.queue_index = (!self.queue.is_empty()).then_some(0);
                             self.queue_dirty = true;

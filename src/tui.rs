@@ -57,9 +57,9 @@ use crate::{
     library::{prune_cover_cache, prune_unreferenced_covers},
     mix_analysis::{self, MixAnalysisMessage},
     model::{
-        Album, Artist, HistoryEntry, PlaybackState, PlaybackStatus, PlayerAction, PlayerEvent,
-        Playlist, RepeatMode, SavedPlayback, SavedQueue, SmartPlaylist, SmartRule, Track,
-        TrackStats,
+        Album, Artist, HistoryEntry, PlaybackContext, PlaybackState, PlaybackStatus, PlayerAction,
+        PlayerEvent, Playlist, RepeatMode, SavedPlayback, SavedQueue, SmartPlaylist, SmartRule,
+        Track, TrackStats,
     },
     mpris::MprisBridge,
     paths::AppPaths,
@@ -272,6 +272,8 @@ struct App {
     input: Option<InputMode>,
     input_buffer: String,
     queue: Vec<String>,
+    playback_context: PlaybackContext,
+    applied_crossfade: Option<f64>,
     queue_index: Option<usize>,
     queue_dirty: bool,
     /// Queue position and file armed for the next backend transition.
@@ -441,14 +443,6 @@ async fn run_inner(
     let (control_server, remote_actions) = ControlServer::start(&paths.control_socket())?;
     player.set_volume(config.volume_gain(saved_volume))?;
     player.set_equalizer(&config.equalizer_bands())?;
-    player.set_crossfade(
-        if config.bit_perfect || !config.gapless {
-            0.0
-        } else {
-            config.mix_crossfade_seconds
-        },
-        crate::audio::mix::MixCurve::Smooth,
-    )?;
     let (action_tx, actions) = tokio_mpsc::unbounded_channel();
     let (mpris, mpris_warning) = match MprisBridge::new(action_tx).await {
         Ok(bridge) => (Some(bridge), None),
@@ -523,6 +517,8 @@ async fn run_inner(
         input: None,
         input_buffer: String::new(),
         queue: saved.queue,
+        playback_context: saved.context,
+        applied_crossfade: None,
         queue_index: saved.current_index,
         queue_dirty: false,
         prefetched: None,
@@ -1378,7 +1374,19 @@ impl App {
             _ => self.selected_track_id(),
         };
 
-        let start = if self.shuffle {
+        if self.view != View::Queue {
+            let album = match self.view {
+                View::Albums => self.albums.get(self.selected),
+                View::AlbumDetail => self.opened_album(),
+                View::ArtistDetail => self.selected_album(),
+                _ => None,
+            };
+            self.playback_context =
+                album.map_or(PlaybackContext::Songs, |album| PlaybackContext::Album {
+                    key: album.key.clone(),
+                });
+        }
+        let start = if self.shuffle && !self.playback_context.is_album() {
             let mut rng = rand::rng();
             prepare_shuffled_queue(&mut ids, target.as_ref(), &mut rng)
         } else {
