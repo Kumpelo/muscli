@@ -144,11 +144,12 @@ existentes. En Ajustes (`,`) puedes desactivar Rich Presence u ocultar las imág
 para mostrar solo canción y artista. El título se envía en `details`, el artista
 en `state` y el álbum en el tooltip de la imagen (`assets.large_text`) cuando las
 imágenes están activadas. Se conserva el casing de los tags y no se combinan
-artista y álbum en una misma línea. Al pausar se
-mantienen los datos sin un reloj en marcha; al detener se borra la actividad.
+artista y álbum en una misma línea. Al pausar o detener se borra por completo
+la actividad.
 Discord no es necesario para reproducir audio. Nunca se suben portadas locales:
-Discord admite recursos de la aplicación o imágenes alojadas en una URL externa,
-pero muscli no aloja ni publica las portadas de la biblioteca.
+si una pista tiene un MusicBrainz Release ID válido, muscli envía a Discord la
+URL pública de la portada frontal de 500 px en Cover Art Archive. Discord admite
+URLs públicas, pero no puede leer la ruta de la caché local de muscli.
 
 ## Controles principales
 

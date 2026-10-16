@@ -349,14 +349,14 @@ Settings (`,`) includes switches for Rich Presence and Discord images. Turning
 images off keeps a text presentation with song and artist. The song title is
 sent as `details`, the artist as `state`, and the album as the image tooltip
 (`assets.large_text`) when images are enabled. Metadata casing is preserved;
-artist and album are never combined into one line. Pausing keeps
-metadata visible without a running clock; stopping clears the activity. Discord
+artist and album are never combined into one line. Pausing and stopping clear
+the activity completely. Discord
 is optional and is never required for audio playback. Assets named `peter_metal`, `peter_dj`, and
 `daft_punk` are selected for their matching genres/artist; otherwise the
-configured fallback is used. Local cover art is never uploaded. The IPC library
-sends Discord asset keys; Discord also documents support for externally hosted
-image URLs, but local files cannot be used as remote cover art. muscli does not
-host or upload the library's covers.
+configured fallback is used. If a track has a valid MusicBrainz Release ID,
+muscli instead sends the public 500 px front-cover URL from Cover Art Archive.
+Local cover art is never uploaded: Discord can display a public image URL, but
+it cannot read muscli's local cover-cache path.
 
 ## Main controls
 

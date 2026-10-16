@@ -16,6 +16,7 @@ struct Presence {
     title: String,
     artist: String,
     album: String,
+    release_id: String,
     genre: String,
     status: PlaybackStatus,
     position_ms: u64,
@@ -32,7 +33,7 @@ enum Command {
 pub const MUSCLI_DISCORD_APPLICATION_ID: &str = "1550289541544546394";
 
 fn publish_presence(status: PlaybackStatus) -> bool {
-    matches!(status, PlaybackStatus::Playing | PlaybackStatus::Paused)
+    status == PlaybackStatus::Playing
 }
 
 pub struct DiscordPresence {
@@ -95,6 +96,7 @@ impl DiscordPresence {
                 title: track.title.clone(),
                 artist: track.artist.clone(),
                 album: track.album.clone(),
+                release_id: track.release_id.clone(),
                 genre: track.genre.clone(),
                 status: state.status,
                 position_ms: state.position_ms,
@@ -131,13 +133,12 @@ fn activity<'a>(presence: &'a Presence, large_image: &'a str, show_images: bool)
         activity = activity.state(state);
     }
     if show_images {
+        let image = album_cover_url(&presence.release_id).unwrap_or_else(|| {
+            presence_image(&presence.artist, &presence.genre, large_image).to_owned()
+        });
         activity = activity.assets(
             Assets::new()
-                .large_image(presence_image(
-                    &presence.artist,
-                    &presence.genre,
-                    large_image,
-                ))
+                .large_image(image)
                 .large_text(limited(&presence.album, 120)),
         );
     }
@@ -156,6 +157,19 @@ fn activity<'a>(presence: &'a Presence, large_image: &'a str, show_images: bool)
 
 fn limited(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
+}
+
+fn album_cover_url(release_id: &str) -> Option<String> {
+    let release_id = release_id.trim();
+    let valid = release_id.len() == 36
+        && release_id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    valid.then(|| format!("https://coverartarchive.org/release/{release_id}/front-500"))
 }
 
 fn presence_image<'a>(artist: &str, genre: &str, fallback: &'a str) -> &'a str {
@@ -210,6 +224,7 @@ mod tests {
             title: "Song".into(),
             artist: "Artist".into(),
             album: "Album".into(),
+            release_id: String::new(),
             genre: "Electronic".into(),
             status: PlaybackStatus::Playing,
             position_ms: 30_000,
@@ -241,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_sends_play_pause_resume_changes_and_clear_without_private_paths() {
+    fn sync_sends_play_resume_changes_and_clears_pause_without_private_paths() {
         let (tx, rx) = mpsc::channel();
         let discord = DiscordPresence { tx, worker: None };
         let mut track = sample_track();
@@ -249,21 +264,18 @@ mod tests {
             duration_ms: track.duration_ms,
             ..PlaybackState::default()
         };
-        for status in [
-            PlaybackStatus::Playing,
-            PlaybackStatus::Paused,
-            PlaybackStatus::Playing,
-        ] {
-            state.status = status;
-            discord.sync(Some(&track), &state);
-            let Command::Update(presence) = rx.recv().unwrap() else {
-                panic!("missing presence");
-            };
-            assert_eq!(presence.status, status);
-            let payload = serde_json::to_string(&activity(&presence, "peter", true)).unwrap();
-            assert!(!payload.contains("private"));
-        }
+        state.status = PlaybackStatus::Playing;
+        discord.sync(Some(&track), &state);
+        let Command::Update(presence) = rx.recv().unwrap() else {
+            panic!("missing presence");
+        };
+        let payload = serde_json::to_string(&activity(&presence, "peter", true)).unwrap();
+        assert!(!payload.contains("private"));
+        state.status = PlaybackStatus::Paused;
+        discord.sync(Some(&track), &state);
+        assert!(matches!(rx.recv().unwrap(), Command::Clear));
         track.title = "Incoming MIX track".into();
+        state.status = PlaybackStatus::Playing;
         state.position_ms = 1_250;
         state.duration_ms = 240_000;
         discord.sync(Some(&track), &state);
@@ -325,29 +337,28 @@ mod tests {
         track.title = "Deutschland".into();
         track.artist = "Rammstein".into();
         track.album = "Rammstein".into();
-        for status in [
-            PlaybackStatus::Playing,
-            PlaybackStatus::Paused,
-            PlaybackStatus::Playing,
-        ] {
-            let state = PlaybackState {
-                status,
-                duration_ms: track.duration_ms,
-                ..PlaybackState::default()
-            };
-            discord.sync(Some(&track), &state);
-            let Command::Update(presence) = rx.recv().unwrap() else {
-                panic!("missing presence");
-            };
-            let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
-            assert_eq!(payload["details"], "Deutschland");
-            assert_eq!(payload["state"], "Rammstein");
-            assert_eq!(payload["assets"]["large_text"], "Rammstein");
-            assert_eq!(
-                payload.get("timestamps").is_some(),
-                status == PlaybackStatus::Playing
-            );
-        }
+        let mut state = PlaybackState {
+            status: PlaybackStatus::Playing,
+            duration_ms: track.duration_ms,
+            ..PlaybackState::default()
+        };
+        discord.sync(Some(&track), &state);
+        let Command::Update(presence) = rx.recv().unwrap() else {
+            panic!("missing presence");
+        };
+        let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
+        assert_eq!(payload["details"], "Deutschland");
+        assert_eq!(payload["state"], "Rammstein");
+        assert_eq!(payload["assets"]["large_text"], "Rammstein");
+        state.status = PlaybackStatus::Paused;
+        discord.sync(Some(&track), &state);
+        assert!(matches!(rx.recv().unwrap(), Command::Clear));
+        state.status = PlaybackStatus::Playing;
+        discord.sync(Some(&track), &state);
+        let Command::Update(resumed) = rx.recv().unwrap() else {
+            panic!("missing resumed presence");
+        };
+        assert_eq!(resumed.title, "Deutschland");
     }
 
     #[test]
@@ -374,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn pause_resume_and_track_changes_refresh_metadata_and_clock() {
+    fn resume_and_track_changes_refresh_metadata_and_clock() {
         let mut presence = sample_presence();
         let playing = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
         assert_eq!(playing["assets"]["large_image"], "peter_dj");
@@ -384,12 +395,6 @@ mod tests {
                 - playing["timestamps"]["start"].as_i64().unwrap(),
             180_000
         );
-        presence.status = PlaybackStatus::Paused;
-        let paused = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
-        assert_eq!(paused["details"], "Song");
-        assert_eq!(paused["state"], "Artist");
-        assert!(paused.get("timestamps").is_none());
-        presence.status = PlaybackStatus::Playing;
         presence.title = "Next song".into();
         presence.album = "Next album".into();
         presence.position_ms = 1_000;
@@ -415,15 +420,33 @@ mod tests {
     }
 
     #[test]
-    fn stopped_playback_clears_presence() {
+    fn paused_and_stopped_playback_clear_presence() {
         assert!(publish_presence(PlaybackStatus::Playing));
-        assert!(publish_presence(PlaybackStatus::Paused));
+        assert!(!publish_presence(PlaybackStatus::Paused));
         assert!(!publish_presence(PlaybackStatus::Stopped));
     }
 
     #[test]
-    fn pause_keeps_metadata_visible_without_a_running_clock() {
-        assert!(publish_presence(PlaybackStatus::Paused));
+    fn musicbrainz_release_id_selects_a_public_album_cover() {
+        let mut presence = sample_presence();
+        presence.release_id = "76df3287-6cda-33eb-8e9a-044b5e15ffdd".into();
+        let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
+        assert_eq!(
+            payload["assets"]["large_image"],
+            "https://coverartarchive.org/release/76df3287-6cda-33eb-8e9a-044b5e15ffdd/front-500"
+        );
+    }
+
+    #[test]
+    fn invalid_or_missing_release_id_keeps_the_existing_image() {
+        for release_id in ["", "not-a-release", "/home/private/cover.jpg"] {
+            let presence = Presence {
+                release_id: release_id.into(),
+                ..sample_presence()
+            };
+            let payload = serde_json::to_value(activity(&presence, "peter", true)).unwrap();
+            assert_eq!(payload["assets"]["large_image"], "peter_dj");
+        }
     }
 
     #[test]
