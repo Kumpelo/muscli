@@ -461,6 +461,7 @@ async fn run_inner(
         Some(DiscordPresence::start(
             config.discord_large_image.clone(),
             config.discord_images,
+            paths.discord_cover_cache_file(),
         ))
     } else {
         None

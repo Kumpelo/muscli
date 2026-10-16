@@ -77,6 +77,10 @@ impl AppPaths {
         self.cache_dir.join("covers")
     }
 
+    pub fn discord_cover_cache_file(&self) -> PathBuf {
+        self.cache_dir.join("discord-album-covers.json")
+    }
+
     pub fn mpv_socket(&self) -> PathBuf {
         ipc_path("mpv", &self.runtime_dir)
     }

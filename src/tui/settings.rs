@@ -414,6 +414,7 @@ impl App {
                     Some(DiscordPresence::start(
                         self.config.discord_large_image.clone(),
                         self.config.discord_images,
+                        self.paths.discord_cover_cache_file(),
                     ))
                 } else {
                     None

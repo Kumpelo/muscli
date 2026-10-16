@@ -1,5 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Sender},
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -9,8 +11,12 @@ use discord_rich_presence::{
     DiscordIpc, DiscordIpcClient,
     activity::{Activity, ActivityType, Assets, StatusDisplayType, Timestamps},
 };
+use serde::{Deserialize, Serialize};
 
-use crate::model::{PlaybackState, PlaybackStatus, Track};
+use crate::{
+    fsutil::atomic_replace,
+    model::{PlaybackState, PlaybackStatus, Track},
+};
 
 #[derive(Debug, Clone)]
 struct Presence {
@@ -46,7 +52,7 @@ pub struct DiscordPresence {
 }
 
 impl DiscordPresence {
-    pub fn start(large_image: String, show_images: bool) -> Self {
+    pub fn start(large_image: String, show_images: bool, cover_cache: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel();
         let updates = tx.clone();
         let worker = thread::Builder::new()
@@ -69,7 +75,7 @@ impl DiscordPresence {
                     })
                     .ok();
                 let mut show_images = show_images;
-                let mut covers = HashMap::<AlbumIdentity, Option<String>>::new();
+                let mut covers = load_album_cover_cache(&cover_cache);
                 let mut pending_covers = HashSet::new();
                 let mut current = None::<Presence>;
                 let mut client = DiscordIpcClient::new(MUSCLI_DISCORD_APPLICATION_ID);
@@ -109,6 +115,7 @@ impl DiscordPresence {
                                 continue;
                             };
                             covers.insert(identity.clone(), cover);
+                            save_album_cover_cache(&cover_cache, &covers);
                             if show_images
                                 && let Some(presence) = current.as_ref().filter(|presence| {
                                     AlbumIdentity::from_presence(presence) == identity
@@ -230,12 +237,86 @@ fn limited(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct AlbumIdentity {
     release_id: String,
     artist: String,
     title: String,
     year: Option<i32>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AlbumCoverCacheEntry {
+    identity: AlbumIdentity,
+    cover: Option<String>,
+}
+
+const MAX_COVER_CACHE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_COVER_CACHE_ENTRIES: usize = 8192;
+const COVER_URL_PREFIX: &str = "https://coverartarchive.org/release-group/";
+const COVER_URL_SUFFIX: &str = "/front-500";
+
+fn load_album_cover_cache(path: &Path) -> HashMap<AlbumIdentity, Option<String>> {
+    let bytes = fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.len() <= MAX_COVER_CACHE_BYTES)
+        .and_then(|_| fs::read(path).ok());
+    let entries = bytes
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<Vec<AlbumCoverCacheEntry>>(bytes).ok())
+        .unwrap_or_default();
+    entries
+        .into_iter()
+        .take(MAX_COVER_CACHE_ENTRIES)
+        .filter(|entry| entry.cover.as_deref().is_none_or(valid_album_cover_url))
+        .map(|entry| (entry.identity, entry.cover))
+        .collect()
+}
+
+fn save_album_cover_cache(path: &Path, covers: &HashMap<AlbumIdentity, Option<String>>) {
+    let mut entries = covers
+        .iter()
+        .filter(|(_, cover)| cover.as_deref().is_none_or(valid_album_cover_url))
+        .map(|(identity, cover)| AlbumCoverCacheEntry {
+            identity: identity.clone(),
+            cover: cover.clone(),
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        (
+            &left.identity.artist,
+            &left.identity.title,
+            left.identity.year,
+            &left.identity.release_id,
+        )
+            .cmp(&(
+                &right.identity.artist,
+                &right.identity.title,
+                right.identity.year,
+                &right.identity.release_id,
+            ))
+    });
+    entries.truncate(MAX_COVER_CACHE_ENTRIES);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    let Ok(bytes) = serde_json::to_vec(&entries) else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let temporary = path.with_extension("json.tmp");
+    if fs::write(&temporary, bytes).is_err() || atomic_replace(&temporary, path).is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+}
+
+fn valid_album_cover_url(value: &str) -> bool {
+    value
+        .strip_prefix(COVER_URL_PREFIX)
+        .and_then(|value| value.strip_suffix(COVER_URL_SUFFIX))
+        .is_some_and(valid_mbid)
 }
 
 impl AlbumIdentity {
@@ -730,6 +811,50 @@ mod tests {
         });
         let response = serde_json::json!({"release-groups": [candidate.clone(), candidate]});
         assert_eq!(select_release_group(&response, &identity, 2020), None);
+    }
+
+    #[test]
+    fn resolved_album_cover_survives_a_restart_without_another_lookup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("discord-album-covers.json");
+        let identity = AlbumIdentity {
+            release_id: String::new(),
+            artist: "Rammstein".into(),
+            title: "Rammstein".into(),
+            year: Some(2019),
+        };
+        let cover = "https://coverartarchive.org/release-group/e4d39d2e-9420-4007-881a-9b5bc23944e0/front-500";
+        save_album_cover_cache(
+            &path,
+            &HashMap::from([(identity.clone(), Some(cover.into()))]),
+        );
+
+        let loaded = load_album_cover_cache(&path);
+        assert_eq!(
+            loaded.get(&identity).and_then(Option::as_deref),
+            Some(cover)
+        );
+        assert!(loaded.contains_key(&identity));
+    }
+
+    #[test]
+    fn malformed_or_non_cover_art_cache_entries_are_ignored() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("discord-album-covers.json");
+        fs::write(&path, b"not json").unwrap();
+        assert!(load_album_cover_cache(&path).is_empty());
+
+        let entry = AlbumCoverCacheEntry {
+            identity: AlbumIdentity {
+                release_id: String::new(),
+                artist: "Artist".into(),
+                title: "Album".into(),
+                year: Some(2020),
+            },
+            cover: Some("file:///private/cover.jpg".into()),
+        };
+        fs::write(&path, serde_json::to_vec(&[entry]).unwrap()).unwrap();
+        assert!(load_album_cover_cache(&path).is_empty());
     }
 
     #[test]
