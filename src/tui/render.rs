@@ -21,12 +21,48 @@ fn note_cover_placement(signature: &mut u64, key: &str, area: Rect) {
     *signature = signature.rotate_left(13) ^ h.finish();
 }
 
-/// Leave room around the interface when the terminal can afford it.
+/// Keep a single outer gutter, giving it back on narrow terminals.
 fn content_area(area: Rect) -> Rect {
     area.inner(Margin {
-        horizontal: if area.width >= 64 { 2 } else { 0 },
-        vertical: if area.height >= 20 { 1 } else { 0 },
+        horizontal: if area.width >= 64 { 1 } else { 0 },
+        vertical: 0,
     })
+}
+
+fn interface_rows(area: Rect) -> [Rect; 4] {
+    Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(0),
+        Constraint::Length(3),
+        Constraint::Length(1),
+    ])
+    .areas(area)
+}
+
+fn body_columns(area: Rect) -> std::rc::Rc<[Rect]> {
+    if area.width >= 92 {
+        Layout::horizontal([
+            Constraint::Length(21),
+            Constraint::Min(36),
+            Constraint::Length(30),
+        ])
+        .split(area)
+    } else {
+        Layout::horizontal([Constraint::Length(18), Constraint::Min(28)]).split(area)
+    }
+}
+
+fn album_card_borders(height: u16) -> Borders {
+    if height >= 4 {
+        Borders::RIGHT | Borders::BOTTOM
+    } else {
+        Borders::RIGHT
+    }
+}
+
+fn album_card_rows(area: Rect) -> [Rect; 2] {
+    // Preserve the three metadata lines before assigning space to the cover.
+    Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(area)
 }
 
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
@@ -49,24 +85,9 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
         }
         return;
     }
-    let rows = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(8),
-        Constraint::Length(4),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let rows = interface_rows(area);
     draw_header(frame, rows[0], app);
-    let body = if area.width >= 92 {
-        Layout::horizontal([
-            Constraint::Length(21),
-            Constraint::Min(36),
-            Constraint::Length(30),
-        ])
-        .split(rows[1])
-    } else {
-        Layout::horizontal([Constraint::Length(18), Constraint::Min(28)]).split(rows[1])
-    };
+    let body = body_columns(rows[1]);
     draw_sidebar(frame, body[0], app);
     draw_content(frame, body[1], app);
     if body.len() > 2 {
@@ -84,13 +105,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 
 fn draw_compact(frame: &mut Frame<'_>, app: &mut App) {
     let area = content_area(frame.area());
-    let rows = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(8),
-        Constraint::Length(4),
-        Constraint::Length(1),
-    ])
-    .split(area);
+    let rows = interface_rows(area);
     draw_header(frame, rows[0], app);
     let body =
         Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(rows[1]);
@@ -574,7 +589,7 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let columns = (area.width / 24).max(1) as usize;
     app.album_columns = columns;
     let card_width = area.width / columns as u16;
-    let card_height = 7u16;
+    let card_height = area.height.clamp(1, 7);
     let start_row = app.selected / columns;
     let visible_rows = (area.height / card_height).max(1) as usize;
     let first_row = start_row.saturating_sub(visible_rows.saturating_sub(1));
@@ -656,15 +671,12 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             )
         };
         let card = Block::default()
-            .borders(Borders::RIGHT | Borders::BOTTOM)
+            .borders(album_card_borders(card_height))
             .border_style(Style::default().fg(app.theme.border));
         let inner = card.inner(rect);
         frame.render_widget(card, rect);
-        let rows = Layout::vertical([Constraint::Length(3), Constraint::Length(3)]).split(inner);
-        let cover_area = rows[0].inner(Margin {
-            horizontal: 1,
-            vertical: 0,
-        });
+        let rows = album_card_rows(inner);
+        let cover_area = rows[0];
         // Noted whether or not the art has finished decoding, so one arriving
         // does not count as the covers having moved.
         note_cover_placement(&mut app.covers.pending_signature, "grid", cover_area);
@@ -696,11 +708,8 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             );
         }
         let text = vec![
-            Line::from(Span::styled(
-                format!(" {}", title),
-                style.add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(format!(" {}", artist), style)),
+            Line::from(Span::styled(title, style.add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(artist, style)),
             Line::from(Span::styled(
                 release_kind,
                 if selected {
@@ -891,15 +900,8 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .border_style(Style::default().fg(app.theme.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let parts = Layout::vertical([
-        Constraint::Length(inner.height.saturating_sub(7).max(5)),
-        Constraint::Length(7),
-    ])
-    .split(inner);
-    let cover_area = parts[0].inner(Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
+    let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).split(inner);
+    let cover_area = parts[0];
     note_cover_placement(&mut app.covers.pending_signature, "panel", cover_area);
     if let Some(cover) = app.covers.current.as_mut() {
         // Clear before drawing: with the kitty image protocol the previous
@@ -948,7 +950,7 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // Los dos lados miden lo mismo para que los controles y la barra de progreso
     // queden centrados de verdad en la ventana. Con anchos distintos (34/44/22)
     // el bloque central se iba a la derecha la mitad de la diferencia.
-    let lado = (inner.width / 4).clamp(16, 34);
+    let lado = (inner.width / 4).min(34);
     let columns = Layout::horizontal([
         Constraint::Length(lado),
         Constraint::Min(0),
@@ -975,7 +977,7 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         PlaybackStatus::Stopped => "󰓛",
     };
     let label = format!(
-        "󰒮   {icon}   󰒭       {} / {}",
+        "󰒮 {icon} 󰒭  {}/{}",
         format_duration(app.playback.position_ms),
         format_duration(app.playback.duration_ms)
     );
@@ -1009,14 +1011,16 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         RepeatMode::Track => t!("label.repeat_track"),
         RepeatMode::Queue => t!("label.repeat_queue"),
     };
+    let shuffle = if app.shuffle { "󰒟" } else { "󰒞" };
+    let modes = if columns[2].width < 24 {
+        format!("{shuffle} · 󰑖 {repeat}")
+    } else {
+        t!("label.shuffle_repeat", shuffle = shuffle, repeat = repeat)
+    };
     frame.render_widget(
         Paragraph::new(format!(
             "{}\n󰕾 {:>3}% {}",
-            t!(
-                "label.shuffle_repeat",
-                shuffle = if app.shuffle { "󰒟" } else { "󰒞" },
-                repeat = repeat
-            ),
+            modes,
             (app.playback.volume * 100.0).round() as u8,
             // The decibels as well as the percentage: the control moves in
             // decibels now, and the number that says how loud it is should
@@ -1239,7 +1243,7 @@ mod tests {
     fn outer_spacing_adapts_to_small_terminals() {
         assert_eq!(
             content_area(Rect::new(0, 0, 100, 30)),
-            Rect::new(2, 1, 96, 28)
+            Rect::new(1, 0, 98, 30)
         );
         assert_eq!(
             content_area(Rect::new(0, 0, 40, 12)),
@@ -1252,6 +1256,75 @@ mod tests {
                 assert_eq!(inner.intersection(area), inner);
             }
         }
+    }
+
+    #[test]
+    fn panels_fit_without_overlap_at_terminal_sizes() {
+        for (width, height) in [(60, 12), (80, 24), (94, 20), (120, 30), (180, 52)] {
+            let area = content_area(Rect::new(0, 0, width, height));
+            let rows = interface_rows(area);
+            assert_eq!(rows[2].height, 3, "player at {width}x{height}");
+            assert_eq!(rows[1].height, height - 7);
+            assert_eq!(rows[0].y, 0);
+            assert_eq!(rows[3].bottom(), height);
+            for pair in rows.windows(2) {
+                assert_eq!(pair[0].bottom(), pair[1].y);
+            }
+            let panels = body_columns(rows[1]);
+            assert_eq!(panels.len(), if area.width >= 92 { 3 } else { 2 });
+            for panel in panels.iter() {
+                assert_eq!(panel.intersection(rows[1]), *panel);
+            }
+            for pair in panels.windows(2) {
+                assert_eq!(pair[0].right(), pair[1].x);
+            }
+        }
+    }
+
+    #[test]
+    fn album_metadata_fits_below_the_cover_in_short_cards() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        for height in 3..=7 {
+            let mut terminal = Terminal::new(TestBackend::new(24, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    let card = Block::default().borders(album_card_borders(height));
+                    let rows = album_card_rows(card.inner(area));
+                    frame.render_widget(card, area);
+                    frame.render_widget(Paragraph::new("Album\nArtist\n12 tracks"), rows[1]);
+                    assert_eq!(rows[1].height, 3);
+                    assert_eq!(rows[0].bottom(), rows[1].y);
+                    assert_eq!(rows[1].bottom(), area.bottom() - u16::from(height >= 4));
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for (row, text) in ["Album", "Artist", "12 tracks"].iter().enumerate() {
+                for (column, symbol) in text.chars().enumerate() {
+                    assert_eq!(
+                        buffer[(
+                            column as u16,
+                            height - 3 - u16::from(height >= 4) + row as u16
+                        )]
+                            .symbol(),
+                        symbol.to_string()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reclaimed_rows_allow_an_extra_album_row() {
+        let rows = interface_rows(content_area(Rect::new(0, 0, 120, 30)));
+        let library = Block::default()
+            .borders(Borders::ALL)
+            .inner(body_columns(rows[1])[1]);
+        assert_eq!(library.height / 7, 3);
+        // Previously: two outer rows, three header, four player, one status,
+        // and two library borders left only eighteen rows for cards.
+        assert_eq!((30 - 2 - 3 - 4 - 1 - 2) / 7, 2);
     }
 
     #[test]
