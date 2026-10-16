@@ -857,3 +857,71 @@ fn release_metadata_refresh_preserves_track_references_and_cached_analysis() {
     );
     assert!(scan(&fixture, &mut db).errors.is_empty());
 }
+
+#[test]
+fn artist_sorted_compilation_groups_without_retagging_or_rebuilding_user_data() {
+    use muscli::{db::group_albums, model::ReplayGainAnalysis};
+    let fixture = Fixture::new();
+    let cover = png_bytes(64, 64, [40, 90, 140]);
+    for (number, artist) in [(1, "Producer"), (2, "Guest"), (3, "Producer")] {
+        let mut spec = TrackSpec::new(&format!("Piece {number}"))
+            .artist(artist)
+            .album("Shared Collection")
+            .track_number(number)
+            .cover(cover.clone());
+        spec.album_artist.clear();
+        spec.disc_number = 0;
+        write_track(
+            &fixture
+                .source()
+                .join(format!("{artist}/Shared Collection (2024)/{number}.flac")),
+            &spec,
+        );
+    }
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    let playlist = db.create_playlist("Keep all references").unwrap();
+    let gain = ReplayGainAnalysis {
+        gain_db: -4.0,
+        true_peak_db: -0.5,
+    };
+    for (id, _, size, modified) in db.gain_analysis_candidates(false).unwrap() {
+        db.save_gain(&id, gain, size, modified).unwrap();
+        db.add_to_playlist(playlist, &id).unwrap();
+    }
+    let before = db.load_tracks().unwrap();
+    db.start_history(&before[0].id).unwrap();
+    let history = db.load_history(500).unwrap();
+    let playlists = db.load_playlists().unwrap();
+    let originals: Vec<_> = before
+        .iter()
+        .map(|track| fs::read(&track.path).unwrap())
+        .collect();
+    let albums = group_albums(&before);
+    assert_eq!(albums.len(), 1);
+    assert_eq!(albums[0].track_ids.len(), 3);
+    assert_eq!(albums[0].artist, "Various Artists");
+    let cached =
+        scan_source_with_database(fixture.paths(), &fixture.source(), &db, &options()).unwrap();
+    assert!(
+        cached.tracks.is_empty(),
+        "grouping must work with the existing scan cache"
+    );
+    scan(&fixture, &mut db);
+    assert_eq!(
+        db.load_tracks().unwrap(),
+        before,
+        "IDs and individual artists stay intact"
+    );
+    assert_eq!(db.load_playlists().unwrap(), playlists);
+    assert_eq!(db.load_history(500).unwrap(), history);
+    assert!(db.gain_analysis_candidates(false).unwrap().is_empty());
+    for (track, original) in before.iter().zip(originals) {
+        assert_eq!(db.track_gain(&track.id, false).unwrap(), Some(gain));
+        assert_eq!(
+            fs::read(&track.path).unwrap(),
+            original,
+            "original tags/audio must not change"
+        );
+    }
+}

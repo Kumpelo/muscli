@@ -21,6 +21,15 @@ Las carpetas convencionales CD1/CD2 o Disc 1/Disc 2 se agrupan cuando concuerdan
 con el número de disco. Las recopilaciones mantienen los artistas individuales;
 un Album Artist explícito compartido tiene prioridad sobre Various Artists.
 La inferencia sin Album Artist exige numeración inequívoca dentro de la carpeta.
+Si los archivos están repartidos como `biblioteca/Artista/Lanzamiento/pista`,
+pueden reunirse sin Album Artist ni Release ID cuando coinciden la fuente,
+raíz de biblioteca, nombre de carpeta, título, año conocido y portada cacheada
+por contenido. Los directorios deben corresponder a los artistas de las pistas,
+y la numeración conjunta debe ser completa desde 1, sin huecos ni duplicados
+por disco. Cualquier conflicto en esas señales conserva la separación. Esta
+inferencia se reconstruye al cargar el índice existente: no exige reetiquetar
+ni reescanear archivos cuyos datos ya están actualizados.
+
 Ediciones distintas en carpetas distintas no se unen solo por título/año.
 
 La agrupación se reconstruye al cargar la biblioteca, sin duplicar pistas ni

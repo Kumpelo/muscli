@@ -1869,7 +1869,95 @@ fn album_folder_key(track: &Track) -> (String, String, String, Option<i32>) {
     )
 }
 
+/// Recognize artist-sorted copies of one release only with independent evidence.
+/// A bucket includes conflicting tags/years/artwork so ambiguous peers veto the
+/// inference instead of silently being excluded from a plausible subset.
+fn artist_partitioned_compilations(tracks: &[Track]) -> HashMap<String, String> {
+    let mut candidates: BTreeMap<_, Vec<&Track>> = BTreeMap::new();
+    for track in tracks {
+        let release = PathBuf::from(release_folder(track));
+        let Some(root) = release.parent().and_then(Path::parent) else {
+            continue;
+        };
+        let Some(folder) = release.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let title = crate::model::normalize_text(&track.album).to_lowercase();
+        if title.is_empty() {
+            continue;
+        }
+        candidates
+            .entry((
+                track.source_id.clone(),
+                root.to_path_buf(),
+                crate::model::normalize_text(folder).to_lowercase(),
+                title,
+            ))
+            .or_default()
+            .push(track);
+    }
+    let mut inferred = HashMap::new();
+    for (key, members) in candidates {
+        let first = members[0];
+        if members.len() < 2
+            || first.year.is_none()
+            || first.cover_path.is_none()
+            || !members.iter().all(|track| {
+                let release = PathBuf::from(release_folder(track));
+                let directory = release
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str());
+                track.album_artist.trim().is_empty()
+                    && track.release_id.trim().is_empty()
+                    && track.year == first.year
+                    && track.cover_path == first.cover_path
+                    && directory.is_some_and(|name| {
+                        crate::model::normalize_text(name).to_lowercase()
+                            == crate::model::normalize_text(&track.artist).to_lowercase()
+                    })
+            })
+        {
+            continue;
+        }
+        let artists = members
+            .iter()
+            .map(|track| crate::model::normalize_text(&track.artist).to_lowercase())
+            .collect::<BTreeSet<_>>();
+        if artists.len() < 2 {
+            continue;
+        }
+        let mut discs: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for track in &members {
+            discs
+                .entry(track.disc_number.max(1))
+                .or_default()
+                .push(track.track_number);
+        }
+        let numbered = discs
+            .iter_mut()
+            .enumerate()
+            .all(|(index, (disc, numbers))| {
+                numbers.sort_unstable();
+                *disc as usize == index + 1
+                    && numbers
+                        .iter()
+                        .enumerate()
+                        .all(|(index, number)| *number as usize == index + 1)
+            });
+        if !numbered {
+            continue;
+        }
+        let album_key = format!("artist-partitioned:{key:?}\u{1f}{:?}", first.year);
+        for track in members {
+            inferred.insert(track.id.clone(), album_key.clone());
+        }
+    }
+    inferred
+}
+
 pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
+    let partitioned = artist_partitioned_compilations(tracks);
     let mut folders: BTreeMap<_, Vec<&Track>> = BTreeMap::new();
     for track in tracks {
         folders
@@ -1927,14 +2015,18 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
     });
     for track in ordered {
         let folder = album_folder_key(track);
-        let artist = if let Some(artist) = compilations.get(&folder) {
+        let artist = if partitioned.contains_key(&track.id) {
+            "Various Artists"
+        } else if let Some(artist) = compilations.get(&folder) {
             artist.as_str()
         } else if track.album_artist.is_empty() {
             track.display_artist()
         } else {
             &track.album_artist
         };
-        let key = if track.release_id.trim().is_empty() {
+        let key = if let Some(key) = partitioned.get(&track.id) {
+            key.clone()
+        } else if track.release_id.trim().is_empty() {
             format!(
                 "folder:{folder:?}\u{1f}{}",
                 crate::model::normalize_text(artist).to_lowercase()
@@ -2421,6 +2513,107 @@ mod tests {
             "album normalization must reflect its new track"
         );
         Ok(())
+    }
+
+    fn artist_partitioned_collection() -> Vec<Track> {
+        (1..=14)
+            .map(|number| {
+                let artist = match number {
+                    3 | 12 => "Guest A",
+                    4 => "Guest B",
+                    9 => "Guest C",
+                    10 => "Guest D",
+                    11 => "Guest E",
+                    13 => "Guest F",
+                    _ => "Producer",
+                };
+                let mut item = track(&format!("track-{number:02}"), number);
+                item.album = "2nd Collection".into();
+                item.artist = artist.into();
+                item.album_artist.clear();
+                item.year = Some(2007);
+                item.disc_number = 0;
+                item.path =
+                    format!("/music/{artist}/2nd Collection (2007)/{number:02}.flac").into();
+                item.cover_path = Some("/cache/shared-cover.jpg".into());
+                item
+            })
+            .collect()
+    }
+
+    #[test]
+    fn artist_partitioned_collection_with_missing_release_tags_is_one_album() {
+        let mut tracks = artist_partitioned_collection();
+        tracks.reverse();
+        let before = tracks.clone();
+        let albums = group_albums(&tracks);
+        assert_eq!(
+            albums.len(),
+            1,
+            "one coherent release across artist directories"
+        );
+        assert_eq!(albums[0].artist, "Various Artists");
+        assert_eq!(
+            albums[0].track_ids,
+            (1..=14)
+                .map(|n| format!("track-{n:02}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            tracks, before,
+            "grouping must not rewrite track artists or identities"
+        );
+    }
+
+    #[test]
+    fn artist_partitioned_inference_rejects_missing_or_conflicting_evidence() {
+        for evidence in [
+            "cover",
+            "missing-cover",
+            "year",
+            "number",
+            "gap",
+            "album-artist",
+            "release-id",
+            "artist-directory",
+        ] {
+            let mut tracks = artist_partitioned_collection();
+            match evidence {
+                "cover" => tracks[2].cover_path = Some("/cache/another-edition.jpg".into()),
+                "missing-cover" => tracks[2].cover_path = None,
+                "year" => tracks[13].year = None,
+                "number" => tracks[2].track_number = 1,
+                "gap" => tracks[13].track_number = 15,
+                "album-artist" => tracks[2].album_artist = "Explicit curator".into(),
+                "release-id" => tracks[2].release_id = "explicit-release".into(),
+                "artist-directory" => {
+                    tracks[2].path = "/music/Unsorted/2nd Collection (2007)/03.flac".into()
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                group_albums(&tracks).len() > 1,
+                "must not guess with {evidence} conflict"
+            );
+        }
+    }
+
+    #[test]
+    fn artist_partitioned_same_title_editions_keep_their_own_album() {
+        let first = artist_partitioned_collection();
+        let mut second = first.clone();
+        for track in &mut second {
+            track.id = format!("other-{}", track.id);
+            track.path = track
+                .path
+                .to_string_lossy()
+                .replace("(2007)", "(2007 Remaster)")
+                .into();
+        }
+        let albums = group_albums(&[first, second].concat());
+        assert_eq!(albums.len(), 2);
+        assert!(albums.iter().all(|album| album.track_ids.len() == 14));
+        assert_ne!(albums[0].key, albums[1].key);
     }
 
     #[test]
