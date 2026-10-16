@@ -458,7 +458,10 @@ async fn run_inner(
     let (mix_analysis_tx, mix_analysis_rx) = tokio_mpsc::unbounded_channel();
     start_watchers(&config, watch_tx);
     let discord = if config.discord_enabled {
-        Some(DiscordPresence::start(config.discord_large_image.clone()))
+        Some(DiscordPresence::start(
+            config.discord_large_image.clone(),
+            config.discord_images,
+        ))
     } else {
         None
     };

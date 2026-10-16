@@ -285,5 +285,6 @@
 "mix.mode.smart" = "Inteligente"
 "mix.mode.auto_dj" = "AutoDJ"
 "mix.paused_album" = "{mode} · pausado en álbum"
+"setting.discord_images" = "Imágenes de Discord"
 "setting.mix_live" = "MIX en vivo"
 "setting.mix_duration" = "MIX: duración"

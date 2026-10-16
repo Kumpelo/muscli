@@ -343,9 +343,17 @@ muscli setup discord --large-image peter
 
 muscli ships with its official Discord application ID, so users do not need to
 create or configure a Discord application. No bot token or OAuth is needed. The
-local Discord/Vesktop IPC displays title, artist, album and progress. Assets named `peter_metal`, `peter_dj`, and
+local Discord/Vesktop IPC displays title, artist, album and progress. New
+installations enable it by default; existing opt-out preferences are preserved.
+Settings (`,`) includes switches for Rich Presence and Discord images. Turning
+images off keeps a text presentation with song, artist and album. Pausing keeps
+metadata visible without a running clock; stopping clears the activity. Discord
+is optional and is never required for audio playback. Assets named `peter_metal`, `peter_dj`, and
 `daft_punk` are selected for their matching genres/artist; otherwise the
-configured fallback is used. Local cover art is never uploaded.
+configured fallback is used. Local cover art is never uploaded. The IPC library
+sends Discord asset keys; Discord also documents support for externally hosted
+image URLs, but local files cannot be used as remote cover art. muscli does not
+host or upload the library's covers.
 
 ## Main controls
 

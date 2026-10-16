@@ -36,8 +36,11 @@ pub struct Config {
     pub sources: Vec<PathBuf>,
     pub auto_discover_removable: bool,
     pub cover_cache_mb: u64,
+    /// Existing files without this field retain the former opt-in default.
+    #[serde(default)]
     pub discord_enabled: bool,
     pub discord_large_image: String,
+    pub discord_images: bool,
     pub replaygain_enabled: bool,
     pub replaygain_mode: ReplayGainMode,
     pub replaygain_target_lufs: f64,
@@ -98,8 +101,9 @@ impl Default for Config {
             sources: Vec::new(),
             auto_discover_removable: true,
             cover_cache_mb: 64,
-            discord_enabled: false,
+            discord_enabled: true,
             discord_large_image: "peter".into(),
+            discord_images: true,
             replaygain_enabled: true,
             replaygain_mode: ReplayGainMode::Album,
             replaygain_target_lufs: -18.0,
@@ -327,6 +331,32 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_discord_preferences_and_image_choice_survive_roundtrip() {
+        let legacy: Config = toml::from_str("").unwrap();
+        assert!(!legacy.discord_enabled);
+        assert!(legacy.discord_images);
+        for enabled in [false, true] {
+            let original = Config {
+                discord_enabled: enabled,
+                discord_images: false,
+                discord_large_image: "custom_asset".into(),
+                ..Config::default()
+            };
+            let restored: Config = toml::from_str(&toml::to_string(&original).unwrap()).unwrap();
+            assert_eq!(restored.discord_enabled, enabled);
+            assert!(!restored.discord_images);
+            assert_eq!(restored.discord_large_image, "custom_asset");
+        }
+    }
+
+    #[test]
+    fn new_installs_enable_discord_and_existing_opt_out_survives() {
+        assert!(Config::default().discord_enabled);
+        let existing: Config = toml::from_str("discord_enabled = false").unwrap();
+        assert!(!existing.discord_enabled);
+    }
 
     #[test]
     fn the_ends_of_the_volume_control_are_where_they_should_be() {

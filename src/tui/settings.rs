@@ -34,6 +34,7 @@ pub(super) enum SettingId {
     ScanThreads,
     CoverCache,
     Discord,
+    DiscordImages,
     Rescan,
     AnalyzeGain,
 }
@@ -52,7 +53,7 @@ const fn band(index: usize) -> SettingRow {
     row(SettingId::EqualizerBand(index), "setting.equalizer_band")
 }
 
-pub(super) const SETTINGS: [SettingRow; 30] = [
+pub(super) const SETTINGS: [SettingRow; 31] = [
     row(SettingId::Theme, "setting.theme"),
     row(SettingId::Language, "setting.language"),
     row(SettingId::CompactDefault, "setting.compact_default"),
@@ -81,6 +82,7 @@ pub(super) const SETTINGS: [SettingRow; 30] = [
     row(SettingId::ScanThreads, "setting.scan_threads"),
     row(SettingId::CoverCache, "setting.cover_cache"),
     row(SettingId::Discord, "setting.discord"),
+    row(SettingId::DiscordImages, "setting.discord_images"),
     row(SettingId::Rescan, "setting.rescan"),
     row(SettingId::AnalyzeGain, "setting.analyze_gain"),
 ];
@@ -247,6 +249,7 @@ impl App {
             }
             SettingId::CoverCache => t!("setting.value.mib", value = self.config.cover_cache_mb),
             SettingId::Discord => switch(self.config.discord_enabled),
+            SettingId::DiscordImages => switch(self.config.discord_images),
             SettingId::Rescan => t!(if self.scan_running {
                 "setting.value.running"
             } else {
@@ -397,11 +400,20 @@ impl App {
                     self.config.cover_cache_mb.saturating_sub(8).max(16)
                 };
             }
+            SettingId::DiscordImages => {
+                self.config.discord_images = !self.config.discord_images;
+                if let Some(discord) = &self.discord {
+                    discord.set_images(self.config.discord_images);
+                }
+                self.last_discord_signature = None;
+            }
             SettingId::Discord => {
+                self.last_discord_signature = None;
                 self.config.discord_enabled = !self.config.discord_enabled;
                 self.discord = if self.config.discord_enabled {
                     Some(DiscordPresence::start(
                         self.config.discord_large_image.clone(),
+                        self.config.discord_images,
                     ))
                 } else {
                     None

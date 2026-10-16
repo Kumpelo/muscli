@@ -974,18 +974,19 @@ impl App {
     }
 
     pub(super) fn sync_discord(&mut self) {
+        let presented = self.presented_playback();
         let signature = (
             self.current_track_hash(),
-            self.playback.status,
-            self.playback.duration_ms,
-            self.playback.position_ms / 15_000,
+            presented.status,
+            presented.duration_ms,
+            presented.position_ms / 15_000,
         );
         if self.last_discord_signature == Some(signature) {
             return;
         }
         self.last_discord_signature = Some(signature);
         if let Some(discord) = &self.discord {
-            discord.sync(self.presented_track(), &self.presented_playback());
+            discord.sync(self.presented_track(), &presented);
         }
     }
 

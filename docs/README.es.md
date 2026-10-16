@@ -139,7 +139,13 @@ muscli setup discord --large-image peter
 muscli incluye su propio ID de aplicación de Discord, así que el usuario no
 tiene que crear ni configurar una aplicación. No utiliza bot, token ni OAuth.
 Publica canción, artista, álbum y progreso por IPC local. Puede elegir los assets `peter_metal`, `peter_dj` y `daft_punk`.
-Nunca sube las portadas locales.
+En instalaciones nuevas está activado por defecto; se conservan las preferencias
+existentes. En Ajustes (`,`) puedes desactivar Rich Presence u ocultar las imágenes
+para usar una presentación de texto con canción, artista y álbum. Al pausar se
+mantienen los datos sin un reloj en marcha; al detener se borra la actividad.
+Discord no es necesario para reproducir audio. Nunca se suben portadas locales:
+Discord admite recursos de la aplicación o imágenes alojadas en una URL externa,
+pero muscli no aloja ni publica las portadas de la biblioteca.
 
 ## Controles principales
 
