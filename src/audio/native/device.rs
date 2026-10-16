@@ -322,3 +322,28 @@ impl Drop for CpalOutput {
         diagnostics::flush();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::Sample;
+
+    #[test]
+    fn dithered_full_scale_samples_convert_to_valid_24_bit_pcm() {
+        for shaped in [false, true] {
+            let mut dither = Dither::new(24, 2, shaped);
+            let mut samples: Vec<f32> = (0..4096).flat_map(|_| [1.0, -1.0]).collect();
+            dither.process(&mut samples, 2);
+            for (index, sample) in samples.into_iter().enumerate() {
+                let signed = I24::from_sample(sample).inner();
+                let unsigned = U24::from_sample(sample).inner();
+                assert!(
+                    (-8_388_608..=8_388_607).contains(&signed),
+                    "shaped={shaped}: sample {sample} converted to invalid I24 {signed}"
+                );
+                assert!((0..=16_777_215).contains(&unsigned));
+                assert_eq!(signed >= 0, index % 2 == 0, "PCM changed polarity");
+            }
+        }
+    }
+}

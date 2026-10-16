@@ -516,6 +516,63 @@ fn the_backend_plays_a_file_through_its_own_thread() {
 }
 
 #[test]
+fn live_mix_with_replaygain_and_eq_stays_safe_through_integer_conversion() {
+    use cpal::{I24, Sample};
+    use muscli::audio::{dsp::dither::Dither, mix::MixCurve};
+
+    for curve in [MixCurve::Linear, MixCurve::Smooth, MixCurve::EqualPower] {
+        let directory = TempDir::new().expect("a temporary directory");
+        let first = directory.path().join("first.flac");
+        let second = directory.path().join("second.flac");
+        let source = common::flac_bytes(RATE, &common::sine(RATE, 1_000.0, 1_000));
+        fs::write(&first, &source).expect("write outgoing track");
+        fs::write(&second, &source).expect("write incoming track");
+        let settings = Settings {
+            replay_gain_db: Some(18.0),
+            equalizer: vec![(1_000, 6.0)],
+            ..Settings::default()
+        };
+        let (output, capture) = CaptureOutput::new(&[RATE]);
+        let (sender, mut events) = unbounded_channel();
+        let mut engine = Engine::new(
+            Box::new(output),
+            settings,
+            sender,
+            Arc::new(Position::default()),
+            Arc::new(Volume::default()),
+            Arc::new(AtomicBool::new(false)),
+        );
+        engine.handle(Command::Crossfade {
+            seconds: 0.2,
+            curve,
+        });
+        engine.handle(Command::Load {
+            path: first,
+            position_ms: 0,
+        });
+        engine.handle(Command::Prefetch(Some(second)));
+        let mut dither = Dither::new(24, 1, true);
+        let mut peak = 0.0f32;
+        // Includes the fade, the handover and the incoming packet remainder.
+        for _ in 0..(RATE as usize * 17 / 10).div_ceil(BLOCK) {
+            engine.step();
+            let mut block = capture.pull(BLOCK);
+            for &sample in &block {
+                assert!(sample.is_finite() && sample.abs() <= 1.0 + 1e-6);
+                peak = peak.max(sample.abs());
+            }
+            dither.process(&mut block, 1);
+            for sample in block {
+                let pcm = I24::from_sample(sample).inner();
+                assert!((-8_388_608..=8_388_607).contains(&pcm), "invalid PCM {pcm}");
+            }
+        }
+        assert!(peak > 0.99, "the fixture must exercise the limiter ceiling");
+        assert!(errors(&mut events).is_empty());
+    }
+}
+
+#[test]
 fn live_mix_blends_the_last_200ms_into_the_prefetched_song() {
     use muscli::audio::mix::MixCurve;
 

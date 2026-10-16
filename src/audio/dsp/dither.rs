@@ -18,6 +18,8 @@ pub struct Dither {
     /// One quantisation step, as a fraction of full scale.
     step: f64,
     shaped: bool,
+    /// Largest output step that also survives storage in f32 below +1.
+    maximum: f64,
     /// Two previous errors per channel, in steps.
     error: Vec<[f64; 2]>,
     state: u64,
@@ -27,8 +29,10 @@ impl Dither {
     /// A ditherer for `bits`-deep output across `channels`.
     pub fn new(bits: u32, channels: usize, shaped: bool) -> Self {
         let bits = bits.clamp(1, 32);
+        let step = 1.0 / (1u64 << (bits - 1)) as f64;
         Self {
-            step: 1.0 / (1u64 << (bits - 1)) as f64,
+            step,
+            maximum: (1.0 - step).min(f64::from(f32::from_bits(1.0f32.to_bits() - 1))),
             shaped,
             error: vec![[0.0; 2]; channels.max(1)],
             // Any odd seed will do; a fixed one keeps the tests repeatable,
@@ -76,12 +80,21 @@ impl Dither {
                 let wanted = *sample as f64 + feedback;
                 let quantised = ((wanted + noise) / self.step).round() * self.step;
 
-                // The error fed back is measured against what was wanted
-                // before the noise, in steps, so the loop shapes the
-                // quantisation error and not the dither.
-                history[1] = history[0];
-                history[0] = (wanted - quantised) / self.step;
-                *sample = quantised as f32;
+                // Dither runs AFTER the limiter and can push even a legal
+                // full-scale sample outside PCM's asymmetric range. In
+                // particular +1 is not representable in signed integer PCM.
+                let bounded = quantised.clamp(-1.0, self.maximum);
+                if bounded != quantised {
+                    // Do not feed saturation error back into the shaper:
+                    // it would wind up on a sustained peak and ring after it.
+                    *history = [0.0; 2];
+                } else {
+                    // Measure against the wanted value before noise so the
+                    // loop shapes quantisation error, not the dither.
+                    history[1] = history[0];
+                    history[0] = (wanted - quantised) / self.step;
+                }
+                *sample = bounded as f32;
             }
         }
     }
@@ -115,6 +128,42 @@ mod tests {
             }
         }
         signal
+    }
+
+    #[test]
+    fn full_scale_dither_stays_in_the_integer_output_range() {
+        for bits in [16, 24, 32] {
+            for shaped in [false, true] {
+                let mut dither = Dither::new(bits, 2, shaped);
+                let mut samples: Vec<f32> = (0..4096).flat_map(|_| [1.0, -1.0]).collect();
+                dither.process(&mut samples, 2);
+                let maximum = 1.0 - dither.step;
+                for sample in samples {
+                    assert!(
+                        (-1.0..=maximum).contains(&f64::from(sample)),
+                        "{bits}-bit shaped={shaped}: out-of-range sample {sample} (max {maximum})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_does_not_leave_shaper_feedback_on_the_next_block() {
+        let mut dither = Dither::new(16, 2, true);
+        let mut clipped: Vec<f32> = (0..4096).flat_map(|_| [2.0, -2.0]).collect();
+        dither.process(&mut clipped, 2);
+        assert_eq!(dither.error, vec![[0.0; 2]; 2]);
+
+        // Compare with a shaper whose history has just been cleared, keeping
+        // the random sequence identical. Saturation must leave no extra tail.
+        let mut fresh = Dither::new(16, 2, true);
+        fresh.state = dither.state;
+        let mut after = vec![0.0; 1024];
+        let mut reference = after.clone();
+        dither.process(&mut after, 2);
+        fresh.process(&mut reference, 2);
+        assert_eq!(after, reference);
     }
 
     #[test]
