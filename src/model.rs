@@ -270,6 +270,22 @@ pub enum PlayerEvent {
     /// The native device reached a queued file. Keep its identity even if the
     /// application has edited the queue since the decoder crossed the boundary.
     PrefetchedTrack(std::path::PathBuf),
+    /// Audible overlap, timed against frames consumed by the output device.
+    MixStarted {
+        outgoing: PathBuf,
+        incoming: PathBuf,
+        duration_ms: u64,
+    },
+    MixProgress {
+        incoming: PathBuf,
+        position_ms: u64,
+        progress: f32,
+    },
+    MixFinished {
+        incoming: PathBuf,
+    },
+    MixCancelled,
+
     Duration(u64),
     Paused(bool),
     Volume(f64),

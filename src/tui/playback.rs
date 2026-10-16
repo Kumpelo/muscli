@@ -22,6 +22,14 @@ fn sync_prefetch_target(
     Ok(())
 }
 
+pub(super) struct AudibleMix {
+    pub(super) track_id: String,
+    pub(super) path: PathBuf,
+    pub(super) position_ms: u64,
+    pub(super) progress: f32,
+    tally: HistoryTally,
+}
+
 /// Listening accounting for the track currently loaded. Grouped because they
 /// move together: a load resets all of them, and a flush has to clear the
 /// pending delta and restart the clock in the same breath.
@@ -136,6 +144,7 @@ impl App {
     }
 
     fn load_current_with_pause(&mut self, position_ms: u64, paused: bool) -> Result<()> {
+        self.flush_audible_mix()?;
         self.flush_history(false)?;
         let Some(track) = self.current_track().cloned() else {
             return Ok(());
@@ -178,7 +187,7 @@ impl App {
         Ok(())
     }
 
-    fn apply_replay_gain(&mut self, track: &Track) -> Result<()> {
+    fn replay_gain(&self, track: &Track) -> Result<Option<f64>> {
         let gain = if !self.config.replaygain_enabled {
             None
         } else if self.config.replaygain_mode == ReplayGainMode::Album {
@@ -197,6 +206,11 @@ impl App {
             self.db.track_gain(&track.id, false)?
         };
         let gain = gain.map(|analysis| analysis.gain_db.min(-analysis.true_peak_db));
+        Ok(gain)
+    }
+
+    fn apply_replay_gain(&mut self, track: &Track) -> Result<()> {
+        let gain = self.replay_gain(track)?;
         self.player.set_replay_gain(gain)
     }
 
@@ -303,8 +317,19 @@ impl App {
         };
         let wanted =
             wanted.and_then(|index| self.queue_track_path(index).map(|path| (index, path)));
+        let gain = if self.prefetched != wanted {
+            wanted
+                .as_ref()
+                .and_then(|(index, _)| self.queue.get(*index))
+                .and_then(|id| self.track_index.get(id))
+                .map(|index| self.replay_gain(&self.tracks[*index]))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         sync_prefetch_target(&mut self.prefetched, wanted, |path| {
-            self.player.set_prefetch(path)
+            self.player.set_prefetch_with_gain(path, gain)
         })?;
         Ok(())
     }
@@ -385,9 +410,16 @@ impl App {
         // which is the accepted cost of not reloading.
         self.apply_replay_gain(&track)?;
         self.playback.status = PlaybackStatus::Playing;
-        self.playback.position_ms = 0;
+        self.playback.position_ms = if started.is_some() {
+            self.player.position_ms()
+        } else {
+            0
+        };
         self.playback.duration_ms = track.duration_ms;
-        if self.config.history_enabled {
+        if let Some(mix) = self.audible_mix.take().filter(|mix| mix.path == path) {
+            self.playback.position_ms = self.playback.position_ms.max(mix.position_ms);
+            self.tally = mix.tally;
+        } else if self.config.history_enabled {
             let entry = self.db.start_history(&track.id)?;
             self.tally.restart(entry, track.id.clone());
         }
@@ -400,7 +432,43 @@ impl App {
         Ok(())
     }
 
+    /// A seek or skip controls the song already presented to the listener.
+    /// Complete the overlap first, carrying its existing history rather than
+    /// starting the incoming song a second time.
+    fn promote_audible_mix(&mut self, position_ms: u64) -> Result<bool> {
+        let Some(mix) = self.audible_mix.as_ref() else {
+            return Ok(false);
+        };
+        let Some((index, path)) = self.prefetched.clone() else {
+            return Ok(false);
+        };
+        if path != mix.path || self.queue.get(index) != Some(&mix.track_id) {
+            return Ok(false);
+        }
+        self.flush_history(false)?;
+        let mix = self.audible_mix.take().expect("validated audible mix");
+        self.queue_index = Some(index);
+        let track = self
+            .current_track()
+            .cloned()
+            .expect("validated queued track");
+        self.apply_replay_gain(&track)?;
+        self.player.load(&track.path, position_ms)?;
+        self.prefetched = None;
+        self.tally = mix.tally;
+        self.playback.position_ms = position_ms;
+        self.playback.duration_ms = track.duration_ms;
+        self.player
+            .pause(self.playback.status == PlaybackStatus::Paused)?;
+        self.dirty = true;
+        self.persist_playback()?;
+        Ok(true)
+    }
+
     pub(super) fn next(&mut self) -> Result<()> {
+        if let Some(mix) = &self.audible_mix {
+            self.promote_audible_mix(mix.position_ms)?;
+        }
         if let Some(index) = self.next_index() {
             self.queue_index = Some(index);
             return self.load_current(0);
@@ -413,6 +481,9 @@ impl App {
     }
 
     pub(super) fn previous(&mut self) -> Result<()> {
+        if let Some(mix) = &self.audible_mix {
+            self.promote_audible_mix(mix.position_ms)?;
+        }
         let current = self.queue_index.unwrap_or(0);
         let position_ms = self.player.position_ms();
         if let Some(index) = previous_playable(self.queue.len(), current, position_ms, |index| {
@@ -526,6 +597,11 @@ impl App {
         let elapsed = self.tally.last_tick.elapsed();
         self.tally.last_tick = Instant::now();
         let playing = self.playback.status == PlaybackStatus::Playing;
+        if playing && let Some(mix) = &mut self.audible_mix {
+            let millis = elapsed.as_millis().min(u64::MAX as u128) as u64;
+            mix.tally.listened_ms = mix.tally.listened_ms.saturating_add(millis);
+            mix.tally.pending_ms = mix.tally.pending_ms.saturating_add(millis);
+        }
         if playing && self.tally.entry.is_some() {
             let millis = elapsed.as_millis().min(u64::MAX as u128) as u64;
             self.tally.listened_ms = self.tally.listened_ms.saturating_add(millis);
@@ -649,9 +725,18 @@ impl App {
             PlayerAction::Next => self.next()?,
             PlayerAction::Previous => self.previous()?,
             PlayerAction::SeekRelative(offset_ms) => {
-                self.player.seek_relative(offset_ms as f64 / 1000.0)?
+                if let Some(mix) = &self.audible_mix {
+                    let position = mix.position_ms.saturating_add_signed(offset_ms);
+                    self.promote_audible_mix(position)?;
+                } else {
+                    self.player.seek_relative(offset_ms as f64 / 1000.0)?;
+                }
             }
-            PlayerAction::SeekAbsolute(position) => self.player.seek_absolute_ms(position)?,
+            PlayerAction::SeekAbsolute(position) => {
+                if !self.promote_audible_mix(position)? {
+                    self.player.seek_absolute_ms(position)?;
+                }
+            }
             PlayerAction::SetVolume(volume) => {
                 self.playback.volume = volume.clamp(0.0, 1.0);
                 self.player
@@ -678,9 +763,80 @@ impl App {
         Ok(())
     }
 
+    fn flush_audible_mix(&mut self) -> Result<()> {
+        let Some(mix) = self.audible_mix.take() else {
+            return Ok(());
+        };
+        if let Some(history_id) = mix.tally.entry {
+            let duration = self
+                .track_index
+                .get(&mix.track_id)
+                .map_or(0, |index| self.tracks[*index].duration_ms);
+            let threshold = (duration / 2).min(240_000);
+            self.db.update_history(HistoryUpdate {
+                history_id,
+                track_id: &mix.track_id,
+                listened_delta_ms: mix.tally.pending_ms,
+                position_ms: mix.position_ms,
+                was_counted: mix.tally.counted,
+                count_now: threshold > 0 && mix.tally.listened_ms >= threshold,
+                completed: false,
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) fn handle_player_event(&mut self, event: PlayerEvent) -> Result<()> {
         let force_redraw = !matches!(&event, PlayerEvent::Position(_));
         match event {
+            PlayerEvent::MixStarted {
+                outgoing, incoming, ..
+            } => {
+                let valid = self
+                    .current_track()
+                    .is_some_and(|track| track.path == outgoing)
+                    && self
+                        .prefetched
+                        .as_ref()
+                        .is_some_and(|(_, path)| *path == incoming);
+                if valid
+                    && self.audible_mix.is_none()
+                    && let Some(track) = self.tracks.iter().find(|track| track.path == incoming)
+                {
+                    let track_id = track.id.clone();
+                    let mut tally = HistoryTally::new();
+                    if self.config.history_enabled {
+                        tally.restart(self.db.start_history(&track_id)?, track_id.clone());
+                    }
+                    self.audible_mix = Some(AudibleMix {
+                        track_id,
+                        path: incoming,
+                        position_ms: 0,
+                        progress: 0.0,
+                        tally,
+                    });
+                }
+            }
+            PlayerEvent::MixProgress {
+                incoming,
+                position_ms,
+                progress,
+            } => {
+                if let Some(mix) = &mut self.audible_mix
+                    && mix.path == incoming
+                {
+                    mix.position_ms = position_ms;
+                    mix.progress = progress;
+                }
+            }
+            PlayerEvent::MixFinished { incoming } => {
+                if let Some(mix) = &mut self.audible_mix
+                    && mix.path == incoming
+                {
+                    mix.progress = 1.0;
+                }
+            }
+            PlayerEvent::MixCancelled => self.flush_audible_mix()?,
             PlayerEvent::Position(value) => self.playback.position_ms = value,
             PlayerEvent::Duration(value) => self.playback.duration_ms = value,
             PlayerEvent::Paused(true) => {
@@ -728,7 +884,7 @@ impl App {
     }
 
     pub(super) fn current_track_hash(&self) -> Option<u64> {
-        self.current_track().map(|track| {
+        self.presented_track().map(|track| {
             let mut hasher = DefaultHasher::new();
             track.id.hash(&mut hasher);
             hasher.finish()
@@ -746,15 +902,16 @@ impl App {
             can_previous: index > 0,
             can_next: index + 1 < self.queue.len(),
         };
-        let position_signature = (self.playback.duration_ms, self.playback.position_ms / 1000);
+        let presented = self.presented_playback();
+        let position_signature = (presented.duration_ms, presented.position_ms / 1000);
 
         if let Some(mpris) = &self.mpris {
             if self.last_mpris_signature != Some(state_signature) {
                 let _ = mpris
                     .sync(
-                        self.current_track(),
-                        &self.playback,
-                        self.shuffle,
+                        self.presented_track(),
+                        &presented,
+                        self.shuffle && !self.playback_context.is_album(),
                         self.repeat,
                         state_signature.can_previous,
                         state_signature.can_next,
@@ -763,7 +920,7 @@ impl App {
                 self.last_mpris_signature = Some(state_signature);
             }
             if self.last_mpris_position_signature != Some(position_signature) {
-                let _ = mpris.sync_position(&self.playback).await;
+                let _ = mpris.sync_position(&presented).await;
                 self.last_mpris_position_signature = Some(position_signature);
             }
         }
@@ -781,11 +938,12 @@ impl App {
         }
         self.last_discord_signature = Some(signature);
         if let Some(discord) = &self.discord {
-            discord.sync(self.current_track(), &self.playback);
+            discord.sync(self.presented_track(), &self.presented_playback());
         }
     }
 
     pub(super) fn save_state(&mut self) -> Result<()> {
+        self.flush_audible_mix()?;
         self.flush_history(false)?;
         self.persist_playback()
     }

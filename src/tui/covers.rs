@@ -56,7 +56,6 @@ impl App {
                     .as_ref()
                     .is_some_and(|cover| cover.path == path) => {}
             Some(path) => {
-                self.covers.current = None;
                 self.request_cover_decode(path, 512);
             }
             None => self.covers.current = None,

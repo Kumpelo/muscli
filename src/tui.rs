@@ -273,6 +273,7 @@ struct App {
     input_buffer: String,
     queue: Vec<String>,
     playback_context: PlaybackContext,
+    audible_mix: Option<playback::AudibleMix>,
     applied_crossfade: Option<f64>,
     mix_analyses: HashMap<String, crate::audio::mix::TrackAnalysis>,
     auto_dj_attempt: Option<(Option<String>, usize)>,
@@ -520,6 +521,7 @@ async fn run_inner(
         input_buffer: String::new(),
         queue: saved.queue,
         playback_context: saved.context,
+        audible_mix: None,
         applied_crossfade: None,
         mix_analyses: HashMap::new(),
         auto_dj_attempt: None,
@@ -1000,6 +1002,23 @@ impl App {
         }
     }
 
+    fn presented_track(&self) -> Option<&Track> {
+        self.audible_mix
+            .as_ref()
+            .and_then(|mix| self.track_index.get(&mix.track_id))
+            .and_then(|index| self.tracks.get(*index))
+            .or_else(|| self.current_track())
+    }
+
+    fn presented_playback(&self) -> PlaybackState {
+        let mut state = self.playback.clone();
+        if let Some(mix) = &self.audible_mix {
+            state.position_ms = mix.position_ms;
+            state.duration_ms = self.presented_track().map_or(0, |track| track.duration_ms);
+        }
+        state
+    }
+
     fn current_track(&self) -> Option<&Track> {
         self.queue_index
             .and_then(|i| self.queue.get(i))
@@ -1158,7 +1177,7 @@ impl App {
         if matches!(self.view, View::AlbumDetail | View::ArtistDetail) {
             self.selected_track().or_else(|| self.current_track())
         } else {
-            self.current_track().or_else(|| self.selected_track())
+            self.presented_track().or_else(|| self.selected_track())
         }
     }
 

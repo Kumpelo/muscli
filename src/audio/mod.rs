@@ -45,6 +45,10 @@ pub trait AudioBackend: Send {
     /// may open and decode it early; that is what makes the join seamless.
     fn set_prefetch(&mut self, path: Option<&Path>) -> Result<()>;
 
+    fn set_prefetch_with_gain(&mut self, path: Option<&Path>, _gain_db: Option<f64>) -> Result<()> {
+        self.set_prefetch(path)
+    }
+
     /// Called once the application has caught up with a prefetched track the
     /// backend moved to on its own, so it can retire the finished one.
     fn adopt_prefetch(&mut self) -> Result<()>;

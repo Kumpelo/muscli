@@ -20,6 +20,7 @@ pub(super) struct CrossfadeWindow {
     pub channels: usize,
     pub seconds: f64,
     pub curve: MixCurve,
+    pub incoming_gain: f32,
 }
 
 /// Holds only one decoded packet of the next track.
@@ -87,6 +88,7 @@ impl CrossfadeBuffer {
             channels,
             seconds,
             curve,
+            incoming_gain,
         } = window;
         if self.abandoned || seconds <= 0.0 || source_rate == 0 || channels == 0 {
             return 0;
@@ -128,7 +130,7 @@ impl CrossfadeBuffer {
             let progress = (position - start) as f64 / (wanted_frames - 1) as f64;
             let (a, b) = blend_gains(curve, progress);
             for (sample, next_sample) in frame.iter_mut().zip(incoming.iter()) {
-                *sample = *sample * a + *next_sample * b;
+                *sample = *sample * a + *next_sample * b * incoming_gain;
             }
             mixed += 1;
         }

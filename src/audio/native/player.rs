@@ -202,6 +202,13 @@ impl AudioBackend for NativePlayer {
         self.send(Command::Prefetch(path.map(Path::to_path_buf)))
     }
 
+    fn set_prefetch_with_gain(&mut self, path: Option<&Path>, gain_db: Option<f64>) -> Result<()> {
+        self.send(Command::PrefetchWithGain {
+            path: path.map(Path::to_path_buf),
+            gain_db,
+        })
+    }
+
     fn adopt_prefetch(&mut self) -> Result<()> {
         // The engine crossed into the next track by itself and said so; there
         // is no playlist entry left over to retire, as there is with mpv.

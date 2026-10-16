@@ -958,7 +958,7 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ])
     .split(inner);
     let (title, subtitle) = app
-        .current_track()
+        .presented_track()
         .map(|t| (t.title.as_str(), t.artist.as_str()))
         .unwrap_or((t!("empty.nothing_playing"), t!("empty.press_enter")));
     frame.render_widget(
@@ -971,18 +971,22 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         columns[0],
     );
+    let presented = app.presented_playback();
     let icon = match app.playback.status {
         PlaybackStatus::Playing => "󰏤",
         PlaybackStatus::Paused => "󰐊",
         PlaybackStatus::Stopped => "󰓛",
     };
-    let label = format!(
+    let mut label = format!(
         "󰒮 {icon} 󰒭  {}/{}",
-        format_duration(app.playback.position_ms),
-        format_duration(app.playback.duration_ms)
+        format_duration(presented.position_ms),
+        format_duration(presented.duration_ms)
     );
-    let progress = if app.playback.duration_ms > 0 {
-        app.playback.position_ms as f64 / app.playback.duration_ms as f64
+    if let Some(mix) = &app.audible_mix {
+        label.push_str(&format!(" · MIX {:.0}%", mix.progress * 100.0));
+    }
+    let progress = if presented.duration_ms > 0 {
+        presented.position_ms as f64 / presented.duration_ms as f64
     } else {
         0.0
     };
@@ -1011,7 +1015,11 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         RepeatMode::Track => t!("label.repeat_track"),
         RepeatMode::Queue => t!("label.repeat_queue"),
     };
-    let shuffle = if app.shuffle { "󰒟" } else { "󰒞" };
+    let shuffle = if app.shuffle && !app.playback_context.is_album() {
+        "󰒟"
+    } else {
+        "󰒞"
+    };
     let modes = if columns[2].width < 24 {
         format!("{shuffle} · 󰑖 {repeat}")
     } else {

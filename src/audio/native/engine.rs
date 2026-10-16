@@ -92,8 +92,15 @@ impl Position {
 /// What the application asks the engine to do.
 #[derive(Debug)]
 pub enum Command {
-    Load { path: PathBuf, position_ms: u64 },
+    Load {
+        path: PathBuf,
+        position_ms: u64,
+    },
     Prefetch(Option<PathBuf>),
+    PrefetchWithGain {
+        path: Option<PathBuf>,
+        gain_db: Option<f64>,
+    },
     Pause(bool),
     Toggle,
     SeekAbsolute(u64),
@@ -101,7 +108,10 @@ pub enum Command {
     ReplayGain(Option<f64>),
     Equalizer(Vec<(u32, f32)>),
     BitPerfect(bool),
-    Crossfade { seconds: f64, curve: MixCurve },
+    Crossfade {
+        seconds: f64,
+        curve: MixCurve,
+    },
     Stop,
 }
 
@@ -114,6 +124,49 @@ pub enum Command {
 struct Mark {
     output_frame: u64,
     source_ms: u64,
+}
+
+struct MixTimeline {
+    outgoing: PathBuf,
+    incoming: PathBuf,
+    start_frame: u64,
+    frames: u64,
+    announced: bool,
+    last_step: Option<u64>,
+}
+
+impl MixTimeline {
+    fn report(&mut self, played: u64, rate: u32, events: &UnboundedSender<PlayerEvent>) -> bool {
+        if played < self.start_frame {
+            return false;
+        }
+        if !self.announced {
+            let _ = events.send(PlayerEvent::MixStarted {
+                outgoing: self.outgoing.clone(),
+                incoming: self.incoming.clone(),
+                duration_ms: self.frames * 1000 / u64::from(rate),
+            });
+            self.announced = true;
+        }
+        let reached = played.saturating_sub(self.start_frame).min(self.frames);
+        let position_ms = reached * 1000 / u64::from(rate);
+        let finished = reached == self.frames;
+        let step = position_ms / 100;
+        if self.last_step != Some(step) || finished {
+            self.last_step = Some(step);
+            let _ = events.send(PlayerEvent::MixProgress {
+                incoming: self.incoming.clone(),
+                position_ms,
+                progress: reached as f32 / self.frames.max(1) as f32,
+            });
+        }
+        if finished {
+            let _ = events.send(PlayerEvent::MixFinished {
+                incoming: self.incoming.clone(),
+            });
+        }
+        finished
+    }
 }
 
 struct Stream {
@@ -149,6 +202,7 @@ struct Stream {
     capacity: usize,
     /// Output frames at which a following track begins, in order.
     handovers: VecDeque<(u64, PathBuf)>,
+    mix_timeline: Option<MixTimeline>,
     /// A flush the output has been asked for and not yet carried out. While
     /// set, the engine decodes but does not push: what it wrote would be
     /// thrown away with the audio it is replacing.
@@ -216,10 +270,12 @@ pub struct Engine {
     /// The track queued behind the one playing, opened early so the join
     /// costs no file opening at the moment it has to be seamless.
     prefetch: Option<(PathBuf, Decoder)>,
+    prefetch_gain: Option<Option<f64>>,
     /// The optional live transition only holds a single prefetched packet.
     crossfade: CrossfadeBuffer,
     crossfade_seconds: f64,
     crossfade_curve: MixCurve,
+    pending_crossfade: Option<(f64, MixCurve)>,
     /// Applied on the way out rather than here, so it reaches audio that is
     /// already decoded and waiting.
     volume: Arc<Volume>,
@@ -254,9 +310,11 @@ impl Engine {
             paused,
             stream: None,
             prefetch: None,
+            prefetch_gain: None,
             crossfade: CrossfadeBuffer::default(),
             crossfade_seconds: 0.0,
             crossfade_curve: MixCurve::Smooth,
+            pending_crossfade: None,
             needs_reload: false,
             reported_starved: 0,
             last_starve_notice: None,
@@ -296,7 +354,7 @@ impl Engine {
             // Deliberately omit filenames and queue contents from diagnostics.
             let kind = match &command {
                 Command::Load { .. } => "load",
-                Command::Prefetch(_) => "prefetch",
+                Command::Prefetch(_) | Command::PrefetchWithGain { .. } => "prefetch",
                 Command::Pause(_) | Command::Toggle => "pause_toggle",
                 Command::SeekAbsolute(_) => "seek",
                 Command::Volume(_) => "volume",
@@ -316,11 +374,20 @@ impl Engine {
         }
         let outcome = match command {
             Command::Load { path, position_ms } => {
+                self.cancel_mix();
                 self.prefetch = None;
+                self.prefetch_gain = None;
                 self.crossfade.reset();
                 self.load(&path, position_ms)
             }
+            Command::PrefetchWithGain { path, gain_db } => {
+                self.handle(Command::Prefetch(path));
+                self.prefetch_gain = Some(gain_db);
+                Ok(())
+            }
             Command::Prefetch(path) => {
+                self.prefetch_gain = None;
+                self.cancel_mix();
                 self.crossfade.reset();
                 self.prefetch = match path {
                     // Opened now rather than when the current track ends:
@@ -369,9 +436,17 @@ impl Engine {
                 Ok(())
             }
             Command::Crossfade { seconds, curve } => {
-                self.crossfade_seconds = seconds.clamp(0.0, 12.0);
-                self.crossfade_curve = curve;
-                self.crossfade.reset();
+                if self
+                    .stream
+                    .as_ref()
+                    .is_some_and(|stream| stream.mix_timeline.is_some())
+                {
+                    self.pending_crossfade = Some((seconds.clamp(0.0, 12.0), curve));
+                } else {
+                    self.crossfade_seconds = seconds.clamp(0.0, 12.0);
+                    self.crossfade_curve = curve;
+                    self.crossfade.reset();
+                }
                 Ok(())
             }
             Command::BitPerfect(on) => {
@@ -500,6 +575,7 @@ impl Engine {
             capacity,
             marks: VecDeque::new(),
             handovers: VecDeque::new(),
+            mix_timeline: None,
             awaiting_flush: None,
             pushed: 0,
             exhausted: false,
@@ -545,6 +621,10 @@ impl Engine {
     /// Rebuilding it would mean asking the driver for the device again, so the
     /// output discards it instead and reports the frame playing resumes at.
     fn seek(&mut self, position_ms: u64) -> Result<()> {
+        self.cancel_mix();
+        if let Some((path, _)) = &self.prefetch {
+            self.prefetch = Some((path.clone(), Decoder::open(path)?));
+        }
         let Some(stream) = &mut self.stream else {
             return Ok(());
         };
@@ -580,7 +660,22 @@ impl Engine {
         Ok(())
     }
 
+    fn cancel_mix(&mut self) {
+        if let Some((seconds, curve)) = self.pending_crossfade.take() {
+            self.crossfade_seconds = seconds;
+            self.crossfade_curve = curve;
+        }
+        if self
+            .stream
+            .as_mut()
+            .is_some_and(|stream| stream.mix_timeline.take().is_some())
+        {
+            let _ = self.events.send(PlayerEvent::MixCancelled);
+        }
+    }
+
     fn stop(&mut self) {
+        self.cancel_mix();
         self.crossfade.reset();
         self.output.stop();
         self.stream = None;
@@ -650,9 +745,6 @@ impl Engine {
                         .prefetch
                         .take_if(|(_, next)| next.spec() == stream.decoder.spec())
                 {
-                    if let Some(duration) = next.duration_ms() {
-                        let _ = self.events.send(PlayerEvent::Duration(duration));
-                    }
                     stream.decoder = next;
                     stream.path = next_path.clone();
                     // Announce the handover when the old track finishes, not
@@ -664,6 +756,11 @@ impl Engine {
                     // last decoded packet may not yet have joined the fade;
                     // stage that remainder before requesting the next packet,
                     // or the handover would silently skip up to a full block.
+                    if let Some(gain) = self.prefetch_gain.take() {
+                        self.settings.replay_gain_db = gain;
+                        stream.chain.set_replay_gain(gain);
+                        stream.chain.settle();
+                    }
                     let unplayed = self.crossfade.unplayed();
                     if !unplayed.is_empty() {
                         let remaining_frames =
@@ -679,6 +776,10 @@ impl Engine {
                         stream.stage(source_ms);
                     }
                     self.crossfade.reset();
+                    if let Some((seconds, curve)) = self.pending_crossfade.take() {
+                        self.crossfade_seconds = seconds;
+                        self.crossfade_curve = curve;
+                    }
                     stream.exhausted = false;
                     stream.needs_flush = false;
                     stream.ends_at = None;
@@ -763,10 +864,10 @@ impl Engine {
                 && !self.settings.bit_perfect
                 && stream.resampler.is_none()
                 && !stream.duplicate
-                && let Some((_, next)) = self.prefetch.as_mut()
+                && let Some((next_path, next)) = self.prefetch.as_mut()
                 && next.spec() == stream.source_spec
             {
-                self.crossfade.apply(
+                let mixed = self.crossfade.apply(
                     &mut stream.converted,
                     next,
                     CrossfadeWindow {
@@ -776,8 +877,30 @@ impl Engine {
                         channels: usize::from(stream.source_spec.channels),
                         seconds: self.crossfade_seconds,
                         curve: self.crossfade_curve,
+                        incoming_gain: self.prefetch_gain.map_or(1.0, |gain| {
+                            let difference =
+                                gain.unwrap_or(0.0) - self.settings.replay_gain_db.unwrap_or(0.0);
+                            10.0f64.powf(difference.clamp(-120.0, 120.0) / 20.0) as f32
+                        }),
                     },
                 );
+                if mixed > 0 && stream.mix_timeline.is_none() {
+                    let rate = u64::from(stream.sample_rate);
+                    let frames = (self.crossfade_seconds * rate as f64).round() as u64;
+                    let start = stream.decoder.duration_ms().unwrap_or(0) * rate / 1000 - frames;
+                    let offset = start.saturating_sub(source_frame);
+                    stream.mix_timeline = Some(MixTimeline {
+                        outgoing: stream.path.clone(),
+                        incoming: next_path.clone(),
+                        start_frame: stream.pushed
+                            + stream.pending() as u64 / u64::from(stream.channels)
+                            + offset
+                            + stream.chain.latency_frames() as u64,
+                        frames,
+                        announced: false,
+                        last_step: None,
+                    });
+                }
             }
             stream.stage(source_ms);
             worked = true;
@@ -808,6 +931,12 @@ impl Engine {
             let reached = stream.ends_at.map_or(played, |ends_at| played.min(ends_at));
             let elapsed = (reached - mark.output_frame) * 1_000 / u64::from(stream.sample_rate);
             self.position.report(self.epoch, mark.source_ms + elapsed);
+        }
+
+        if let Some(mix) = &mut stream.mix_timeline
+            && mix.report(played, stream.sample_rate, &self.events)
+        {
+            stream.mix_timeline = None;
         }
 
         while stream

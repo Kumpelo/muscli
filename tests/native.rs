@@ -1367,3 +1367,105 @@ fn a_pause_already_in_force_is_respected_by_a_device_just_started() {
     );
     assert!(errors(&mut events).is_empty());
 }
+
+#[test]
+fn mix_events_follow_audible_output_and_precede_the_single_queue_handover() {
+    let mut h = harness(2_000, &[RATE]);
+    let incoming = h.path.with_file_name("incoming.flac");
+    fs::write(
+        &incoming,
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 2_000)),
+    )
+    .unwrap();
+    h.engine.handle(Command::Crossfade {
+        seconds: 0.4,
+        curve: muscli::audio::mix::MixCurve::Smooth,
+    });
+    h.engine.handle(Command::Load {
+        path: h.path.clone(),
+        position_ms: 0,
+    });
+    h.engine.handle(Command::Prefetch(Some(incoming.clone())));
+    let mut consumed = 0usize;
+    let mut stages = Vec::new();
+    let mut last_position = 0;
+    for _ in 0..(RATE as usize * 3).div_ceil(BLOCK) {
+        h.engine.step();
+        while let Ok(event) = h.events.try_recv() {
+            match event {
+                PlayerEvent::MixStarted { incoming: path, .. } => {
+                    assert!(
+                        consumed >= RATE as usize * 1600 / 1000,
+                        "announced while still decoding ahead"
+                    );
+                    assert_eq!(path, incoming);
+                    stages.push("start");
+                }
+                PlayerEvent::MixProgress {
+                    incoming: path,
+                    position_ms,
+                    progress,
+                } => {
+                    assert_eq!(path, incoming);
+                    assert!(!stages.is_empty());
+                    assert!(position_ms >= last_position);
+                    assert!((0.0..=1.0).contains(&progress));
+                    last_position = position_ms;
+                }
+                PlayerEvent::MixFinished { .. } => stages.push("finish"),
+                PlayerEvent::PrefetchedTrack(_) => stages.push("handover"),
+                PlayerEvent::Error(message) => panic!("{message}"),
+                _ => {}
+            }
+        }
+        h.capture.pull(BLOCK);
+        consumed += BLOCK;
+    }
+    assert_eq!(stages, ["start", "finish", "handover"]);
+    assert_eq!(last_position, 400);
+}
+
+#[test]
+fn incoming_replaygain_is_applied_during_overlap_and_at_the_decode_boundary() {
+    let mut h = harness(2_000, &[RATE]);
+    let incoming = h.path.with_file_name("incoming-gain.flac");
+    fs::write(
+        &incoming,
+        common::flac_bytes(RATE, &common::sine(RATE, 660.0, 2_000)),
+    )
+    .unwrap();
+    h.engine.handle(Command::ReplayGain(Some(-6.0)));
+    h.engine.handle(Command::Crossfade {
+        seconds: 0.4,
+        curve: muscli::audio::mix::MixCurve::Smooth,
+    });
+    h.engine.handle(Command::Load {
+        path: h.path.clone(),
+        position_ms: 0,
+    });
+    h.engine.handle(Command::PrefetchWithGain {
+        path: Some(incoming.clone()),
+        gain_db: Some(-12.0),
+    });
+    let mut heard = Vec::new();
+    while heard.len() < RATE as usize * 3 {
+        h.engine.step();
+        heard.extend(h.capture.pull(BLOCK));
+    }
+    let first = decoded(&h.path);
+    let second = decoded(&incoming);
+    let latency = RATE as usize * 2 / 1_000;
+    for position in [RATE as usize * 18 / 10, RATE as usize * 23 / 10] {
+        let expected = if position < first.len() {
+            let next_position = position - RATE as usize * 16 / 10;
+            let progress = next_position as f64 / (RATE as f64 * 0.4 - 1.0);
+            let (a, b) =
+                muscli::audio::mix::blend_gains(muscli::audio::mix::MixCurve::Smooth, progress);
+            first[position] * a * 10.0f32.powf(-6.0 / 20.0)
+                + second[next_position] * b * 10.0f32.powf(-12.0 / 20.0)
+        } else {
+            second[position - RATE as usize * 16 / 10] * 10.0f32.powf(-12.0 / 20.0)
+        };
+        assert!((heard[position + latency] - expected).abs() < 0.0001);
+    }
+}

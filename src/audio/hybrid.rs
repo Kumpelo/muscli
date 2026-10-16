@@ -162,6 +162,11 @@ impl AudioBackend for HybridPlayer {
         self.active().set_prefetch(armed)
     }
 
+    fn set_prefetch_with_gain(&mut self, path: Option<&Path>, gain_db: Option<f64>) -> Result<()> {
+        let armed = path.filter(|path| Self::native_can_play(path) != self.on_mpv);
+        self.active().set_prefetch_with_gain(armed, gain_db)
+    }
+
     fn adopt_prefetch(&mut self) -> Result<()> {
         self.active().adopt_prefetch()
     }
