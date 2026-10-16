@@ -259,8 +259,26 @@ impl App {
     /// queue changes from a dozen places. Comparing against what is already
     /// armed means no work when nothing moved.
     pub(super) fn sync_crossfade(&mut self) -> Result<()> {
+        use crate::audio::smart_mix::{self, LiveMixMode};
+        let configured = match self.config.live_mix_mode() {
+            LiveMixMode::Off => 0.0,
+            LiveMixMode::Classic => self.config.mix_crossfade_seconds,
+            LiveMixMode::Smart | LiveMixMode::AutoDj => self
+                .current_track()
+                .and_then(|current| {
+                    let next = self.next_index().and_then(|index| self.queue.get(index))?;
+                    let first = *self.mix_analyses.get(&current.id)?;
+                    let second = *self.mix_analyses.get(next)?;
+                    Some(smart_mix::transition_seconds(
+                        first,
+                        second,
+                        self.config.mix_crossfade_seconds,
+                    ))
+                })
+                .unwrap_or(0.0),
+        };
         let seconds = self.playback_context.crossfade_seconds(
-            self.config.mix_crossfade_seconds,
+            configured,
             self.config.bit_perfect,
             self.config.gapless,
         );
@@ -273,6 +291,7 @@ impl App {
     }
 
     pub(super) fn sync_prefetch(&mut self) -> Result<()> {
+        self.extend_auto_dj();
         self.sync_crossfade()?;
         let wanted = if (self.config.gapless || self.playback_context.is_album())
             && self.repeat != RepeatMode::Track
@@ -288,6 +307,58 @@ impl App {
             self.player.set_prefetch(path)
         })?;
         Ok(())
+    }
+
+    fn extend_auto_dj(&mut self) {
+        use crate::audio::smart_mix::{LiveMixMode, transition_seconds};
+        if self.config.live_mix_mode() != LiveMixMode::AutoDj
+            || self.playback_context.is_album()
+            || self.config.bit_perfect
+            || self.repeat != RepeatMode::Off
+            || self.next_index().is_some()
+            || self.playback.status == PlaybackStatus::Stopped
+        {
+            return;
+        }
+        let Some(first) = self
+            .current_track()
+            .and_then(|track| self.mix_analyses.get(&track.id))
+            .copied()
+        else {
+            return;
+        };
+        let attempt = (
+            self.current_track().map(|track| track.id.clone()),
+            self.mix_analyses.len(),
+        );
+        if self.auto_dj_attempt.as_ref() == Some(&attempt) {
+            return;
+        }
+        self.auto_dj_attempt = Some(attempt);
+        let candidate = crate::audio::smart_mix::recommend(
+            first,
+            &self.queue,
+            self.tracks
+                .iter()
+                .filter(|track| track.available)
+                .filter_map(|track| {
+                    self.mix_analyses
+                        .get(&track.id)
+                        .copied()
+                        .map(|info| (track, info))
+                })
+                .filter(|(track, info)| {
+                    transition_seconds(first, *info, self.config.mix_crossfade_seconds) > 0.0
+                        && track.path.exists()
+                })
+                .map(|(track, info)| (track.id.as_str(), info)),
+            self.config.mix_crossfade_seconds,
+        );
+        if let Some(id) = candidate {
+            self.queue.push(id);
+            self.queue_dirty = true;
+            self.dirty = true;
+        }
     }
 
     /// Adopt the track mpv started on its own.

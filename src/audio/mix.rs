@@ -185,6 +185,14 @@ fn frame_count(path: &Path) -> Result<u64> {
 
 /// Persisted musical descriptors. A missing BPM is a valid outcome for music
 /// without a confidently detectable periodic beat, and is cached as such.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BoundaryAnalysis {
+    pub intro_rms: f64,
+    pub outro_rms: f64,
+    pub leading_silence_ms: u64,
+    pub trailing_silence_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrackAnalysis {
     pub bpm: Option<f64>,
@@ -192,11 +200,12 @@ pub struct TrackAnalysis {
     pub confidence: f64,
     /// RMS of the first 30 seconds; a quick energy descriptor, not LUFS.
     pub energy_rms: f64,
+    pub boundaries: Option<BoundaryAnalysis>,
 }
 
 /// Increment when the extractor changes so previously cached rows are
 /// correctly reanalyzed after an upgrade.
-pub const ANALYSIS_VERSION: i64 = 1;
+pub const ANALYSIS_VERSION: i64 = 2;
 
 /// Analyze a bounded excerpt rather than decoding whole songs or keeping PCM.
 /// A worker thread owns the decoder; the playback callback never runs this.
@@ -229,12 +238,14 @@ pub fn analyze_track(path: &Path) -> Result<TrackAnalysis> {
             frames = 0;
         }
     }
+    let boundaries = analyze_boundaries(path).ok();
     let energy_rms = (total_energy / total_frames.max(1) as f64).sqrt();
     if bins.len() < 800 {
         return Ok(TrackAnalysis {
             bpm: None,
             confidence: 0.0,
             energy_rms,
+            boundaries,
         });
     }
     let onsets = bins
@@ -247,6 +258,7 @@ pub fn analyze_track(path: &Path) -> Result<TrackAnalysis> {
             bpm: None,
             confidence: 0.0,
             energy_rms,
+            boundaries,
         });
     }
     let bins_per_sec = f64::from(rate) / bin_frames as f64;
@@ -275,6 +287,72 @@ pub fn analyze_track(path: &Path) -> Result<TrackAnalysis> {
         bpm: (best.1 >= 0.25).then_some(best.0),
         confidence: best.1.clamp(0.0, 1.0),
         energy_rms,
+        boundaries,
+    })
+}
+
+/// Decode bounded four-second endpoints on the analysis worker. Seek failures
+/// leave boundary evidence unavailable, which disables automatic overlap.
+fn analyze_boundaries(path: &Path) -> Result<BoundaryAnalysis> {
+    fn excerpt(reader: &mut FrameReader) -> Result<(f64, u64, u64)> {
+        let rate = u64::from(reader.decoder.spec().sample_rate);
+        let mut frame = vec![0.0; reader.channels];
+        let (mut power, mut frames, mut leading, mut trailing) = (0.0, 0u64, 0u64, 0u64);
+        let mut audible = false;
+        for _ in 0..rate * 4 {
+            if !reader.next_frame(&mut frame)? {
+                break;
+            }
+            let value = frame
+                .iter()
+                .map(|sample| f64::from(*sample).powi(2))
+                .sum::<f64>()
+                / frame.len() as f64;
+            power += value;
+            frames += 1;
+            if value.sqrt() < 0.001 {
+                trailing += 1;
+                if !audible {
+                    leading += 1;
+                }
+            } else {
+                audible = true;
+                trailing = 0;
+            }
+        }
+        if frames == 0 {
+            bail!("empty boundary excerpt");
+        }
+        Ok((
+            (power / frames as f64).sqrt(),
+            leading * 1000 / rate,
+            trailing * 1000 / rate,
+        ))
+    }
+    let mut reader = FrameReader::open(path)?;
+    let duration = reader
+        .decoder
+        .duration_ms()
+        .ok_or_else(|| anyhow::anyhow!("unknown duration"))?;
+    let (intro_rms, leading_silence_ms, _) = excerpt(&mut reader)?;
+    reader.decoder.seek_ms(duration.saturating_sub(4_000))?;
+    reader.pending.clear();
+    reader.offset = 0;
+    let target_frame =
+        duration.saturating_sub(4_000) * u64::from(reader.decoder.spec().sample_rate) / 1000;
+    let skip = target_frame.saturating_sub(reader.decoder.position_frames());
+    let mut frame = vec![0.0; reader.channels];
+    for _ in 0..skip {
+        if !reader.next_frame(&mut frame)? {
+            bail!("short tail");
+        }
+    }
+    let (outro_rms, _, trailing_silence_ms) = excerpt(&mut reader)?;
+    Ok(BoundaryAnalysis {
+        intro_rms,
+        outro_rms,
+        leading_silence_ms,
+        trailing_silence_ms,
     })
 }
 

@@ -15,6 +15,7 @@ pub mod mix;
 pub mod mix_fx;
 pub mod mpv;
 pub mod native;
+pub mod smart_mix;
 
 pub use mpv::MpvPlayer;
 

@@ -828,6 +828,12 @@ fn release_metadata_refresh_preserves_track_references_and_cached_analysis() {
         bpm: Some(120.0),
         confidence: 0.8,
         energy_rms: 0.1,
+        boundaries: Some(muscli::audio::mix::BoundaryAnalysis {
+            intro_rms: 0.1,
+            outro_rms: 0.12,
+            leading_silence_ms: 0,
+            trailing_silence_ms: 10,
+        }),
     };
     db.save_mix_analysis(&id, analysis, size, modified).unwrap();
     // A migrated row must have its tags read again even if the file is unchanged.
@@ -841,8 +847,8 @@ fn release_metadata_refresh_preserves_track_references_and_cached_analysis() {
     assert_eq!(tracks[0].release_id, spec.release_id);
     assert!(tracks[0].favorite);
     assert_eq!(
-        db.load_playlists().unwrap()[0].track_ids,
-        [original.id.clone()]
+        db.load_playlists().unwrap()[0].track_ids.as_slice(),
+        std::slice::from_ref(&original.id)
     );
     assert!(history > 0);
     assert_eq!(

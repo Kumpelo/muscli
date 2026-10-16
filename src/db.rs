@@ -170,7 +170,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 8 {
+        if version > 9 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -427,6 +427,17 @@ impl Database {
                  ALTER TABLE tracks ADD COLUMN compilation INTEGER NOT NULL DEFAULT 0;
                  ALTER TABLE tracks ADD COLUMN metadata_version INTEGER NOT NULL DEFAULT 0;
                  PRAGMA user_version = 8;",
+            )?;
+            tx.commit()?;
+        }
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 8 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE track_mix_analysis ADD COLUMN boundaries TEXT;
+                PRAGMA user_version = 9;",
             )?;
             tx.commit()?;
         }
@@ -1491,13 +1502,13 @@ impl Database {
     ) -> Result<bool> {
         let changed = self.conn.execute(
             "INSERT INTO track_mix_analysis
-                (track_id,bpm,confidence,energy_rms,file_size,modified_ns,algorithm_version)
-             SELECT id,?2,?3,?4,?5,?6,?7 FROM tracks
+                (track_id,bpm,confidence,energy_rms,file_size,modified_ns,algorithm_version,boundaries)
+             SELECT id,?2,?3,?4,?5,?6,?7,?8 FROM tracks
              WHERE id=?1 AND available=1 AND file_size=?5 AND modified_ns=?6
              ON CONFLICT(track_id) DO UPDATE SET
                 bpm=excluded.bpm,
                 confidence=excluded.confidence,
-                energy_rms=excluded.energy_rms,
+                energy_rms=excluded.energy_rms, boundaries=excluded.boundaries,
                 error_text=NULL,
                 file_size=excluded.file_size,
                 modified_ns=excluded.modified_ns,
@@ -1510,6 +1521,7 @@ impl Database {
                 size.min(i64::MAX as u64) as i64,
                 modified,
                 crate::audio::mix::ANALYSIS_VERSION,
+                serde_json::to_string(&analysis.boundaries)?,
             ],
         )?;
         Ok(changed == 1)
@@ -1553,7 +1565,7 @@ impl Database {
         Ok(self
             .conn
             .query_row(
-                "SELECT a.bpm,a.confidence,a.energy_rms
+                "SELECT a.bpm,a.confidence,a.energy_rms,a.boundaries
                  FROM tracks t JOIN track_mix_analysis a ON a.track_id=t.id
                  WHERE t.path=?1 AND t.available=1 AND a.error_text IS NULL
                    AND a.file_size=t.file_size
@@ -1565,10 +1577,38 @@ impl Database {
                         bpm: row.get(0)?,
                         confidence: row.get(1)?,
                         energy_rms: row.get(2)?,
+                        boundaries: row
+                            .get::<_, Option<String>>(3)?
+                            .and_then(|raw| serde_json::from_str(&raw).ok())
+                            .flatten(),
                     })
                 },
             )
             .optional()?)
+    }
+
+    pub fn load_mix_analyses(&self) -> Result<HashMap<String, crate::audio::mix::TrackAnalysis>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.id,a.bpm,a.confidence,a.energy_rms,a.boundaries FROM tracks t
+             JOIN track_mix_analysis a ON a.track_id=t.id WHERE t.available=1
+             AND a.error_text IS NULL AND a.file_size=t.file_size
+             AND a.modified_ns=t.modified_ns AND a.algorithm_version=?1",
+        )?;
+        let rows = stmt.query_map([crate::audio::mix::ANALYSIS_VERSION], |row| {
+            Ok((
+                row.get(0)?,
+                crate::audio::mix::TrackAnalysis {
+                    bpm: row.get(1)?,
+                    confidence: row.get(2)?,
+                    energy_rms: row.get(3)?,
+                    boundaries: row
+                        .get::<_, Option<String>>(4)?
+                        .and_then(|raw| serde_json::from_str(&raw).ok())
+                        .flatten(),
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Count cached descriptors without decoding, including uncertain BPMs.
@@ -1979,6 +2019,7 @@ mod tests {
             bpm: Some(128.0),
             confidence: 0.85,
             energy_rms: 0.12,
+            boundaries: None,
         };
         for n in 0..19 {
             assert!(db.save_mix_analysis(&format!("mix-{n}"), analysis, 100, 10)?);
@@ -1988,7 +2029,8 @@ mod tests {
             crate::audio::mix::TrackAnalysis {
                 bpm: None,
                 confidence: 0.0,
-                energy_rms: 0.01
+                energy_rms: 0.01,
+                boundaries: None,
             },
             100,
             10

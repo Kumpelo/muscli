@@ -51,6 +51,7 @@ impl PendingScan {
 /// from `App` so a worker thread can build it while the render loop carries
 /// on.
 pub(super) struct LibrarySnapshot {
+    mix_analyses: HashMap<String, crate::audio::mix::TrackAnalysis>,
     tracks: Vec<Track>,
     stats: HashMap<String, TrackStats>,
     added_at: HashMap<String, i64>,
@@ -130,6 +131,7 @@ impl LibrarySnapshot {
                 .map(|(index, artist)| (artist.name.clone(), index))
                 .collect(),
             tracks,
+            mix_analyses: db.load_mix_analyses()?,
             stats: library.stats,
             added_at: library.added_at,
             albums,
@@ -149,6 +151,8 @@ impl App {
     /// query, the open detail views, the cursor -- is recomputed here.
     pub(super) fn install_snapshot(&mut self, snapshot: LibrarySnapshot) {
         self.tracks = snapshot.tracks;
+        self.mix_analyses = snapshot.mix_analyses;
+        self.auto_dj_attempt = None;
         self.stats = snapshot.stats;
         self.added_at = snapshot.added_at;
         self.track_index = snapshot.track_index;
@@ -631,8 +635,12 @@ impl App {
             } => {
                 match analysis {
                     Ok(analysis) => {
-                        self.db
-                            .save_mix_analysis(&track_id, analysis, size, modified)?;
+                        if self
+                            .db
+                            .save_mix_analysis(&track_id, analysis, size, modified)?
+                        {
+                            self.mix_analyses.insert(track_id, analysis);
+                        }
                     }
                     Err(error) => {
                         self.db

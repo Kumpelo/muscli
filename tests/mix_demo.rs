@@ -176,3 +176,19 @@ fn mixed_sample_rates_are_rejected_before_writing_output() {
     assert!(error.to_string().contains("matching sample rates"));
     assert!(!output.exists(), "a rejected render created an output file");
 }
+
+#[test]
+fn boundary_analysis_measures_silence_at_the_actual_file_ends() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("boundaries.flac");
+    let mut samples = vec![0i16; RATE as usize / 2];
+    samples.extend(common::sine(RATE, 440.0, 8_000));
+    samples.extend(vec![0i16; RATE as usize / 4]);
+    fs::write(&path, common::flac_bytes(RATE, &samples)).unwrap();
+    let info = muscli::audio::mix::analyze_track(&path).unwrap();
+    let boundaries = info.boundaries.expect("decoded endpoints");
+    assert!((490..=510).contains(&boundaries.leading_silence_ms));
+    assert!((240..=260).contains(&boundaries.trailing_silence_ms));
+    assert!(boundaries.intro_rms > 0.01);
+    assert!(boundaries.outro_rms > 0.01);
+}

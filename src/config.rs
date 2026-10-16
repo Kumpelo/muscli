@@ -85,6 +85,8 @@ pub struct Config {
     pub mix_analysis_enabled: bool,
     /// Live native-only crossfade (0 means off, maximum 12 seconds).
     pub mix_crossfade_seconds: f64,
+    /// None migrates the legacy duration-only setting without changing its behavior.
+    pub live_mix_mode: Option<crate::audio::smart_mix::LiveMixMode>,
 }
 
 /// Centre frequencies of the equaliser bands, an octave apart.
@@ -119,11 +121,22 @@ impl Default for Config {
             mix_presets: BTreeMap::new(),
             mix_analysis_enabled: true,
             mix_crossfade_seconds: 0.0,
+            live_mix_mode: None,
         }
     }
 }
 
 impl Config {
+    pub fn live_mix_mode(&self) -> crate::audio::smart_mix::LiveMixMode {
+        use crate::audio::smart_mix::LiveMixMode;
+        self.live_mix_mode
+            .unwrap_or(if self.mix_crossfade_seconds > 0.0 {
+                LiveMixMode::Classic
+            } else {
+                LiveMixMode::Off
+            })
+    }
+
     /// The usable span of the volume control, guarded against a setting that
     /// would make it either pointless or unusable.
     fn volume_range(&self) -> f64 {

@@ -186,7 +186,8 @@ impl App {
             SettingId::LiveMix if self.config.bit_perfect || !self.config.gapless => {
                 t!("setting.value.bypassed").to_owned()
             }
-            SettingId::LiveMix => switch(self.config.mix_crossfade_seconds > 0.0),
+            SettingId::LiveMix if self.playback_context.is_album() => "ALBUM · OFF".into(),
+            SettingId::LiveMix => self.config.live_mix_mode().label().into(),
             SettingId::MixDuration => format!("{:.0} s", self.config.mix_crossfade_seconds),
             SettingId::AudioBackend => t!(match self.config.audio_backend {
                 AudioBackendChoice::Mpv => "setting.value.mpv",
@@ -285,11 +286,10 @@ impl App {
                     self.status = "MIX en vivo requiere el motor nativo".into();
                     return Ok(());
                 }
-                self.config.mix_crossfade_seconds = if self.config.mix_crossfade_seconds > 0.0 {
-                    0.0
-                } else {
-                    6.0
-                };
+                self.config.live_mix_mode = Some(self.config.live_mix_mode().next());
+                if self.config.mix_crossfade_seconds == 0.0 {
+                    self.config.mix_crossfade_seconds = 6.0;
+                }
             }
             SettingId::MixDuration => {
                 if !horizontal {
@@ -405,6 +405,7 @@ impl App {
                 self.start_gain_analysis()?;
             }
         }
+        self.auto_dj_attempt = None;
         self.sync_crossfade()?;
         self.config.save(&self.paths)?;
         self.status = t!("status.settings_saved").into();

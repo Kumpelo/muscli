@@ -274,6 +274,8 @@ struct App {
     queue: Vec<String>,
     playback_context: PlaybackContext,
     applied_crossfade: Option<f64>,
+    mix_analyses: HashMap<String, crate::audio::mix::TrackAnalysis>,
+    auto_dj_attempt: Option<(Option<String>, usize)>,
     queue_index: Option<usize>,
     queue_dirty: bool,
     /// Queue position and file armed for the next backend transition.
@@ -519,6 +521,8 @@ async fn run_inner(
         queue: saved.queue,
         playback_context: saved.context,
         applied_crossfade: None,
+        mix_analyses: HashMap::new(),
+        auto_dj_attempt: None,
         queue_index: saved.current_index,
         queue_dirty: false,
         prefetched: None,
