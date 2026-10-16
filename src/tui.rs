@@ -293,6 +293,7 @@ struct App {
     actions: tokio_mpsc::UnboundedReceiver<PlayerAction>,
     remote_actions: tokio_mpsc::UnboundedReceiver<RemoteCommand>,
     _control_server: ControlServer,
+    last_widget_publish: Instant,
     gain_tx: tokio_mpsc::UnboundedSender<GainMessage>,
     gain_rx: tokio_mpsc::UnboundedReceiver<GainMessage>,
     gain_running: bool,
@@ -545,6 +546,7 @@ async fn run_inner(
         actions,
         remote_actions,
         _control_server: control_server,
+        last_widget_publish: Instant::now() - Duration::from_secs(2),
         gain_tx,
         gain_rx,
         gain_running: false,
@@ -743,6 +745,7 @@ async fn run_inner(
                 app.handle_reload_result(result);
             }
             app.tick_history()?;
+            app.publish_widget()?;
             app.refresh_theme();
             if !app.scan_pending.is_empty()
                 && !app.scan_running

@@ -3,14 +3,18 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
-use interprocess::local_socket::{GenericFilePath, ListenerOptions, Stream, ToFsName, prelude::*};
+use interprocess::local_socket::{
+    ConnectOptions, GenericFilePath, ListenerNonblockingMode, ListenerOptions, Stream, ToFsName,
+    prelude::*,
+};
 use tokio::sync::mpsc::{self as tokio_mpsc, UnboundedReceiver};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +31,7 @@ pub struct ControlServer {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     socket: PathBuf,
+    snapshot: Arc<RwLock<Arc<Vec<u8>>>>,
 }
 
 impl ControlServer {
@@ -44,25 +49,33 @@ impl ControlServer {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
         }
+        listener.set_nonblocking(ListenerNonblockingMode::Both)?;
+        let snapshot = Arc::new(RwLock::new(Arc::new(
+            b"{\"schema_version\":1,\"available\":false}\n".to_vec(),
+        )));
+        let published = snapshot.clone();
         let (tx, rx) = tokio_mpsc::unbounded_channel();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let worker = thread::Builder::new()
             .name("muscli-control".into())
             .spawn(move || {
-                loop {
-                    let Ok(mut stream) = listener.accept() else {
-                        break;
-                    };
-                    if thread_stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let mut raw = String::new();
-                    if stream.read_to_string(&mut raw).is_ok()
-                        && let Some(command) = parse(raw.trim())
+                let mut clients = Vec::new();
+                while !thread_stop.load(Ordering::Relaxed) {
+                    // One accept per iteration bounds the work even under a burst.
+                    if let Ok(stream) = listener.accept()
+                        && clients.len() < 8
                     {
-                        let _ = tx.send(command);
+                        clients.push(Client {
+                            stream,
+                            request: Vec::new(),
+                            response: None,
+                            written: 0,
+                            deadline: Instant::now() + Duration::from_secs(1),
+                        });
                     }
+                    clients.retain_mut(|client| client.advance(&published, &tx));
+                    thread::sleep(Duration::from_millis(5));
                 }
             })?;
         Ok((
@@ -70,22 +83,137 @@ impl ControlServer {
                 stop,
                 worker: Some(worker),
                 socket: socket.to_path_buf(),
+                snapshot,
             },
             rx,
         ))
+    }
+    pub fn publish(&self, value: &impl serde::Serialize) -> Result<()> {
+        let mut bytes = serde_json::to_vec(value)?;
+        anyhow::ensure!(bytes.len() < MAX_RESPONSE, "control snapshot is too large");
+        bytes.push(b'\n');
+        *self
+            .snapshot
+            .write()
+            .map_err(|_| anyhow::anyhow!("snapshot lock poisoned"))? = Arc::new(bytes);
+        Ok(())
     }
 }
 
 impl Drop for ControlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Ok(name) = self.socket.clone().to_fs_name::<GenericFilePath>() {
-            let _ = Stream::connect(name);
-        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
         let _ = fs::remove_file(&self.socket);
+    }
+}
+
+const MAX_REQUEST: usize = 256;
+const MAX_RESPONSE: usize = 65_536;
+
+struct Client {
+    stream: Stream,
+    request: Vec<u8>,
+    response: Option<Arc<Vec<u8>>>,
+    written: usize,
+    deadline: Instant,
+}
+
+impl Client {
+    fn advance(
+        &mut self,
+        snapshot: &RwLock<Arc<Vec<u8>>>,
+        tx: &tokio_mpsc::UnboundedSender<RemoteCommand>,
+    ) -> bool {
+        if Instant::now() >= self.deadline {
+            return false;
+        }
+        if self.response.is_none() {
+            let mut bytes = [0; MAX_REQUEST + 1];
+            let eof = match self.stream.read(&mut bytes) {
+                Ok(n) => {
+                    self.request.extend_from_slice(&bytes[..n]);
+                    n == 0
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return true,
+                Err(_) => return false,
+            };
+            if self.request.len() > MAX_REQUEST {
+                return false;
+            }
+            if !eof && !self.request.contains(&b'\n') {
+                return true;
+            }
+            let Ok(raw) = std::str::from_utf8(&self.request) else {
+                return false;
+            };
+            if raw.trim() == "status v1" {
+                self.response = snapshot.read().ok().map(|value| value.clone());
+            } else {
+                if let Some(command) = parse(raw.trim()) {
+                    let _ = tx.send(command);
+                }
+                return false;
+            }
+        }
+        let Some(response) = &self.response else {
+            return false;
+        };
+        match self.stream.write(&response[self.written..]) {
+            Ok(0) => false,
+            Ok(n) => {
+                self.written += n;
+                self.written < response.len()
+            }
+            Err(error) => error.kind() == std::io::ErrorKind::WouldBlock,
+        }
+    }
+}
+
+/// Bounded read-only client. It never opens the library or starts a player.
+pub fn status(socket: &Path) -> Result<serde_json::Value> {
+    let name = socket.to_fs_name::<GenericFilePath>()?;
+    let mut stream: Stream = ConnectOptions::new()
+        .name(name)
+        .wait_mode(interprocess::ConnectWaitMode::Timeout(
+            Duration::from_millis(500),
+        ))
+        .nonblocking_stream(true)
+        .connect_sync()?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let request = b"status v1\n";
+    let mut written = 0;
+    let mut response = Vec::new();
+    loop {
+        anyhow::ensure!(Instant::now() < deadline, "control status timed out");
+        if written < request.len() {
+            match stream.write(&request[written..]) {
+                Ok(0) => anyhow::bail!("control socket closed"),
+                Ok(n) => written += n,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            let mut bytes = [0; 4096];
+            match stream.read(&mut bytes) {
+                Ok(0) => anyhow::bail!("incomplete control snapshot"),
+                Ok(n) => {
+                    response.extend_from_slice(&bytes[..n]);
+                    anyhow::ensure!(
+                        response.len() <= MAX_RESPONSE,
+                        "control response is too large"
+                    );
+                    if response.last() == Some(&b'\n') {
+                        return Ok(serde_json::from_slice(&response)?);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -135,6 +263,43 @@ fn parse(value: &str) -> Option<RemoteCommand> {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshots_are_private_bounded_and_not_blocked_by_idle_clients() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("status.sock");
+        let (server, _receiver) = ControlServer::start(&socket).unwrap();
+        assert_eq!(
+            fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let value = serde_json::json!({"schema_version":1,"available":true,"upcoming":[
+            {"occurrence":1,"id":"same","title":"Quoted \"title\""}, {"occurrence":2,"id":"same"}]});
+        server.publish(&value).unwrap();
+        let idle =
+            Stream::connect(socket.as_path().to_fs_name::<GenericFilePath>().unwrap()).unwrap();
+        assert_eq!(status(&socket).unwrap(), value);
+        let mut large =
+            Stream::connect(socket.as_path().to_fs_name::<GenericFilePath>().unwrap()).unwrap();
+        large.write_all(&vec![b'x'; MAX_REQUEST + 1]).unwrap();
+        assert_eq!(status(&socket).unwrap(), value);
+        assert!(server.publish(&"x".repeat(MAX_RESPONSE)).is_err());
+        assert_eq!(
+            status(&socket).unwrap(),
+            value,
+            "oversized publication keeps the last valid snapshot"
+        );
+        let start = Instant::now();
+        drop(server);
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "idle clients must not hold shutdown open"
+        );
+        drop(idle);
+        assert!(!socket.exists());
+    }
 
     #[test]
     fn parses_remote_volume_commands() {

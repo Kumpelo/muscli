@@ -891,6 +891,49 @@ impl App {
         })
     }
 
+    pub(super) fn publish_widget(&mut self) -> Result<()> {
+        if self.last_widget_publish.elapsed() < Duration::from_secs(1) {
+            return Ok(());
+        }
+        use crate::widget::{WidgetSnapshot, WidgetTrack};
+        let state = self.presented_playback();
+        let mut snapshot = WidgetSnapshot::new(&state, self.playback_context.clone());
+        let mut hasher = DefaultHasher::new();
+        self.queue.hash(&mut hasher);
+        snapshot.queue_revision = hasher.finish();
+        let logical_index = self.queue_index.unwrap_or(0);
+        let presented_index = if self.audible_mix.is_some() {
+            self.prefetched
+                .as_ref()
+                .map_or(logical_index, |(index, _)| *index)
+        } else {
+            logical_index
+        };
+        snapshot.logical_current = self
+            .current_track()
+            .map(|track| WidgetTrack::from_track(track, logical_index));
+        snapshot.current = self
+            .presented_track()
+            .map(|track| WidgetTrack::from_track(track, presented_index));
+        snapshot.mix_progress = self.audible_mix.as_ref().map(|mix| mix.progress);
+        snapshot.upcoming = self
+            .queue
+            .iter()
+            .enumerate()
+            .skip(presented_index + 1)
+            .filter_map(|(index, id)| {
+                self.track_index
+                    .get(id)
+                    .map(|track_index| WidgetTrack::from_track(&self.tracks[*track_index], index))
+            })
+            .take(10)
+            .collect();
+        // A long or invalid cover URI cannot make playback fail.
+        let _ = self._control_server.publish(&snapshot);
+        self.last_widget_publish = Instant::now();
+        Ok(())
+    }
+
     pub(super) async fn sync_mpris(&mut self) {
         let presented = self.presented_playback();
         let index = self

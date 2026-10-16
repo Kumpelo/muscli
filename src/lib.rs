@@ -35,3 +35,5 @@ pub mod paths;
 pub mod profiling;
 pub mod replaygain;
 pub mod tui;
+
+pub mod widget;

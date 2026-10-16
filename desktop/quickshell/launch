@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+widget_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+export MUSCLI_WIDGET_SCREEN=${MUSCLI_WIDGET_SCREEN:-}
+export MUSCLI_WIDGET_CORNER=${MUSCLI_WIDGET_CORNER:-bottom-right}
+export MUSCLI_WIDGET_MARGIN=${MUSCLI_WIDGET_MARGIN:-18}
+export MUSCLI_WIDGET_WIDTH=${MUSCLI_WIDGET_WIDTH:-360}
+export MUSCLI_WIDGET_BINARY=${MUSCLI_WIDGET_BINARY:-muscli}
+while (($#)); do
+  case "$1" in
+    --screen|--corner|--margin|--width|--binary)
+      (($# >= 2)) || { echo "Missing value for $1" >&2; exit 2; }
+      case "$1" in
+        --screen) export MUSCLI_WIDGET_SCREEN=$2 ;;
+        --corner) export MUSCLI_WIDGET_CORNER=$2 ;;
+        --margin) export MUSCLI_WIDGET_MARGIN=$2 ;;
+        --width) export MUSCLI_WIDGET_WIDTH=$2 ;;
+        --binary) export MUSCLI_WIDGET_BINARY=$2 ;;
+      esac
+      shift 2 ;;
+    --help)
+      echo "Usage: launch [--screen NAME] [--corner top-left|top-right|bottom-left|bottom-right] [--margin PX] [--width 280..600] [--binary PATH]"
+      exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+case "$MUSCLI_WIDGET_CORNER" in top-left|top-right|bottom-left|bottom-right) ;; *) echo "Invalid corner" >&2; exit 2 ;; esac
+[[ $MUSCLI_WIDGET_MARGIN =~ ^[0-9]+$ && ${#MUSCLI_WIDGET_MARGIN} -le 4 ]] || { echo "Invalid margin" >&2; exit 2; }
+[[ $MUSCLI_WIDGET_WIDTH =~ ^[0-9]+$ && ${#MUSCLI_WIDGET_WIDTH} -le 3 ]] && ((10#$MUSCLI_WIDGET_WIDTH >= 280 && 10#$MUSCLI_WIDGET_WIDTH <= 600)) || { echo "Width must be 280..600" >&2; exit 2; }
+command -v qs >/dev/null || { echo "Optional widget requires Quickshell (qs). muscli works without it." >&2; exit 1; }
+command -v "$MUSCLI_WIDGET_BINARY" >/dev/null || { echo "muscli binary not found; build it and pass --binary PATH." >&2; exit 1; }
+exec qs --no-duplicate --path "$widget_dir"

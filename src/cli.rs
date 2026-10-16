@@ -172,6 +172,11 @@ pub enum LibraryCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteCommand {
+    /// Read a versioned snapshot from the running player, without starting it
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Change the volume of muscli only
     Volume {
         #[command(subcommand)]

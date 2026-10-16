@@ -29,6 +29,12 @@ fn main() -> Result<()> {
     let compact = cli.compact;
     let theme = cli.theme.clone();
     let paths = AppPaths::discover()?;
+    if let Some(Command::Remote {
+        command: CliRemoteCommand::Status { json },
+    }) = &cli.command
+    {
+        return print_remote_status(&paths, *json);
+    }
     paths.ensure()?;
     let mut config = Config::load(&paths)?;
     // Settled before anything can produce output. The flag wins over the
@@ -547,6 +553,9 @@ fn main() -> Result<()> {
         },
         Some(Command::Remote { command }) => {
             let command = match command {
+                CliRemoteCommand::Status { json } => {
+                    return print_remote_status(&paths, json);
+                }
                 CliRemoteCommand::Volume { command } => match command {
                     VolumeCommand::Up => RemoteCommand::VolumeUp,
                     VolumeCommand::Down => RemoteCommand::VolumeDown,
@@ -584,6 +593,16 @@ fn lyrics_name_for_track(db: &Database, id: &str) -> Result<String> {
         .map(|candidate| candidate.id)
         .with_context(|| format!("unknown track id: {id}"))?;
     Ok(format!("{stored_id}.lrc"))
+}
+
+fn print_remote_status(paths: &AppPaths, json: bool) -> Result<()> {
+    let snapshot = control::status(&paths.control_socket())?;
+    if json {
+        println!("{}", serde_json::to_string(&snapshot)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
