@@ -1896,9 +1896,23 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
                         && (track.album_artist.is_empty()
                             || track.album_artist.eq_ignore_ascii_case(&track.artist))
                 });
-            (inferred || members.iter().any(|track| track.compilation)).then_some(key)
+            let album_artists = members
+                .iter()
+                .map(|track| crate::model::normalize_text(&track.album_artist).to_lowercase())
+                .filter(|artist| !artist.is_empty())
+                .collect::<BTreeSet<_>>();
+            let artist = if album_artists.len() == 1 {
+                members
+                    .iter()
+                    .find(|track| !track.album_artist.trim().is_empty())
+                    .map_or("Various Artists", |track| track.album_artist.as_str())
+            } else {
+                "Various Artists"
+            };
+            (inferred || members.iter().any(|track| track.compilation))
+                .then_some((key, artist.to_owned()))
         })
-        .collect::<BTreeSet<_>>();
+        .collect::<BTreeMap<_, _>>();
 
     let mut grouped: BTreeMap<String, Album> = BTreeMap::new();
     // Stable ordering also makes representative metadata and cover deterministic.
@@ -1913,8 +1927,8 @@ pub fn group_albums(tracks: &[Track]) -> Vec<Album> {
     });
     for track in ordered {
         let folder = album_folder_key(track);
-        let artist = if compilations.contains(&folder) {
-            "Various Artists"
+        let artist = if let Some(artist) = compilations.get(&folder) {
+            artist.as_str()
         } else if track.album_artist.is_empty() {
             track.display_artist()
         } else {
@@ -2407,6 +2421,21 @@ mod tests {
             "album normalization must reflect its new track"
         );
         Ok(())
+    }
+
+    #[test]
+    fn compilation_flag_preserves_an_explicit_album_artist() {
+        let mut first = track("one", 1);
+        first.artist = "Guest".into();
+        first.album_artist = "Curator".into();
+        first.compilation = true;
+        let mut second = first.clone();
+        second.id = "two".into();
+        second.artist = "Another guest".into();
+        second.track_number = 2;
+        let albums = group_albums(&[second, first]);
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].artist, "Curator");
     }
 
     #[test]
