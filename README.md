@@ -353,10 +353,12 @@ artist and album are never combined into one line. Pausing and stopping clear
 the activity completely. Discord
 is optional and is never required for audio playback. Assets named `peter_metal`, `peter_dj`, and
 `daft_punk` are selected for their matching genres/artist; otherwise the
-configured fallback is used. If a track has a valid MusicBrainz Release ID,
-muscli instead sends the public 500 px front-cover URL from Cover Art Archive.
-Local cover art is never uploaded: Discord can display a public image URL, but
-it cannot read muscli's local cover-cache path.
+configured fallback is used. muscli resolves the canonical MusicBrainz release
+group from the tagged release ID or, when that is absent, from the album artist,
+album title, and year. Discord then receives the public 500 px album-cover URL
+from Cover Art Archive. Ambiguous matches keep the configured fallback. Local
+cover art is never uploaded: Discord can display a public image URL, but it
+cannot read muscli's local cover-cache path.
 
 ## Main controls
 

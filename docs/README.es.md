@@ -147,8 +147,10 @@ imágenes están activadas. Se conserva el casing de los tags y no se combinan
 artista y álbum en una misma línea. Al pausar o detener se borra por completo
 la actividad.
 Discord no es necesario para reproducir audio. Nunca se suben portadas locales:
-si una pista tiene un MusicBrainz Release ID válido, muscli envía a Discord la
-URL pública de la portada frontal de 500 px en Cover Art Archive. Discord admite
+muscli resuelve el grupo de lanzamiento canónico de MusicBrainz mediante el ID
+de lanzamiento o, si falta, mediante artista del álbum, título y año. Discord
+recibe la URL pública de 500 px de la portada del álbum en Cover Art Archive; si
+la coincidencia es ambigua se conserva la imagen configurada. Discord admite
 URLs públicas, pero no puede leer la ruta de la caché local de muscli.
 
 ## Controles principales
