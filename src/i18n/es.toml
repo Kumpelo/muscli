@@ -294,3 +294,8 @@
 
 "status.mix_requires_native" = "MIX en vivo requiere el motor nativo"
 "setting.pause_fade" = "Pausa gradual"
+
+"context.fetch_lyrics" = "Descargar letras (LRCLIB)"
+"context.export_lyrics" = "Guardar letras junto al audio"
+"status.lyrics_downloading" = "Descargando letras sincronizadas…"
+"status.lyrics_error" = "Letras: {error}"

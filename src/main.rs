@@ -465,6 +465,30 @@ fn main() -> Result<()> {
             }
         },
         Some(Command::Lyrics { command }) => match command {
+            LyricsCommand::Fetch { track, beside } => {
+                let db = Database::open(&paths.database_file())?;
+                let track = db
+                    .load_tracks()?
+                    .into_iter()
+                    .find(|row| row.id == track)
+                    .context("unknown track id")?;
+                let written = lyrics::fetch(&paths, &track)?;
+                println!("{}", t!("cli.lyrics_imported", path = written.display()));
+                if beside {
+                    let target = lyrics::export(&paths, &track, None)?;
+                    println!("{}", t!("cli.lyrics_imported", path = target.display()));
+                }
+            }
+            LyricsCommand::Export { track, output } => {
+                let db = Database::open(&paths.database_file())?;
+                let track = db
+                    .load_tracks()?
+                    .into_iter()
+                    .find(|row| row.id == track)
+                    .context("unknown track id")?;
+                let target = lyrics::export(&paths, &track, output.as_deref())?;
+                println!("{}", t!("cli.lyrics_imported", path = target.display()));
+            }
             LyricsCommand::Where => println!("{}", paths.lyrics_dir().display()),
             LyricsCommand::Import {
                 path,

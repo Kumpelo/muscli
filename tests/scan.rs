@@ -803,11 +803,8 @@ fn the_extension_list_can_be_narrowed() {
 }
 
 #[test]
-fn lyrics_beside_the_audio_are_never_absorbed_by_the_scan() {
-    // Lyrics are imported on purpose, into their own directory. An .lrc file
-    // sitting next to a track belongs to whoever put it there, and pulling it
-    // in silently would make the library depend on material muscli never
-    // indexed.
+fn portable_lyrics_are_read_without_being_copied_into_the_cache() {
+    // The scanner indexes only audio; playback can read a portable sidecar.
     let fixture = Fixture::new();
     write_track(&fixture.source().join("song.flac"), &TrackSpec::new("Song"));
     fs::write(
@@ -828,11 +825,11 @@ fn lyrics_beside_the_audio_are_never_absorbed_by_the_scan() {
 
     let track = &db.load_tracks().expect("loading tracks")[0];
     assert!(
-        muscli::lyrics::load(fixture.paths(), track).is_none(),
-        "a file the user did not import must not be found"
+        muscli::lyrics::load(fixture.paths(), track).is_some(),
+        "portable lyrics should be available directly beside the audio"
     );
 
-    // Importing it explicitly is what makes it available.
+    // Explicit import can additionally cache a copy on this computer.
     muscli::lyrics::import(
         fixture.paths(),
         &fixture.source().join("song.lrc"),

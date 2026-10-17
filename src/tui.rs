@@ -95,10 +95,12 @@ enum ContextAction {
     AddToPlaylist,
     ShowAlbum,
     ShowArtist,
+    FetchLyrics,
+    ExportLyrics,
 }
 
 /// Paired with a translation key rather than a label; see ContextAction.
-const CONTEXT_ACTIONS: [(ContextAction, &str); 7] = [
+const CONTEXT_ACTIONS: [(ContextAction, &str); 9] = [
     (ContextAction::PlayNow, "context.play_now"),
     (ContextAction::PlayNext, "context.play_next"),
     (ContextAction::Enqueue, "context.enqueue"),
@@ -106,6 +108,8 @@ const CONTEXT_ACTIONS: [(ContextAction, &str); 7] = [
     (ContextAction::AddToPlaylist, "context.add_to_playlist"),
     (ContextAction::ShowAlbum, "context.show_album"),
     (ContextAction::ShowArtist, "context.show_artist"),
+    (ContextAction::FetchLyrics, "context.fetch_lyrics"),
+    (ContextAction::ExportLyrics, "context.export_lyrics"),
 ];
 
 /// Help for keys the binding table cannot describe: the smart-playlist editor
@@ -327,6 +331,9 @@ struct App {
     /// Lyrics for the loaded track, and which track they were loaded for.
     lyrics: Option<crate::lyrics::Lyrics>,
     lyrics_track: Option<String>,
+    lyrics_tx: tokio_mpsc::UnboundedSender<std::result::Result<PathBuf, String>>,
+    lyrics_rx: tokio_mpsc::UnboundedReceiver<std::result::Result<PathBuf, String>>,
+    lyrics_fetch_running: bool,
     /// Missing lyrics are retried at a low rate so CLI imports appear live.
     last_lyrics_check: Instant,
     /// Key bindings in effect: the defaults with any user overrides applied.
@@ -488,6 +495,7 @@ async fn run_inner(
     let (search_results_tx, search_rx) = tokio_mpsc::unbounded_channel();
     start_search_worker(search_requests, search_results_tx);
 
+    let (lyrics_tx, lyrics_rx) = tokio_mpsc::unbounded_channel();
     let mut app = App {
         paths,
         config,
@@ -586,6 +594,9 @@ async fn run_inner(
         bindings,
         lyrics: None,
         lyrics_track: None,
+        lyrics_tx,
+        lyrics_rx,
+        lyrics_fetch_running: false,
         last_lyrics_check: Instant::now() - Duration::from_secs(1),
         covers: Covers {
             picker,
@@ -753,6 +764,15 @@ async fn run_inner(
             }
             while let Ok(result) = app.reload_rx.try_recv() {
                 app.handle_reload_result(result);
+            }
+            while let Ok(result) = app.lyrics_rx.try_recv() {
+                app.lyrics_fetch_running = false;
+                app.status = match result {
+                    Ok(path) => t!("cli.lyrics_imported", path = path.display()),
+                    Err(error) => t!("status.lyrics_error", error = error),
+                };
+                app.lyrics_track = None;
+                app.dirty = true;
             }
             app.tick_pause_fade()?;
             app.tick_history()?;

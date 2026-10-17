@@ -295,3 +295,8 @@
 
 "status.mix_requires_native" = "Live MIX requires the native backend"
 "setting.pause_fade" = "Pause fade"
+
+"context.fetch_lyrics" = "Download lyrics (LRCLIB)"
+"context.export_lyrics" = "Save lyrics beside audio"
+"status.lyrics_downloading" = "Downloading synchronized lyrics…"
+"status.lyrics_error" = "Lyrics: {error}"

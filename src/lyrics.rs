@@ -1,13 +1,10 @@
-//! Lyrics.
-//!
-//! Lyrics live in their own directory and are only ever put there on purpose.
-//! The library scanner never looks at `.lrc` files sitting beside the audio:
-//! those files belong to whoever put them there, and silently absorbing them
-//! would make the library index depend on material muscli did not index.
+//! Synchronized lyrics cached locally or carried beside the audio as LRC.
 
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -159,13 +156,14 @@ pub fn descriptive_name(artist: &str, title: &str) -> String {
     format!("{} - {}.lrc", clean(artist), clean(title))
 }
 
-/// Find a track's lyrics, by id and then by artist and title.
+/// Find portable sidecar lyrics first, then cached lyrics by id or tags.
 ///
-/// The second lookup is what makes lyrics survive a file being moved: the id
-/// is derived from the path, so moving the audio changes it.
+/// Sidecars travel with the audio. The artist/title cache lookup also survives
+/// a path change, while the track id is derived from that path.
 pub fn load(paths: &AppPaths, track: &Track) -> Option<Lyrics> {
     let by_id = lyrics_path(paths, track);
     let candidates = [
+        track.path.with_extension("lrc"),
         by_id,
         paths
             .lyrics_dir()
@@ -173,9 +171,100 @@ pub fn load(paths: &AppPaths, track: &Track) -> Option<Lyrics> {
     ];
     candidates
         .iter()
-        .find_map(|path| fs::read_to_string(path).ok())
+        .filter_map(|path| fs::read_to_string(path).ok())
         .map(|source| parse_lrc(&source))
-        .filter(|lyrics| !lyrics.is_empty())
+        .find(|lyrics| !lyrics.is_empty())
+}
+
+/// Download one exact track signature. Nothing is sent until explicitly requested.
+pub fn fetch(paths: &AppPaths, track: &Track) -> Result<PathBuf> {
+    let target = lyrics_path(paths, track);
+    if target.exists() {
+        let text = fs::read_to_string(&target)?;
+        let parsed = parse_lrc(&text);
+        anyhow::ensure!(
+            !parsed.is_empty() && !parsed.unsynced,
+            "existing lyrics are not synchronized; existing files are preserved"
+        );
+        return Ok(target);
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .user_agent(concat!(
+            "muscli/",
+            env!("CARGO_PKG_VERSION"),
+            " (+https://github.com/Kumpelo/muscli)"
+        ))
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+    let mut response = agent
+        .get("https://lrclib.net/api/get")
+        .query("track_name", &track.title)
+        .query("artist_name", &track.artist)
+        .query("album_name", &track.album)
+        .query("duration", (track.duration_ms as f64 / 1000.0).to_string())
+        .call()
+        .context("could not fetch lyrics from LRCLIB")?;
+    let record: serde_json::Value = response
+        .body_mut()
+        .read_json()
+        .context("invalid LRCLIB response")?;
+    let text = synced_text(&record)?;
+    fs::create_dir_all(paths.lyrics_dir())?;
+    write_new(&target, text)?;
+    Ok(target)
+}
+
+fn synced_text(record: &serde_json::Value) -> Result<&str> {
+    let text = record["syncedLyrics"]
+        .as_str()
+        .context("no synchronized lyrics available for this track")?;
+    let parsed = parse_lrc(text);
+    anyhow::ensure!(
+        !parsed.unsynced && !parsed.is_empty(),
+        "no synchronized lyrics available for this track"
+    );
+    Ok(text)
+}
+
+/// Export a cached LRC, defaulting to the audio's directory for portable use.
+/// Existing files, including symlinks, are never overwritten.
+pub fn export(paths: &AppPaths, track: &Track, destination: Option<&Path>) -> Result<PathBuf> {
+    let source = [
+        lyrics_path(paths, track),
+        paths
+            .lyrics_dir()
+            .join(descriptive_name(&track.artist, &track.title)),
+    ]
+    .into_iter()
+    .find_map(|path| fs::read_to_string(path).ok())
+    .context("no cached lyrics; import or fetch lyrics first")?;
+    anyhow::ensure!(!parse_lrc(&source).is_empty(), "cached lyrics are empty");
+    let target = destination
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| track.path.with_extension("lrc"));
+    anyhow::ensure!(
+        target != track.path,
+        "lyrics destination must differ from the audio file"
+    );
+    write_new(&target, &source)?;
+    Ok(target)
+}
+
+fn write_new(target: &Path, text: &str) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .with_context(|| {
+            format!(
+                "could not create {} (existing files are preserved)",
+                target.display()
+            )
+        })?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("could not write {}", target.display()))?;
+    Ok(())
 }
 
 /// Copy a lyrics file into the lyrics directory.
@@ -204,6 +293,22 @@ pub fn import(paths: &AppPaths, source: &Path, name: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_download_must_contain_timestamps() {
+        assert!(
+            synced_text(&serde_json::json!({"plainLyrics":"plain only","syncedLyrics":null}))
+                .is_err()
+        );
+        assert!(
+            synced_text(&serde_json::json!({"syncedLyrics":"plain masquerading as synced"}))
+                .is_err()
+        );
+        assert_eq!(
+            synced_text(&serde_json::json!({"syncedLyrics":"[00:01.00]hello"})).unwrap(),
+            "[00:01.00]hello"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -458,6 +458,43 @@ impl App {
             return Ok(());
         };
         match action {
+            ContextAction::FetchLyrics => {
+                if self.lyrics_fetch_running {
+                    return Ok(());
+                }
+                let Some(track) = self
+                    .track_index
+                    .get(&track_id)
+                    .map(|&index| self.tracks[index].clone())
+                else {
+                    return Ok(());
+                };
+                let paths = self.paths.clone();
+                let tx = self.lyrics_tx.clone();
+                thread::Builder::new()
+                    .name("muscli-lyrics".into())
+                    .spawn(move || {
+                        let result = crate::lyrics::fetch(&paths, &track)
+                            .map_err(|error| format!("{error:#}"));
+                        let _ = tx.send(result);
+                    })?;
+                self.lyrics_fetch_running = true;
+                self.status = t!("status.lyrics_downloading").into();
+            }
+            ContextAction::ExportLyrics => {
+                let Some(track) = self
+                    .track_index
+                    .get(&track_id)
+                    .map(|&index| &self.tracks[index])
+                else {
+                    return Ok(());
+                };
+                self.status = match crate::lyrics::export(&self.paths, track, None) {
+                    Ok(path) => t!("cli.lyrics_imported", path = path.display()),
+                    Err(error) => t!("status.lyrics_error", error = format!("{error:#}")),
+                };
+                self.lyrics_track = None;
+            }
             ContextAction::PlayNow => self.activate_selection()?,
             ContextAction::PlayNext => {
                 let position = self.queue_index.map_or(0, |index| index + 1);

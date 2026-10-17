@@ -64,7 +64,7 @@ pub enum Command {
         #[command(subcommand)]
         command: PlaylistCommand,
     },
-    /// Manage lyrics, which are never imported automatically
+    /// Download, import and export synchronized lyrics
     Lyrics {
         #[command(subcommand)]
         command: LyricsCommand,
@@ -214,6 +214,21 @@ pub enum SetupCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum LyricsCommand {
+    /// Fetch synchronized lyrics from LRCLIB (sends this track's tags and duration)
+    Fetch {
+        #[arg(long)]
+        track: String,
+        /// Also save an .lrc beside the audio for USB, SD and compatible DAPs
+        #[arg(long)]
+        beside: bool,
+    },
+    /// Export cached lyrics, beside the audio unless a destination is provided
+    Export {
+        #[arg(long)]
+        track: String,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Copy an .lrc file into the lyrics directory
     Import {
         path: PathBuf,

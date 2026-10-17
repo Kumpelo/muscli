@@ -67,8 +67,8 @@ impl AppPaths {
 
     /// Where imported lyrics live.
     ///
-    /// Deliberately away from the music: the scanner never reads `.lrc` files
-    /// beside the audio, so nothing ends up here by accident.
+    /// Downloads and explicit imports live here; portable sidecars stay
+    /// beside their audio and are read directly by the lyrics view.
     pub fn lyrics_dir(&self) -> PathBuf {
         self.data_dir.join("lyrics")
     }
