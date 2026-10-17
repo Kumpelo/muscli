@@ -32,6 +32,8 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",
     "BSL-1.0",
+    # TLS root certificate data; the license text ships in THIRD_PARTY_NOTICES.md.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
