@@ -20,6 +20,7 @@ pub(super) enum SettingId {
     ShowCovers,
     VolumeStep,
     Gapless,
+    PauseFade,
     LiveMix,
     MixDuration,
     ReplayGain,
@@ -53,7 +54,7 @@ const fn band(index: usize) -> SettingRow {
     row(SettingId::EqualizerBand(index), "setting.equalizer_band")
 }
 
-pub(super) const SETTINGS: [SettingRow; 31] = [
+pub(super) const SETTINGS: [SettingRow; 32] = [
     row(SettingId::Theme, "setting.theme"),
     row(SettingId::Language, "setting.language"),
     row(SettingId::CompactDefault, "setting.compact_default"),
@@ -62,6 +63,7 @@ pub(super) const SETTINGS: [SettingRow; 31] = [
     row(SettingId::AudioBackend, "setting.audio_backend"),
     row(SettingId::BitPerfect, "setting.bit_perfect"),
     row(SettingId::Gapless, "setting.gapless"),
+    row(SettingId::PauseFade, "setting.pause_fade"),
     row(SettingId::LiveMix, "setting.mix_live"),
     row(SettingId::MixDuration, "setting.mix_duration"),
     row(SettingId::ReplayGain, "setting.replaygain"),
@@ -195,6 +197,7 @@ impl App {
             SettingId::ShowCovers => switch(self.config.show_covers),
             SettingId::VolumeStep => t!("setting.value.percent", value = self.config.volume_step),
             SettingId::Gapless => switch(self.config.gapless),
+            SettingId::PauseFade => format!("{} ms", self.config.pause_fade_ms),
             SettingId::LiveMix if self.playback_context.is_album() => {
                 mix_label(self.config.live_mix_mode(), true)
             }
@@ -300,6 +303,13 @@ impl App {
                 } else {
                     self.config.volume_step.saturating_sub(1).max(1)
                 }
+            }
+            SettingId::PauseFade => {
+                self.config.pause_fade_ms = if increase || !horizontal {
+                    self.config.pause_fade_ms.saturating_add(100).min(2000)
+                } else {
+                    self.config.pause_fade_ms.saturating_sub(100)
+                };
             }
             SettingId::Gapless => self.config.gapless = !self.config.gapless,
             SettingId::LiveMix => {

@@ -293,3 +293,4 @@
 "status.gain_progress" = "Analizando volumen {completed}/{total}"
 
 "status.mix_requires_native" = "MIX en vivo requiere el motor nativo"
+"setting.pause_fade" = "Pausa gradual"

@@ -62,6 +62,8 @@ pub struct Config {
     /// Let mpv open the next track before the current one ends, so album sides
     /// run together without a gap.
     pub gapless: bool,
+    /// Fade to silence before pausing; zero disables it. Bypassed in bit-perfect mode.
+    pub pause_fade_ms: u64,
     /// Interface language: "auto", "en" or "es". Auto follows the system
     /// locale and falls back to English.
     pub language: String,
@@ -115,6 +117,7 @@ impl Default for Config {
             volume_range_db: -60.0,
             scan_threads: 0,
             gapless: true,
+            pause_fade_ms: 300,
             language: "auto".into(),
             theme: "system".into(),
             audio_extensions: Vec::new(),

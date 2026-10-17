@@ -274,6 +274,8 @@ struct App {
     queue: Vec<String>,
     playback_context: PlaybackContext,
     audible_mix: Option<playback::AudibleMix>,
+    pause_fade: Option<playback::PauseFade>,
+    pause_volume_echoes: VecDeque<f64>,
     applied_crossfade: Option<f64>,
     mix_analyses: HashMap<String, crate::audio::mix::TrackAnalysis>,
     auto_dj_attempt: Option<(Option<String>, usize)>,
@@ -527,6 +529,8 @@ async fn run_inner(
         queue: saved.queue,
         playback_context: saved.context,
         audible_mix: None,
+        pause_fade: None,
+        pause_volume_echoes: VecDeque::new(),
         applied_crossfade: None,
         mix_analyses: HashMap::new(),
         auto_dj_attempt: None,
@@ -646,7 +650,9 @@ async fn run_inner(
     let mut last_draw = Instant::now() - Duration::from_secs(1);
     let loop_result: Result<()> = async {
         while !app.should_quit {
-            let maintenance_delay = if app.playback.status == PlaybackStatus::Playing {
+            let maintenance_delay = if app.pause_fade.is_some() {
+                Duration::from_millis(16)
+            } else if app.playback.status == PlaybackStatus::Playing {
                 Duration::from_millis(250)
             } else {
                 Duration::from_secs(1)
@@ -748,6 +754,7 @@ async fn run_inner(
             while let Ok(result) = app.reload_rx.try_recv() {
                 app.handle_reload_result(result);
             }
+            app.tick_pause_fade()?;
             app.tick_history()?;
             app.publish_widget()?;
             app.refresh_theme();

@@ -22,6 +22,18 @@ fn sync_prefetch_target(
     Ok(())
 }
 
+pub(super) struct PauseFade {
+    started: Instant,
+    duration: Duration,
+}
+
+impl PauseFade {
+    fn gain_at(&self, elapsed: Duration) -> f64 {
+        let remaining = 1.0 - elapsed.as_secs_f64() / self.duration.as_secs_f64().max(f64::EPSILON);
+        remaining.clamp(0.0, 1.0).powi(2)
+    }
+}
+
 pub(super) struct AudibleMix {
     pub(super) track_id: String,
     pub(super) path: PathBuf,
@@ -154,6 +166,63 @@ fn next_playable(
 }
 
 impl App {
+    fn pause_volume(&mut self, factor: f64) -> Result<()> {
+        let gain = self.config.volume_gain(self.playback.volume) * factor;
+        self.player.set_volume(gain)?;
+        // mpv echoes volume commands asynchronously. A fade must never change
+        // the saved volume control, including echoes received after it ends.
+        if self.pause_volume_echoes.len() >= 128 {
+            self.pause_volume_echoes.pop_front();
+        }
+        self.pause_volume_echoes.push_back(gain);
+        Ok(())
+    }
+
+    fn cancel_pause_fade(&mut self) -> Result<()> {
+        if self.pause_fade.take().is_some() {
+            self.pause_volume(1.0)?;
+        }
+        Ok(())
+    }
+
+    fn request_pause(&mut self) -> Result<()> {
+        if self.pause_fade.is_some() {
+            return Ok(());
+        }
+        if self.playback.status == PlaybackStatus::Playing
+            && self.config.pause_fade_ms > 0
+            && !self.bypassed()
+        {
+            self.pause_fade = Some(PauseFade {
+                started: Instant::now(),
+                duration: Duration::from_millis(self.config.pause_fade_ms.min(2000)),
+            });
+        } else {
+            self.player.pause(true)?;
+            self.playback.status = PlaybackStatus::Paused;
+            self.flush_history(false)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn tick_pause_fade(&mut self) -> Result<()> {
+        let Some(fade) = &self.pause_fade else {
+            return Ok(());
+        };
+        let factor = fade.gain_at(fade.started.elapsed());
+        self.pause_volume(factor)?;
+        if factor == 0.0 {
+            self.player.pause(true)?;
+            self.playback.status = PlaybackStatus::Paused;
+            self.pause_fade = None;
+            self.pause_volume(1.0)?;
+            self.flush_history(false)?;
+            self.persist_playback()?;
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
     pub(super) fn queue_edited(&mut self, shuffle: bool) {
         // A manual queue is no longer an uninterrupted album session.
         edit_manual_queue(
@@ -188,6 +257,7 @@ impl App {
     }
 
     pub(super) fn load_current_with_pause(&mut self, position_ms: u64, paused: bool) -> Result<()> {
+        self.cancel_pause_fade()?;
         self.flush_audible_mix()?;
         self.flush_history(false)?;
         let Some(track) = self.current_track().cloned() else {
@@ -731,6 +801,15 @@ impl App {
     }
 
     pub(super) fn handle_action(&mut self, action: PlayerAction) -> Result<()> {
+        if !matches!(
+            action,
+            PlayerAction::Pause
+                | PlayerAction::Toggle
+                | PlayerAction::SetVolume(_)
+                | PlayerAction::MuteToggle
+        ) {
+            self.cancel_pause_fade()?;
+        }
         match action {
             PlayerAction::Play => {
                 if self.current_track().is_none() {
@@ -745,11 +824,7 @@ impl App {
                     self.playback.status = PlaybackStatus::Playing;
                 }
             }
-            PlayerAction::Pause => {
-                self.player.pause(true)?;
-                self.playback.status = PlaybackStatus::Paused;
-                self.flush_history(false)?;
-            }
+            PlayerAction::Pause => self.request_pause()?,
             PlayerAction::Toggle => {
                 if self.current_track().is_none() {
                     self.activate_selection()?;
@@ -758,8 +833,13 @@ impl App {
                     .is_some_and(|index| self.queue_track_is_playable(index))
                 {
                     self.next()?;
+                } else if self.pause_fade.is_some() {
+                    self.cancel_pause_fade()?;
+                } else if self.playback.status == PlaybackStatus::Playing {
+                    self.request_pause()?;
                 } else {
-                    self.player.toggle()?;
+                    self.player.pause(false)?;
+                    self.playback.status = PlaybackStatus::Playing;
                 }
             }
             PlayerAction::Stop => {
@@ -783,8 +863,11 @@ impl App {
             }
             PlayerAction::SetVolume(volume) => {
                 self.playback.volume = volume.clamp(0.0, 1.0);
-                self.player
-                    .set_volume(self.config.volume_gain(self.playback.volume))?;
+                let factor = self
+                    .pause_fade
+                    .as_ref()
+                    .map_or(1.0, |fade| fade.gain_at(fade.started.elapsed()));
+                self.pause_volume(factor)?;
                 if self.playback.volume > 0.0 {
                     self.muted_volume = None;
                 }
@@ -796,8 +879,11 @@ impl App {
                 } else {
                     self.playback.volume = self.muted_volume.take().unwrap_or(1.0);
                 }
-                self.player
-                    .set_volume(self.config.volume_gain(self.playback.volume))?;
+                let factor = self
+                    .pause_fade
+                    .as_ref()
+                    .map_or(1.0, |fade| fade.gain_at(fade.started.elapsed()));
+                self.pause_volume(factor)?;
             }
             PlayerAction::SetShuffle(value) => self.set_shuffle(value),
             PlayerAction::SetRepeat(value) => self.repeat = value,
@@ -895,7 +981,17 @@ impl App {
             // mpv reports an amplitude; the control is a position on a
             // curve, and showing one as the other would make it jump every
             // time mpv echoed back what it was told.
-            PlayerEvent::Volume(gain) => self.playback.volume = self.config.volume_position(gain),
+            PlayerEvent::Volume(gain) => {
+                if let Some(index) = self
+                    .pause_volume_echoes
+                    .iter()
+                    .position(|sent| (sent - gain).abs() < 1e-6)
+                {
+                    self.pause_volume_echoes.remove(index);
+                } else if self.pause_fade.is_none() {
+                    self.playback.volume = self.config.volume_position(gain);
+                }
+            }
             PlayerEvent::PrefetchedTrack(path) => self.adopt_prefetched(Some(&path))?,
             PlayerEvent::PlaylistPosition(position) => {
                 // Anything past the first entry means mpv rolled into the track
@@ -1136,6 +1232,26 @@ mod tests {
         );
         assert_eq!(queue[1], "requested next");
         assert_eq!(context, PlaybackContext::Songs);
+    }
+
+    #[test]
+    fn pause_fade_reaches_silence_smoothly_at_the_configured_duration() {
+        let fade = PauseFade {
+            started: Instant::now(),
+            duration: Duration::from_millis(300),
+        };
+        assert_eq!(fade.gain_at(Duration::ZERO), 1.0);
+        let values: Vec<_> = (0..=300)
+            .map(|ms| fade.gain_at(Duration::from_millis(ms)))
+            .collect();
+        assert!(
+            values
+                .windows(2)
+                .all(|pair| pair[0] >= pair[1] && pair[0] - pair[1] < 0.007)
+        );
+        assert_eq!(fade.gain_at(Duration::from_millis(150)), 0.25);
+        assert_eq!(fade.gain_at(Duration::from_millis(300)), 0.0);
+        assert_eq!(fade.gain_at(Duration::from_secs(3)), 0.0);
     }
 
     use super::*;

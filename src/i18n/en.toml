@@ -294,3 +294,4 @@
 "status.gain_progress" = "Analyzing volume {completed}/{total}"
 
 "status.mix_requires_native" = "Live MIX requires the native backend"
+"setting.pause_fade" = "Pause fade"
