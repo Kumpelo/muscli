@@ -199,6 +199,32 @@ Each entry replaces that action's default keys. Queue controls include
 `Shift+J/K` to move an item, `d` to remove it, and `C`, `S`, `L` to clear, save
 and load queues. `m` toggles compact mode.
 
+The player volume works in both native and mpv backends using `+`, `=`, `-`
+or `Ctrl+Up/Down`. `Shift+mouse wheel` also changes player volume when the
+terminal forwards that mouse gesture; scrolling without Shift still navigates.
+The step size is adjustable in Settings. These controls do not modify the
+Windows system mixer.
+
+### Windows Terminal appearance
+
+Themes paint their own complete background, including unused space beside
+cover images. Choose `light` for a light Windows Terminal profile or `dark`
+for a dark one; `system` uses the built-in Steel Blue palette on Windows
+rather than reading the profile's color scheme.
+
+Windows defaults to single-width ASCII symbols because its standard terminal
+fonts may not contain Nerd Font icons. To restore the original icons, install
+a Nerd Font in your terminal profile and set `MUSCLI_ICONS=nerd` before launch.
+For example, in PowerShell:
+
+```powershell
+$env:MUSCLI_ICONS = "nerd"
+muscli
+```
+
+On Linux, Nerd Font icons remain the default. Set `MUSCLI_ICONS=ascii` to use
+portable symbols there too.
+
 External volume commands affect muscli rather than the system mixer:
 
 ```bash
