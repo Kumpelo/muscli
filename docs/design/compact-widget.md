@@ -1,66 +1,56 @@
-# Compact desktop widget: IPC contract
+# Desktop widget: local protocol
 
-Status: validated for implementation. The optional MVP lives in `desktop/quickshell`.
+[Playback and widget guide](../playback-and-widget.es.md)
 
-The control socket accepts existing commands and a read-only `status v1` request. MPRIS
-exposes current metadata and transport controls but not muscli's complete queue.
-A separate Quickshell process should display the running player's state without
-opening the database, loading audio libraries, or launching another player.
+The Omarchy widget in `desktop/quickshell` displays the state of the running
+muscli instance. It reads queue snapshots from muscli's control socket and uses
+MPRIS for transport and volume controls. It does not open the database or start
+another audio backend.
 
-## Proposed boundary
+## Status request
 
-The per-user control socket now supports a versioned, read-only snapshot
-request. Retain the Unix runtime directory's 0700 and socket's 0600 permissions.
-Use one bounded request per connection, explicit framing, maximum request and
-response sizes, timeouts and a bounded client count. A stalled client must not
-block audio, the TUI, other clients, or application shutdown. Do not accept paths,
-shell commands, or arbitrary database queries from clients.
+The per-user control socket accepts a newline-terminated `status v1` request.
+The CLI exposes it as:
 
-Requests are capped at 256 bytes and responses at 64 KiB. At most eight
-nonblocking clients are serviced, each with a one-second server deadline. The
-CLI has bounded connection and response deadlines.
+```bash
+muscli remote status --json
+```
 
-The main loop publishes an immutable snapshot; the socket worker serves the latest
-copy without querying SQLite or awaiting the main loop. Snapshot fields:
+The command exits with an error when no player is running. It does not start
+playback. The main loop publishes a snapshot; the socket worker serves that
+copy without querying SQLite or waiting for the next render.
 
-- schema version, queue revision and playback availability;
-- logical current queue item and currently presented/audible incoming item;
-- title, individual artist, local cover URI, duration, position and volume;
-- playback status, active MIX state and playback context;
-- up to ten upcoming entries, with occurrence indices unique within a queue revision, including duplicates.
+The snapshot contains:
 
-The `muscli remote status --json` client exits promptly when no player is
-running and never starts playback. The widget queries once per second while
-visible; it interpolates progress locally and stops polling when hidden.
-Transport controls use MPRIS and target muscli specifically; volume uses MPRIS's
-existing semantics. Queue display uses the snapshot, never MPRIS TrackList guesses.
+- Schema version, availability and queue revision.
+- Playback status, position, duration, volume and album/song context.
+- Logical current track and the currently presented track during MIX.
+- Track title, artist, local cover URI and MIX progress.
+- Up to ten upcoming queue entries, including duplicates.
 
-## Optional frontend
+Occurrence indices distinguish repeated tracks within a queue revision.
+Consumers must check the schema version before reading the payload.
 
-Ship Quickshell QML and a launcher under an optional desktop integration directory,
-with no Cargo dependency or installation requirement. Configuration chooses screen,
-corner, margins and width. Prefer a small Wayland layer surface, with an ordinary
-window fallback if the chosen Quickshell version requires it. Cover, metadata,
-progress, transport, volume and a short upcoming list share a neutral theme.
+## Connection limits
 
-Keep the previous cover until its replacement loads. Show a disconnected state
-when the player exits. Missing Quickshell produces an actionable launcher message,
-without changing the player's behavior. Do not alter Hyprland config or install
-packages as a side effect of starting the player.
+On Unix, the runtime directory uses mode `0700` and the socket uses `0600`.
+Requests are limited to 256 bytes; serialized snapshots must be smaller than
+64 KiB. The server services up to eight nonblocking clients with a one-second
+connection deadline. The CLI also bounds connection and response waits.
 
-## Validation contract
+The status endpoint accepts a fixed request, not paths, shell commands or
+arbitrary database queries.
 
-Verify snapshot serialization, duplicate queue entries, Play Next priority,
-concurrent/slow clients, oversized requests, disconnects, player shutdown and socket
-permissions. Validate the actual QML with an installed Quickshell, then exercise
-controls, second-monitor placement and reconnect behavior in Hyprland. Inspect the
-supported Quickshell API version before implementation. A design review or a QML
-file alone does not establish that the widget works.
+## Quickshell frontend
 
-## Frontend version
+The frontend targets Quickshell 0.3.2 on Omarchy. The launcher accepts screen,
+corner, margin, width and muscli-binary options. Its Wayland panel uses the
+active Omarchy palette and displays up to four upcoming tracks.
 
-The MVP targets Quickshell 0.3.2. Its panel uses the documented
-[PanelWindow anchors and screen selection](https://quickshell.org/docs/v0.3.2/types/Quickshell/PanelWindow/)
-and [MprisPlayer capabilities and methods](https://quickshell.org/docs/v0.3.2/types/Quickshell.Services.Mpris/MprisPlayer/).
-The optional `tests/widget.rs` smoke test exercises these against a private D-Bus
-session and a synthetic control server, without constructing an audio backend.
+While visible, it requests status once per second and interpolates playback
+position locally. It retains the previous cover while loading the next one.
+Missing or stale status produces a disconnected view; missing MPRIS disables
+controls. Transport and volume commands target muscli's MPRIS player.
+
+The optional integration test in `tests/widget.rs` exercises controls and
+reconnection using a private D-Bus session and synthetic library metadata.

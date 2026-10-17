@@ -1,475 +1,78 @@
 # muscli
 
-> [Documentación en español](docs/README.es.md)
+[![Build](https://github.com/Kumpelo/muscli/actions/workflows/ci.yml/badge.svg)](https://github.com/Kumpelo/muscli/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Kumpelo/muscli?include_prereleases)](https://github.com/Kumpelo/muscli/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-8fa8b8)](LICENSE)
 
-muscli is a fast, local-first music player with a Spotify-like terminal UI. It
-indexes removable drives and local folders, keeps playlists usable while a
-drive is offline, and plays FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF,
-WavPack and Monkey's Audio gaplessly — through its own audio path, which
-decodes and mixes in floating point and can run bit-perfect, or through mpv.
-It has no account, streaming service, telemetry, or resident daemon.
+A local music player for Linux and Windows, with a terminal interface,
+local folders and removable-drive libraries. No account or streaming service.
 
-![muscli library view](docs/assets/muscli-beta2.png)
+[Español](docs/README.es.md) · [Install](#install) · [User guide](docs/usage.md)
 
-## Platforms
+![muscli album library](docs/assets/muscli-library.png)
 
-- Linux: MPRIS, removable media discovery, Discord Rich Presence, and an
-  optional Omarchy integration.
-- Windows 11 x64: the same TUI, removable-drive discovery, Windows media
-  controls (SMTC), media keys, and Discord Rich Presence.
+*muscli 0.2.0-beta.3 · Sample library · Steel Blue palette.*
 
-The Windows installer bundles verified mpv and FFmpeg executables. See
-[third-party notices](THIRD_PARTY_NOTICES.md) for exact builds, checksums,
-licenses, and corresponding source. Early installers are unsigned, so Windows
-SmartScreen may ask for confirmation.
+## Features
+
+- Albums, artists, genres, search, playlists and saved queues.
+- Gapless playback through mpv or the built-in audio backend.
+- ReplayGain, an eight-band equalizer and optional bit-perfect output.
+- Live MIX, adjustable pause fade and synchronized lyrics that work offline.
+- Discord Rich Presence, Linux MPRIS and Windows media controls.
+- Desktop themes, English/Spanish UI and optional Omarchy integration.
 
 ## Install
 
-### Linux
+Download a package from [Releases](https://github.com/Kumpelo/muscli/releases).
+On Windows, run the `.exe` installer; mpv and FFmpeg are bundled. On Linux,
+install ALSA, mpv and FFmpeg, then extract the archive and place `muscli` in
+`~/.local/bin`.
 
-Install the runtime dependencies first. muscli needs ALSA (`libasound.so.2`),
-mpv, and FFmpeg. On Arch-based systems:
+| Linux distribution | Runtime dependencies |
+|---|---|
+| Arch / Omarchy | `sudo pacman -S alsa-lib mpv ffmpeg` |
+| Debian | `sudo apt install libasound2 mpv ffmpeg` |
+| Ubuntu 24.04+ | `sudo apt install libasound2t64 mpv ffmpeg` |
 
-```bash
-sudo pacman -S alsa-lib mpv ffmpeg
-```
-
-On Debian:
-
-```bash
-sudo apt install libasound2 mpv ffmpeg
-```
-
-On Ubuntu 24.04 or newer:
-
-```bash
-sudo apt install libasound2t64 mpv ffmpeg
-```
-
-Download the Linux archive from the
-[v0.2.0-beta.2 release](https://github.com/Kumpelo/muscli/releases/tag/v0.2.0-beta.2),
-then install the binary for your user:
-
-```bash
-tar -xzf muscli-v0.2.0-beta.2-linux-x86_64.tar.gz
-install -Dm755 muscli-v0.2.0-beta.2-linux-x86_64/muscli "$HOME/.local/bin/muscli"
-muscli --version
-```
-
-Make sure `$HOME/.local/bin` is in `PATH`.
-
-### Omarchy
-
-```bash
-omarchy pkg add alsa-lib mpv ffmpeg
-muscli setup omarchy
-```
-
-Omarchy setup only edits user-owned configuration, creates timestamped
-backups, validates Hyprland, enables the official media widget, and installs:
-
-- `SUPER+SHIFT+ALT+M`: open the large floating muscli window.
-- `Shift+Volume Up/Down`: change only muscli's volume.
-
-Undo intact managed blocks with `muscli setup omarchy --undo`.
-
-### Build from source
-
-Install the ALSA development headers and Rust 1.90 or newer, clone the
-repository, then run:
+To build from a cloned checkout, install Rust 1.90+ and the ALSA development
+headers on Linux, then run:
 
 ```bash
 cargo install --locked --root "$HOME/.local" --path .
 ```
 
-### Windows 11
-
-Download `muscli-vX.Y.Z-windows-x86_64-setup.exe` from Releases and run it.
-The Start menu contains muscli and `muscli Doctor`; the installer also
-registers `muscli.exe` in Windows App Paths. Windows Terminal is recommended
-for the best image support.
+See the [installation details](docs/usage.md#installation) for archive commands
+and Omarchy setup. The Windows installer is unsigned; SmartScreen may request
+confirmation.
 
 ## Quick start
 
 ```bash
 muscli library add /path/to/Music
 muscli library rescan
-muscli doctor
 muscli
 ```
 
-Inside the app, use the arrow keys or `hjkl` to move, Enter to open or play,
-Space to pause, `/` to search, `,` for settings, `?` for help, and `q` to save
-and quit.
-
-## Library and playback
-
-```text
-muscli library add PATH
-muscli library remove PATH
-muscli library list
-muscli library rescan
-muscli library prune
-muscli library forget-positions
-muscli library analyze-gain
-muscli library write-gain --yes
-muscli doctor
-muscli playlist export NAME playlist.m3u8
-muscli playlist import playlist.m3u8
-muscli summary --days 30
-muscli devices
-```
-
-`muscli summary` reports what you have been listening to from the local index.
-Like everything else here, it sends nothing anywhere.
-
-## Audio backends
-
-Playback goes through mpv by default. Setting `audio_backend = "native"` in
-`config.toml` uses the built-in path instead: the file is decoded to floating
-point here, processed here, and written straight to the device, with
-`muscli devices` listing what is available and `audio_device` choosing one.
-
-The native path opens the device at the file's own sample rate whenever the
-device will take it, so nothing is converted that did not need converting.
-When it will not, the conversion is done here with a 256-tap sinc filter
-rather than left to a sound server: measured against a tone, 15 kHz survives
-44.1 to 48 kHz within 0.1 dB and the conversion's own images stay below
--80 dB.
-
-What it does, in order, is ReplayGain, then the equaliser, then a look-ahead
-limiter that keeps an equaliser boost from clipping. The volume is applied at
-the device, so a change is heard on the next callback instead of behind the
-half second already buffered, and on an integer device the samples are
-dithered after it. With all of them neutral the samples that reach the device
-are the samples that were in the file, bit for bit; with all of them working
-the arithmetic adds distortion at -144.8 dB, which is below what a 24-bit
-recording can hold, and costs 2.6 ms of one core per second of stereo.
-
-`bit_perfect = true` hands the decoder's output over untouched, which means
-giving up the volume control, ReplayGain and the equaliser to do it; the
-settings view says so rather than leaving those controls looking as though
-they still work. What it promises is that muscli changes nothing. Whether the
-samples reach the converter unchanged is then up to the device: an exclusive
-or hardware device gets them as they are, while a shared one on PulseAudio,
-PipeWire or WASAPI Shared may still be mixed and resampled after muscli is
-done with them.
-
-Album sides that were mastered to run together do: the next track is opened
-early and joined to the one playing inside the same device stream, so the
-samples of the second follow the samples of the first with nothing between
-them. A track at a different sample rate cannot be joined that way and gets
-its own stream, which is a gap — there is no way around that.
-
-Seeking keeps the device open. The half second of audio already buffered is
-discarded by the output on its way through rather than by rebuilding the
-stream around it, so a seek costs the one buffer the device was filling
-instead of asking the driver for the card again.
-
-The native decoder does not read Opus, WavPack or Monkey's Audio, so files it
-cannot read are handed to mpv automatically, chosen by opening the file
-rather than by trusting its extension. mpv is started only if some file needs
-it.
-
-An eight-band equaliser is configured with `equalizer` in `config.toml`, as
-gains in decibels from low to high — the bands are 60, 150, 400, 1000, 2400,
-6000, 12000 and 16000 Hz, each an octave wide:
-
-```toml
-equalizer = [4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 3.0]
-```
-
-There is no default: an unset or all-zero list means the filter is not
-installed at all, so nothing is coloured and nothing is heard. It works on
-both backends and is designed to sound the same on each.
-
-The volume control moves in decibels, not in amplitude, so every step is the
-same size to the ear: with the default 5% step, each press is 3 dB wherever
-you are in the range. `volume_range_db` sets how far down the bottom of the
-travel reaches, -60 dB by default; zero is true silence rather than merely
-very quiet. The status bar shows both the position and the decibels.
-
-FLAC, MP3, M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio are
-indexed; narrow the list with `audio_extensions` in `config.toml`. Tags and
-embedded or external artwork are read without modifying the media. The SQLite index, configuration, and 64 MiB size-bounded
-cover cache use the platform-standard application directories. A warm start
-loads the index immediately while scans and ReplayGain analysis continue in
-the background.
-
-Features include genres, artist releases, resume/history, editable smart
-playlists, fuzzy search, a context menu, saved/reorderable queues, local
-ReplayGain analysis, settings, a keybinding reference, and compact mode.
-
-## Beta limitations
-
-- The Windows installer is not signed, so SmartScreen may require manual
-  confirmation.
-- The native decoder falls back to mpv for Opus, WavPack, and Monkey's Audio.
-- Gapless native playback requires adjacent tracks to use the same stream
-  format; a sample-rate change opens a new stream.
-- Changing or disconnecting an audio device may require restarting playback.
-
-When reporting a problem, include the platform, exact muscli version,
-reproduction steps, and the output of `muscli doctor`.
-
-## Persistent MIX analysis (BPM and energy)
-
-MIX analysis works like ReplayGain: while muscli is open it scans the local
-library in the background, analyzes only missing, changed or outdated tracks
-and stores compact music descriptors in its SQLite database. It does not
-modify music files or upload any audio.
-
-```sh
-muscli library analyze-mix          # fill missing BPM/energy data
-muscli library mix-status           # analysis coverage and failed codecs
-muscli library analyze-mix --force  # recompute all indexed tracks
-```
-
-For each indexed track the cache includes estimated BPM (nullable if
-uncertain), autocorrelation confidence, RMS energy, file size, modification
-timestamp, endpoint RMS/silences and algorithm version. Unsupported/corrupt files are recorded as
-failed rather than retried at every startup. Changing a track or upgrading
-the analysis algorithm automatically invalidates that row. The analyzer
-decodes at most the first 30 seconds and two four-second endpoints per song and processes one song at
-a time to keep background work bounded. On large libraries, initial analysis
-can take time; playback does not wait for it. Set
-`mix_analysis_enabled = false` in config.toml to disable automatic
-background analysis. The manual CLI command remains available.
-
-Cached BPM values are reused by `muscli mix demo` when both songs
-are indexed. This basic BPM detector is approximate, especially with
-half/double tempos, long introductions or songs without regular percussion.
-A correct BPM estimate does not imply beat alignment or musical compatibility.
-
-**Database note:** this feature upgrades the index schema to version 9.
-Back up the library database before trying an older muscli binary, since
-older versions cannot open a newer index.
-
-## Experimental live MIX (native backend)
-
-The native player can now blend the last few seconds of one local song
-with the already-prefetched next song **while listening**. This early,
-opt-in feature does not render a WAV or modify the original files.
-
-Open **Settings → MIX en vivo** to cycle **OFF → CLASSIC → SMART → AUTO_DJ**.
-CLASSIC uses the configured duration. SMART keeps queue order and uses a short
-fade only with confident tempo, energy and endpoint evidence; otherwise it falls
-back to normal playback. AUTO_DJ may append a compatible library track after the
-user's queued selections run out. It never replaces Play Next or reorders the queue.
-Album sessions suspend MIX, AutoDJ and shuffle without changing global preferences.
-The duration row sets `mix_crossfade_seconds`; `live_mix_mode` stores the mode.
-
-See [album playback, MIX policies and optional desktop widget](docs/playback-and-widget.es.md)
-for context rules, library grouping, backend limits and validation steps.
-
-Live crossfade works only when the current and
-prefetched files decode to **matching formats**, the native output needs
-**no resampling/channel duplication**, gapless prefetch is enabled, and
-bit-perfect mode is **off**. If those conditions are not met (or the
-incoming file has not been prefetched in time), muscli uses the old
-gapless/ordinary handover. Files played through the mpv fallback do not
-receive native crossfades. Live playback does not change tempo, align beat phase, add DJ filters or scratch.
-The offline demo remains separate from the conservative live policy.
-
-The live transition and recommendation policies remain beta features:
-test with real library tracks and headphones before distributing.
-You can disable live MIX immediately from the settings screen.
-Backup your local SQLite library database before switching back to
-older binaries (this work branch already uses index schema v9).
-
-## Experimental MIX preview (offline)
-
-The early MIX demo renders a new WAV from two local files; it does **not**
-alter the source tracks or enable mixing during normal TUI playback.
-
-```sh
-# Manual 6-second transition with a smooth fade:
-muscli mix demo "track-a.flac" "track-b.flac" "demo.wav" \
-  --mode manual --seconds 6 --curve smooth --save-preset my-fade
-
-# Automatic overlap duration estimated from BPM (8 beats by default):
-muscli mix demo "track-a.flac" "track-b.flac" "auto.wav" \
-  --mode auto --beats 8 --curve equal-power
-
-# Reuse a tiny saved recipe, overriding parameters if desired:
-muscli mix demo "track-c.flac" "track-d.flac" "another.wav" \
-  --preset my-fade --seconds 4
-
-# Combined DJ filter sweep, 3-band transition EQ, and baby scratch:
-muscli mix demo "track-a.flac" "track-b.flac" "dj-preview.wav" \
-  --mode auto --filter sweep --intensity 0.75 --scratch \
-  --bass-db -5 --mid-db -2 --treble-db 3 \
-  --save-preset dj-transition
-
-# Gentler incoming-track high-pass transition:
-muscli mix demo "track-c.flac" "track-d.flac" "highpass.wav" \
-  --mode manual --seconds 6 --filter high-pass --intensity 0.5
-
-muscli mix presets
-```
-
-Options: `--mode auto|manual`, `--seconds 0..12`,
-`--curve linear|smooth|equal-power`, `--beats`, `--bpm`,
-`--preset` and `--save-preset`, plus `--filter auto|off|low-pass|high-pass|sweep`,
-`--intensity 0..1`, `--bass-db`, `--mid-db`, `--treble-db` (-12..+12 dB)
-and `--scratch`. The three-band EQ and short vinyl-style scratch can be
-combined with any filter. `auto` filter selects a sweep only when both BPM
-estimates are compatible; otherwise it uses a clean crossfade. Scratch is
-**manual opt-in**, never applied unpredictably by AutoDJ.
-
-Presets are saved as small TOML
-parameter sets in the normal configuration, **not** copied audio.
-
-The preview uses the built-in decoder and a streaming 16-bit PCM WAV encoder.
-For now the two songs must have the **same sample rate and channel count**.
-Automatic mode estimates BPM from an onset envelope, then sets a beat-length
-crossfade; **it does not yet synchronize beat phase, musical key, tempo or
-downbeats**. An unreliable estimate falls back to the preset duration.
-Each output file must be a *new* path and PCM WAV output can be sizable.
-This is a proof of concept, not yet Apple Music AutoMix, Spotify Mix, or
-real-time DJ playback. Filtering uses lightweight, one-pole low/high-pass
-sections; transition EQ is a simple 3-band crossover and automatically
-returns to normal when the overlap finishes. Scratch performs a short
-forward/reverse gesture on a bounded (~300 ms maximum) intro, not a full
-turntable emulation or key-locked vinyl algorithm. Peak safety relies on
-gain headroom and 16-bit output clamping, not a mastering limiter.
-Normal playback and bit-perfect remain unaffected.
-
-## Discord Rich Presence
-
-```text
-muscli setup discord --large-image peter
-```
-
-muscli ships with its official Discord application ID, so users do not need to
-create or configure a Discord application. No bot token or OAuth is needed. The
-local Discord/Vesktop IPC displays title, artist, album and progress. New
-installations enable it by default; existing opt-out preferences are preserved.
-Settings (`,`) includes switches for Rich Presence and Discord images. Turning
-images off keeps a text presentation with song and artist. The song title is
-sent as `details`, the artist as `state`, and the album as the image tooltip
-(`assets.large_text`) when images are enabled. Metadata casing is preserved;
-artist and album are never combined into one line. Pausing and stopping clear
-the activity completely. Discord
-is optional and is never required for audio playback. Assets named `peter_metal`, `peter_dj`, and
-`daft_punk` are selected for their matching genres/artist; otherwise the
-configured fallback is used. muscli resolves the canonical MusicBrainz release
-group from the tagged release ID or, when that is absent, from the album artist,
-album title, and year. Discord then receives the public 500 px album-cover URL
-from Cover Art Archive. Resolved URLs are cached across runs, so known albums do
-not need another MusicBrainz lookup. Ambiguous matches keep the configured
-fallback. Local cover art is never uploaded: Discord can display a public image
-URL, but it cannot read muscli's local cover-cache path.
-
-## Main controls
-
 | Key | Action |
 |---|---|
-| Arrows or `hjkl` | Navigate lists and album grids |
+| Arrows / `hjkl` | Navigate |
 | Enter / Esc | Open or play / go back |
-| Space, `n`, `p` | Pause, next, previous |
-| `/`, `x`, `f`, `a` | Search, context menu, favorite, enqueue |
-| `s`, `r`, `+`, `-` | Shuffle, repeat, volume |
-| `m`, `,`, `?` | Compact mode, settings, help |
-| `Shift+J/K`, `d` | Reorder or remove queue item |
-| `C`, `S`, `L` | Clear, save, or load a queue |
-| `q` | Save state and quit |
+| Space / `n` / `p` | Pause or resume / next / previous |
+| `/` / `x` | Search / song menu |
+| `a` / `s` / `r` | Add to queue / shuffle / repeat |
+| `+` / `-` | Volume |
+| `,` / `?` / `q` | Settings / help / save and quit |
 
-Run `muscli remote volume up|down|set PERCENT` or
-`muscli remote mute-toggle` from another process. If muscli is closed these
-commands exit silently and never change the system volume.
+Use Settings to choose your audio backend, language, theme and playback
+preferences. Run `muscli keys` for all bindings or `muscli doctor` to check setup.
 
-## Development
+## Documentation
 
-Building on Linux needs the ALSA headers, which is what the native audio
-backend links against:
+- [User guide](docs/usage.md): library commands, audio, lyrics and configuration.
+- [Álbumes, MIX y widget](docs/playback-and-widget.es.md): playback and the optional Omarchy widget, in Spanish.
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
-```bash
-omarchy pkg add alsa-lib      # Debian and Ubuntu: apt install libasound2-dev
-```
-
-```bash
-cargo fmt --all --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-cargo build --release
-```
-
-CI runs these checks on Linux and Windows. The release workflow can build a
-manual release candidate; tags matching `v*` create draft prereleases with
-Linux and Windows artifacts, SHA-256 checksums, and a CycloneDX SBOM.
-
-`muscli library write-gain` is the only command that modifies your audio files.
-It writes the cached loudness analysis into their ReplayGain tags so other
-players can use it, and requires `--yes`. Everything else muscli does reads
-your files and never writes to them.
-
-## Lyrics
-
-Lyrics are never picked up automatically. An `.lrc` file sitting next to a
-track is left alone; lyrics live in their own directory and only get there when
-you put them there:
-
-```bash
-muscli lyrics import song.lrc --artist ARTIST --title TITLE
-muscli lyrics import song.lrc --track TRACK_ID
-muscli lyrics where
-```
-
-Naming by artist and title survives the audio file being moved; naming by track
-id does not, because the id is derived from the path. Timed lines follow
-playback; a file without timestamps is shown as plain text.
-
-## Key bindings
-
-`muscli keys` lists the bindings in effect. To change them, write
-`keybindings.toml` in the configuration directory, naming actions as that
-command prints them:
-
-```toml
-quit = ["ctrl+q"]
-play_pause = ["space", "p"]
-```
-
-Listing an action replaces its default keys rather than adding to them. An
-entry muscli cannot read is reported and skipped; it never stops muscli
-starting.
-
-## Themes
-
-The interface defaults to `system`: it follows Omarchy on Linux and uses a
-Steel Blue (`#8FA8B8`) on graphite (`#111318`) elsewhere, with light text
-(`#E8EBEF`) and subdued borders (`#39424B`). Existing explicit theme choices are preserved. Change it from the settings view (`,`), with the left and
-right arrows on the **Theme** row, or set `theme` in `config.toml`:
-
-| `theme` | |
-|---|---|
-| `light` | neutral white background |
-| `dark` | the terminal's own palette |
-| `high-contrast` | black on white, for bright rooms and projectors |
-| `nord`, `gruvbox`, `solarized-light` | fixed palettes, identical everywhere |
-| `system` | default; follow the desktop: the current Omarchy theme on Linux, light elsewhere |
-
-With `system` on Linux the palette follows Omarchy live: switching theme there
-repaints muscli without restarting it. `muscli --theme dark` tries a palette
-for one run without changing the configured one.
-
-## Language
-
-The interface follows the system locale when it recognises it, and is English
-otherwise. Change it from the settings view, set `language = "en"` or
-`language = "es"` in `config.toml`, or pass `muscli --lang es` for one run.
-Changing it in the settings view takes effect immediately, without restarting.
-
-## Settings
-
-Press `,` for the settings view. Left and right adjust a value, Space and Enter
-toggle one or run the row. It covers the theme and language, compact mode,
-covers, volume step, gapless playback, ReplayGain and its mode and target,
-every equaliser band, resume and history, removable-drive detection, scan
-threads, the cover-cache budget and Discord Rich Presence, and it can start a
-rescan or a ReplayGain analysis. Every change is written to `config.toml` as
-it is made; that file remains editable by hand.
-
-muscli is MIT licensed. Contributions are welcome; see
-[CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+muscli is in beta. Native gapless playback requires compatible track formats;
+Opus, WavPack and Monkey's Audio use the mpv fallback. See the
+[audio guide](docs/usage.md#audio) for the current limits.

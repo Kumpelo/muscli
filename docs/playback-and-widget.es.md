@@ -1,152 +1,120 @@
-# Álbumes, MIX y widget de escritorio
+# Álbumes, MIX y widget de Omarchy
 
-## Álbumes y biblioteca
+[Volver al README](README.es.md)
 
-Iniciar desde Albums, el detalle de un álbum o un lanzamiento dentro de Artists
-crea una sesión ALBUM explícita. Respeta el orden disco/pista y mantiene el
-prefetch gapless aunque la preferencia general de gapless esté desactivada.
-MIX y AutoDJ quedan suspendidos sin cambiar sus preferencias globales.
+## Actualizaciones
 
-Play Next inserta la canción pedida y luego continúa la cola; toda esa sesión
-conserva la protección ALBUM. Saltar, eliminar o reordenar pistas no la elimina.
-Shuffle conserva su preferencia, pero no reordena una sesión de álbum. Abrir la
-cola y reproducir otra de sus entradas conserva el contexto. La sesión restaurada
-tras reiniciar también lo conserva. Iniciar una selección nueva desde Songs,
-favoritos o playlists recupera los ajustes generales. Cargar una cola guardada
-inicia una sesión genérica, conservando el estado de pausa.
+En **Ajustes → Actualizaciones** puedes elegir **Desactivadas**, **Avisar
+(desarrollo)** o **Automáticas**. Las compilaciones locales avisan por defecto;
+las versiones publicadas usan el modo automático. El modo elegido se aplica al
+próximo inicio. Cambiarlo cancela una actualización que siga preparándose.
 
-MusicBrainz Release ID tiene prioridad para identificar lanzamientos. Sin él,
-se usan fuente, carpeta de lanzamiento, título normalizado, año y Album Artist.
-Las carpetas convencionales CD1/CD2 o Disc 1/Disc 2 se agrupan cuando concuerdan
-con el número de disco. Las recopilaciones mantienen los artistas individuales;
-un Album Artist explícito compartido tiene prioridad sobre Various Artists.
-La inferencia sin Album Artist exige numeración inequívoca dentro de la carpeta.
-Si los archivos están repartidos como `biblioteca/Artista/Lanzamiento/pista`,
-pueden reunirse sin Album Artist ni Release ID cuando coinciden la fuente,
-raíz de biblioteca, nombre de carpeta, título, año conocido y portada cacheada
-por contenido. Los directorios deben corresponder a los artistas de las pistas,
-y la numeración conjunta debe ser completa desde 1, sin huecos ni duplicados
-por disco. Cualquier conflicto en esas señales conserva la separación. Esta
-inferencia se reconstruye al cargar el índice existente: no exige reetiquetar
-ni reescanear archivos cuyos datos ya están actualizados.
+La búsqueda se hace en segundo plano, como máximo una vez al día. En Linux, una
+actualización automática queda instalada para el próximo inicio sin detener la
+música. En Windows, el instalador queda preparado y se ejecuta al cerrar muscli.
+También puedes usar **Buscar e instalar actualización** desde Ajustes o ejecutar:
 
-Ediciones distintas en carpetas distintas no se unen solo por título/año.
+```bash
+muscli update --check  # consultar sin instalar
+muscli update          # descargar, verificar e instalar
+```
 
-La agrupación se reconstruye al cargar la biblioteca, sin duplicar pistas ni
-cambiar sus IDs. La primera actualización relee las etiquetas de las filas
-antiguas incluso si el archivo no cambió; no invalida ReplayGain por sí sola.
-Las migraciones de esquema son transaccionales. La base actual es versión 9;
-una versión anterior del programa puede rechazarla. Mantener una copia de la
-base antes de cambiar de versión permite volver atrás sin intentar degradarla.
+Se comprueba el SHA-256 antes de instalar. En Linux se conserva el ejecutable
+anterior como `muscli.previous` junto a `muscli`. Tu música, letras y configuración
+se mantienen. Las instalaciones gestionadas por un gestor de paquetes deben
+actualizarse con ese gestor; los ejecutables de `target` se recompilan con Cargo.
+La [guía de uso](usage.md#updates) detalla las ubicaciones compatibles.
 
-Gapless nativo requiere formatos compatibles con la salida continua. Cambios de
-frecuencia/canales o un prefetch tardío pueden requerir reapertura del dispositivo.
-mpv conserva sus capacidades de gapless y no aplica el crossfade nativo. Bit-perfect
-sigue evitando procesamiento de muestras. La comparación de muestras con salida
-capturada no sustituye una prueba auditiva del dispositivo y archivos reales.
+## Álbumes y cola
 
-## Modos de MIX
+Al reproducir desde Álbumes o desde el detalle de un lanzamiento, muscli respeta
+el orden de disco y pista. Durante esa sesión suspende MIX y shuffle, conservando
+las preferencias elegidas en Ajustes.
 
-En Settings, la fila MIX en vivo recorre OFF → CLASSIC → SMART → AUTO_DJ.
-MIX: duración conserva una duración máxima de 0–12 segundos independientemente del
-modo; activar un modo con duración cero propone seis segundos.
+Añadir una canción al final o con **Reproducir siguiente**, quitar pistas o
+reordenarlas convierte la sesión en una cola de canciones. MIX y shuffle vuelven
+a estar disponibles. Shuffle reorganiza solo las canciones por escuchar;
+**Reproducir siguiente** conserva la posición solicitada.
 
-- **OFF:** sin solapamiento.
-- **CLASSIC:** duración configurada, si el motor puede mezclar esos formatos.
-- **SMART:** conserva la cola y solo solapa con evidencia suficiente. Exige BPM
-  cercano con confianza alta, energía comparable y extremos sin silencios largos.
-  Propone aproximadamente cuatro beats, con máximo de ocho segundos y el límite
-  configurado. Esto es una heurística conservadora: no alinea beats ni demuestra
-  compatibilidad armónica. Cuando faltan datos, usa gapless o el cambio normal.
-- **AUTO_DJ:** aplica esa política y, cuando no quedan canciones elegidas por el
-  usuario, añade una candidata compatible de la biblioteca. No reemplaza ni
-  reordena las entradas existentes. Play Next conserva prioridad. No repite IDs
-  que ya están en la cola de esa sesión; si no encuentra candidata, termina.
-  Está suspendido en ALBUM, bit-perfect y modos repeat.
+Una cola guardada se carga como cola de canciones. Al reiniciar, una sesión de
+álbum mantiene su protección si sus pistas siguen perteneciendo al mismo
+lanzamiento y conservan el orden.
 
-El análisis persistente mide hasta treinta segundos iniciales y dos extremos de
-cuatro segundos, en un worker separado del audio. Guarda BPM/confianza, RMS,
-silencios inicial/final y la huella del archivo. Su versión invalida solo la caché
-MIX antigua; los fallos también se recuerdan hasta que cambie el archivo o se
-solicite `muscli library analyze-mix --force`. No se estima tonalidad ni estructura
-completa. No se aplican filtros DJ, pitch shifting ni time stretching en vivo.
-ReplayGain se calcula con su análisis existente y se aplica por pista durante el
-solapamiento y en el límite de decodificación.
+La biblioteca usa el identificador de lanzamiento de MusicBrainz cuando existe.
+En los demás casos combina las etiquetas y la ubicación de los archivos. Las
+recopilaciones conservan los artistas de cada canción, y dos lanzamientos no se
+fusionan solo por compartir título. Para un álbum multidisco, los números de
+disco y pista permiten mantener la secuencia.
 
-## Presentación durante MIX
+## MIX en vivo
 
-Inicio, progreso y final de MIX se programan contra frames consumidos por la
-salida, incluyendo la latencia del DSP. La cola lógica permanece en la saliente
-hasta el handover; título, artista, progreso, MPRIS y widget presentan la entrante
-cuando ya es audible. El historial de la entrante continúa al adoptar la cola,
-sin crear un segundo inicio por el mismo handover.
+En Ajustes, **MIX en vivo** permite elegir:
 
-Seek y los saltos manuales completan primero la transición hacia la pista
-presentada. Play/pause detiene ambos decks. Un cambio de duración solicitado
-durante un solapamiento se aplica después de ese límite.
+| Modo | Comportamiento |
+|---|---|
+| Desactivado | Cambia de pista sin solapamiento. |
+| Clásico | Solapa las pistas durante la duración configurada. |
+| Inteligente | Conserva la cola y mezcla cuando el análisis de tempo, energía y extremos permite una transición. |
+| AutoDJ | Usa la misma selección de transiciones y puede añadir una canción compatible al terminar la cola elegida. |
 
-La portada anterior permanece hasta que termine la decodificación de la nueva.
-Kitty y halfblocks pueden mostrar cinco pasos de mezcla, preparados en el worker
-a 256 px, terminando con la portada de resolución normal. Sixel e iTerm2 hacen un
-cambio estático. Esto evita animaciones de alta frecuencia y borrados completos
-por cada frame. El detalle de un álbum sigue mostrando la selección del usuario.
+**MIX: duración** fija el máximo entre 0 y 12 segundos. MIX requiere el motor
+nativo, reproducción sin huecos activada, bit-perfect desactivado y formatos
+compatibles entre las pistas y la salida. Si no se cumplen esas condiciones,
+las canciones pasan de una a otra mediante la reproducción habitual.
 
-## Widget opcional de Quickshell
+AutoDJ respeta las canciones ya elegidas y la prioridad de **Reproducir
+siguiente**. Se suspende durante una sesión de álbum, con bit-perfect o con la
+repetición activada. El análisis estima compatibilidad; no sincroniza beats ni
+ajusta el tono de las canciones.
 
-Requiere una instancia de esta versión de muscli ejecutándose y Quickshell 0.3.2.
-El widget no abre la TUI ni inicia otro motor. Todavía no existe un servicio de
-reproducción headless: al cerrar el reproductor, el widget muestra desconexión.
-La dependencia no afecta a la compilación de Rust ni al reproductor.
+El análisis se guarda localmente y se reutiliza para archivos sin cambios:
+
+```bash
+muscli library analyze-mix
+muscli library mix-status
+```
+
+`analyze-mix --force` reemplaza los resultados guardados. Para desactivar el
+análisis automático, usa `mix_analysis_enabled = false` en `config.toml`.
+
+Durante una mezcla, el título, la portada y el progreso muestran la canción
+entrante cuando empieza a oírse. Pausar detiene ambas canciones; buscar otra
+posición o saltar de pista toma como referencia la canción presentada.
+
+## Pausa gradual
+
+**Pausa gradual** reduce el volumen antes de detener la reproducción. El valor
+inicial es 300 ms y se puede ajustar entre 0 y 2000 ms; cero desactiva el efecto.
+El volumen elegido se conserva. Reanudar o cambiar de pista cancela una pausa
+pendiente. En bit-perfect la pausa es inmediata.
+
+## Widget para Omarchy
+
+El widget requiere muscli abierto y Quickshell 0.3.2. Muestra portada, canción,
+progreso y hasta cuatro próximas canciones. Sus colores siguen el tema activo
+de Omarchy y sus controles actúan únicamente sobre muscli.
 
 Desde la raíz del repositorio:
 
-```sh
+```bash
 cargo build --release --locked
+desktop/quickshell/launch --binary "$PWD/target/release/muscli"
+```
+
+Para elegir monitor, esquina y tamaño:
+
+```bash
 desktop/quickshell/launch --binary "$PWD/target/release/muscli" \
   --screen HDMI-A-1 --corner bottom-right --width 360 --margin 18
 ```
 
-Cambiar `--screen` por el nombre que informa `hyprctl monitors`. Las esquinas
-permitidas son top-left, top-right, bottom-left y bottom-right. Un monitor no
-presente usa la primera pantalla. El launcher no instala paquetes ni modifica
-Hyprland. Si falta Quickshell, muestra qué dependencia opcional se necesita.
+Sustituye `HDMI-A-1` por el nombre que muestra `hyprctl monitors`. Las esquinas
+admitidas son `top-left`, `top-right`, `bottom-left` y `bottom-right`. Si el
+monitor no existe, se usa la primera pantalla.
 
-Los controles usan MPRIS exclusivamente para muscli. La cola procede de
-`muscli remote status --json`, una consulta de solo lectura al socket privado:
-no abre SQLite ni crea configuración, no ejecuta comandos arbitrarios y nunca
-inicia un reproductor. El estado contiene hasta diez próximas entradas; el widget
-muestra cuatro. Interpola progreso localmente y consulta una vez por segundo.
-La cola y sus cambios pueden tardar un segundo en reflejarse. La ausencia de
-MPRIS deshabilita los controles sin afectar al motor.
+El lanzador no instala paquetes ni cambia Hyprland. Al cerrar muscli, el widget
+muestra la desconexión. Sin MPRIS, los controles quedan deshabilitados. La cola
+puede tardar aproximadamente un segundo en reflejar sus cambios.
 
-Contrato y límites: [compact-widget.md](design/compact-widget.md).
-
-## Verificación reproducible
-
-```sh
-cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --all-targets --locked
-cargo +1.90 check --all-targets --locked
-cargo build --release --locked
-```
-
-Prueba opcional con compositor Wayland y Quickshell, sin motor de audio:
-
-```sh
-QT_QPA_PLATFORM=wayland MUSCLI_WIDGET_TEST_BUS=1 \
-  dbus-run-session -- cargo test --test widget --locked -- --ignored --nocapture
-```
-
-Esta prueba usa un bus D-Bus privado, cola/portada sintéticas y el servidor local
-real. Comprueba los cuatro controles, carga de portada, desconexión y reconexión.
-No demuestra escucha real, ni soporte Windows, ni cierra BUG-005.
-
-Para validar manualmente: activar CLASSIC y shuffle, iniciar un álbum continuo,
-comprobar orden y uniones, insertar Play Next y reiniciar. Iniciar después Songs
-para comprobar la recuperación de preferencias. Reescanear una recopilación y un
-multidisco; comprobar artistas, orden y edición separada. Con SMART, probar pares
-con y sin análisis; con AUTO_DJ, añadir Play Next antes de agotar la cola. En MIX,
-comprobar portada, seek, pausa y saltos mientras ambas canciones son audibles.
-Abrir el widget en cada monitor, operar sus controles y cerrar/reabrir muscli.
-Mantener abierto BUG-005 hasta disponer de evidencia adicional del dispositivo.
+La [referencia del protocolo local](design/compact-widget.md) describe cómo el
+widget consulta el estado del reproductor.
