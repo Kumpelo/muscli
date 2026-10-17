@@ -171,12 +171,13 @@ impl UiTheme {
         }
     }
 
-    /// Deliberately the terminal's own palette rather than fixed values: a
-    /// terminal already themed dark should keep its own black and magenta.
+    /// Match the steel-blue accent used by the Windows system fallback while
+    /// keeping the terminal's existing black background and neutral text.
+    /// A graphite selection stays distinct from both the background and text.
     pub(super) const fn dark() -> Self {
         Self {
-            accent: Color::Magenta,
-            selection: Color::Magenta,
+            accent: rgb(0x8fa8b8),
+            selection: rgb(0x39424b),
             foreground: Color::White,
             background: Color::Black,
             muted: Color::Gray,
@@ -320,7 +321,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fallback_uses_official_colors_and_terminal_theme_remains_available() {
+    fn fallback_uses_official_colors_and_dark_theme_remains_available() {
         let fallback = UiTheme::default();
         assert_eq!(fallback.accent, rgb(0x8fa8b8));
         assert_eq!(fallback.background, rgb(0x111318));
@@ -328,6 +329,19 @@ mod tests {
         assert_eq!(fallback.border, rgb(0x39424b));
         assert_ne!(fallback.selection, fallback.background);
         assert_eq!(UiTheme::load(ThemeChoice::Dark).0, UiTheme::dark());
+    }
+
+    #[test]
+    fn dark_matches_windows_accent_without_replacing_its_background() {
+        let dark = UiTheme::dark();
+        let windows_fallback = UiTheme::steel_blue();
+        assert_eq!(dark.accent, windows_fallback.accent);
+        assert_eq!(dark.selection, windows_fallback.selection);
+        assert_eq!(dark.background, Color::Black);
+        assert_eq!(dark.foreground, Color::White);
+        assert_ne!(dark.selection, dark.background);
+        assert_ne!(dark.selection, dark.foreground);
+        assert_ne!(dark.accent, Color::Magenta);
     }
 
     #[test]
