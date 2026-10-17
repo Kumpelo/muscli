@@ -1,6 +1,6 @@
 #define MyAppName "muscli"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0-beta.2"
+  #define MyAppVersion "0.2.0-beta.3"
 #endif
 #ifndef PayloadDir
   #define PayloadDir "..\..\dist\windows"
