@@ -216,8 +216,15 @@ fn package_name(version: &Version) -> Result<String> {
     }
 }
 
+fn inside_installation(executable: &Path, directory: &Path) -> bool {
+    directory
+        .canonicalize()
+        .is_ok_and(|directory| executable.starts_with(directory))
+}
+
 fn installed_executable() -> Result<PathBuf> {
-    let executable = std::env::current_exe()?.canonicalize()?;
+    let original = std::env::current_exe()?;
+    let executable = original.canonicalize()?;
     ensure!(
         !executable
             .components()
@@ -232,18 +239,20 @@ fn installed_executable() -> Result<PathBuf> {
     .map(PathBuf::from)
     .context("could not locate the user installation")?;
     let allowed = if cfg!(windows) {
-        executable.starts_with(home.join("Programs/muscli"))
+        inside_installation(&executable, &home.join("Programs/muscli"))
     } else {
         let cargo = std::env::var_os("CARGO_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".cargo"));
-        executable.starts_with(home.join(".local/bin")) || executable.starts_with(cargo.join("bin"))
+        inside_installation(&executable, &home.join(".local/bin"))
+            || inside_installation(&executable, &cargo.join("bin"))
     };
     ensure!(
         allowed,
         "update muscli through the package manager, or install it in the user bin directory"
     );
-    Ok(executable)
+    // Inno Setup expects a regular Windows path, not the extended-length form.
+    Ok(if cfg!(windows) { original } else { executable })
 }
 
 #[cfg(unix)]
@@ -498,6 +507,40 @@ mod tests {
         fs::write(root.path().join("update-checked"), "checked").unwrap();
         assert!(background(root.path().into(), UpdateMode::Notify, false).is_none());
         assert!(read_limited(&b"oversized"[..], 3).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_executable_accepts_an_installation_directory_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("actual-install");
+        fs::create_dir(&directory).unwrap();
+        let executable = directory.join("muscli");
+        fs::write(&executable, "binary").unwrap();
+        let alias = root.path().join("installation-alias");
+        std::os::unix::fs::symlink(&directory, &alias).unwrap();
+        assert!(inside_installation(
+            &executable.canonicalize().unwrap(),
+            &alias
+        ));
+        assert!(!inside_installation(
+            &executable.canonicalize().unwrap(),
+            root.path().join("unrelated").as_path()
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_executable_matches_the_user_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("Programs").join("muscli");
+        fs::create_dir_all(&directory).unwrap();
+        let executable = directory.join("muscli.exe");
+        fs::write(&executable, "binary").unwrap();
+        assert!(inside_installation(
+            &executable.canonicalize().unwrap(),
+            &directory
+        ));
     }
 
     #[test]
