@@ -2439,17 +2439,28 @@ mod tests {
     #[test]
     fn retrying_failed_gain_does_not_reanalyze_cached_successes() -> Result<()> {
         let mut db = Database::open_memory()?;
-        let entries = [ScannedTrack {
-            track: track("ok", 1),
-            file_size: 100,
-            modified_ns: 1,
-        }, ScannedTrack {
-            track: track("failed", 2),
-            file_size: 100,
-            modified_ns: 1,
-        }];
+        let entries = [
+            ScannedTrack {
+                track: track("ok", 1),
+                file_size: 100,
+                modified_ns: 1,
+            },
+            ScannedTrack {
+                track: track("failed", 2),
+                file_size: 100,
+                modified_ns: 1,
+            },
+        ];
         db.upsert_scan("s", Path::new("/music"), "Music", &entries, &[])?;
-        db.save_gain("ok", ReplayGainAnalysis { gain_db: -4.0, true_peak_db: -1.0 }, 100, 1)?;
+        db.save_gain(
+            "ok",
+            ReplayGainAnalysis {
+                gain_db: -4.0,
+                true_peak_db: -1.0,
+            },
+            100,
+            1,
+        )?;
         db.save_gain_failure("failed", 100, 1)?;
         assert!(db.gain_analysis_candidates(false)?.is_empty());
         let retry = db.gain_analysis_candidates(true)?;
