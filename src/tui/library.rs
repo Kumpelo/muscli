@@ -159,6 +159,7 @@ impl App {
         self.favorite_indices = snapshot.favorite_indices;
         self.albums = snapshot.albums;
         self.album_index = snapshot.album_index;
+        playback::validate_album_queue(&mut self.playback_context, &self.queue, &self.albums);
         self.artists = snapshot.artists;
         self.artist_index = snapshot.artist_index;
         self.genres = snapshot.genres;

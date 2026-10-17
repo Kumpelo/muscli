@@ -29,8 +29,7 @@ impl App {
 
         if count > 0 {
             self.queue.extend(ids);
-            self.queue_dirty = true;
-            self.dirty = true
+            self.queue_edited(true);
         }
 
         count
@@ -463,7 +462,7 @@ impl App {
             ContextAction::PlayNext => {
                 let position = self.queue_index.map_or(0, |index| index + 1);
                 self.queue.insert(position.min(self.queue.len()), track_id);
-                self.queue_dirty = true;
+                self.queue_edited(false);
                 self.status = t!("status.playing_next").into();
             }
             ContextAction::Enqueue => {

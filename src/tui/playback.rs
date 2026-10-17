@@ -80,6 +80,37 @@ fn shuffle_upcoming<T>(queue: &mut [T], current: Option<usize>, rng: &mut impl r
     queue[start..].shuffle(rng);
 }
 
+pub(super) fn validate_album_queue(
+    context: &mut PlaybackContext,
+    queue: &[String],
+    albums: &[Album],
+) {
+    if let PlaybackContext::Album { key } = context
+        && !albums.iter().any(|album| {
+            album.key == *key
+                && !queue.is_empty()
+                && queue
+                    .iter()
+                    .eq(album.track_ids.iter().filter(|id| queue.contains(id)))
+        })
+    {
+        *context = PlaybackContext::Songs;
+    }
+}
+
+fn edit_manual_queue<T>(
+    context: &mut PlaybackContext,
+    queue: &mut [T],
+    current: Option<usize>,
+    shuffle: bool,
+    rng: &mut impl rand::Rng,
+) {
+    *context = PlaybackContext::Songs;
+    if shuffle {
+        shuffle_upcoming(queue, current, rng);
+    }
+}
+
 /// Which queue position plays after `current`.
 ///
 /// Walks forward, skipping entries whose file is missing, and wraps only when
@@ -123,6 +154,19 @@ fn next_playable(
 }
 
 impl App {
+    pub(super) fn queue_edited(&mut self, shuffle: bool) {
+        // A manual queue is no longer an uninterrupted album session.
+        edit_manual_queue(
+            &mut self.playback_context,
+            &mut self.queue,
+            self.queue_index,
+            shuffle && self.shuffle,
+            &mut rand::rng(),
+        );
+        self.queue_dirty = true;
+        self.dirty = true;
+    }
+
     pub(super) fn set_shuffle(&mut self, enabled: bool) {
         if self.shuffle == enabled {
             return;
@@ -519,7 +563,7 @@ impl App {
         }
         let target = shifted_index(self.selected, amount, self.queue.len());
         self.queue.swap(self.selected, target);
-        self.queue_dirty = true;
+        self.queue_edited(false);
         if self.queue_index == Some(self.selected) {
             self.queue_index = Some(target);
         } else if self.queue_index == Some(target) {
@@ -534,7 +578,7 @@ impl App {
             return;
         }
         self.queue.remove(self.selected);
-        self.queue_dirty = true;
+        self.queue_edited(false);
         if let Some(current) = self.queue_index {
             self.queue_index = if self.queue.is_empty() {
                 None
@@ -1022,6 +1066,78 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_album_queue_can_skip_unavailable_tracks_but_cannot_repeat_or_reorder_them() {
+        let album = Album {
+            key: "album".into(),
+            title: "Album".into(),
+            artist: "Artist".into(),
+            year: None,
+            cover_path: None,
+            track_ids: vec!["a".into(), "b".into(), "c".into()],
+            available_tracks: 2,
+        };
+        for (ids, expected_album) in [
+            (vec!["a", "c"], true),
+            (vec!["c", "a"], false),
+            (vec!["a", "a"], false),
+            (vec!["a", "other-release"], false),
+        ] {
+            let mut context = PlaybackContext::Album {
+                key: "album".into(),
+            };
+            let queue = ids.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            validate_album_queue(&mut context, &queue, std::slice::from_ref(&album));
+            assert_eq!(context.is_album(), expected_album);
+        }
+    }
+
+    #[test]
+    fn restoring_a_modified_album_queue_cannot_suspend_mix() {
+        let mut context = PlaybackContext::Album {
+            key: "old-album-session".into(),
+        };
+        validate_album_queue(&mut context, &["one".into(), "manually-added".into()], &[]);
+        assert_eq!(context, PlaybackContext::Songs);
+    }
+
+    #[test]
+    fn manual_queue_leaves_album_mode_and_restores_mix_and_shuffle() {
+        let mut context = PlaybackContext::Album {
+            key: "release".into(),
+        };
+        let mut queue = vec!["played", "current", "a", "b", "c", "d", "e", "new"];
+        let original = queue.clone();
+        let mut rng = StdRng::seed_from_u64(42);
+        edit_manual_queue(&mut context, &mut queue, Some(1), true, &mut rng);
+        assert!(!context.is_album());
+        assert_eq!(context.crossfade_seconds(6.0, false, true), 6.0);
+        assert_eq!(&queue[..2], &original[..2]);
+        assert_ne!(&queue[2..], &original[2..]);
+        let mut all = queue.clone();
+        all.sort();
+        let mut expected = original;
+        expected.sort();
+        assert_eq!(all, expected);
+    }
+
+    #[test]
+    fn play_next_keeps_its_explicit_position_when_leaving_an_album() {
+        let mut context = PlaybackContext::Album {
+            key: "release".into(),
+        };
+        let mut queue = vec!["current", "requested next", "album next"];
+        edit_manual_queue(
+            &mut context,
+            &mut queue,
+            Some(0),
+            false,
+            &mut StdRng::seed_from_u64(42),
+        );
+        assert_eq!(queue[1], "requested next");
+        assert_eq!(context, PlaybackContext::Songs);
+    }
+
     use super::*;
     use rand::{SeedableRng, rngs::StdRng};
     const ALL: fn(usize) -> bool = |_| true;
