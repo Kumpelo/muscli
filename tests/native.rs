@@ -874,10 +874,8 @@ fn songs_at_different_rates_join_without_restarting_the_device() {
             1,
             "{first_rate} -> {next_rate} reopened the output device"
         );
-        assert!(
-            errors(&mut events).is_empty(),
-            "the transition raised an audio error"
-        );
+        // Read all events once: checking errors separately would consume
+        // the very prefetch notification this assertion needs to observe.
         let mut handovers = 0;
         let mut ends = 0;
         while let Ok(event) = events.try_recv() {
