@@ -634,7 +634,7 @@ async fn run_inner(
         app.status = t!(
             "status.session_restored",
             title = track.title,
-            artist = track.artist
+            artist = crate::model::artist_label(&track.artist)
         );
     }
     app.start_scan();

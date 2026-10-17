@@ -512,26 +512,34 @@ impl App {
                         if let Err(error) =
                             prune_unreferenced_covers(&paths.cover_cache_dir(), &referenced)
                         {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
+                            let _ = tx.send(ScanMessage::Error(t!(
+                                "status.cover_cache_error",
+                                error = format!("{error:#}")
+                            )));
                         }
                     }
                     Err(error) => {
-                        let _ =
-                            tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
+                        let _ = tx.send(ScanMessage::Error(t!(
+                            "status.cover_cache_error",
+                            error = format!("{error:#}")
+                        )));
                     }
                 }
                 match prune_cover_cache(&paths.cover_cache_dir(), cover_cache_bytes) {
                     Ok(removed) => match db.clear_cover_paths(&removed) {
                         Ok(count) => changed |= count > 0,
                         Err(error) => {
-                            let _ = tx
-                                .send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
+                            let _ = tx.send(ScanMessage::Error(t!(
+                                "status.cover_cache_error",
+                                error = format!("{error:#}")
+                            )));
                         }
                     },
                     Err(error) => {
-                        let _ =
-                            tx.send(ScanMessage::Error(format!("Caché de portadas: {error:#}")));
+                        let _ = tx.send(ScanMessage::Error(t!(
+                            "status.cover_cache_error",
+                            error = format!("{error:#}")
+                        )));
                     }
                 }
                 let _ = tx.send(ScanMessage::Done { changed });
@@ -659,7 +667,7 @@ impl App {
                 self.mix_analysis_running = false;
                 self.mix_analysis_progress = None;
                 if !self.gain_running {
-                    self.status = "MIX: análisis musical actualizado".into();
+                    self.status = t!("status.mix_analysis_updated").into();
                     self.dirty = true;
                 }
                 if self.mix_rescan_pending {
@@ -711,7 +719,7 @@ impl App {
             } => {
                 self.db.save_gain(&track_id, result, size, modified)?;
                 self.gain_progress = Some((completed, total));
-                self.status = format!("Analizando volumen {completed}/{total}");
+                self.status = t!("status.gain_progress", completed = completed, total = total);
                 self.dirty = true;
             }
             GainMessage::Error(error) => {

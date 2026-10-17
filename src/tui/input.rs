@@ -183,9 +183,9 @@ impl App {
                     let value = self.db.toggle_favorite(&id)?;
                     self.set_favorite_local(&id, value);
                     self.status = if value {
-                        "Añadida a favoritos"
+                        t!("status.favorited")
                     } else {
-                        "Eliminada de favoritos"
+                        t!("status.unfavorited")
                     }
                     .into();
                 }
@@ -475,9 +475,9 @@ impl App {
                 let favorite = self.db.toggle_favorite(&track_id)?;
                 self.set_favorite_local(&track_id, favorite);
                 self.status = if favorite {
-                    "Añadida a favoritos"
+                    t!("status.favorited")
                 } else {
-                    "Eliminada de favoritos"
+                    t!("status.unfavorited")
                 }
                 .into();
             }

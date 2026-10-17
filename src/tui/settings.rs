@@ -304,7 +304,7 @@ impl App {
             SettingId::Gapless => self.config.gapless = !self.config.gapless,
             SettingId::LiveMix => {
                 if self.player.capabilities().name == "mpv" {
-                    self.status = "MIX en vivo requiere el motor nativo".into();
+                    self.status = t!("status.mix_requires_native").into();
                     return Ok(());
                 }
                 self.config.live_mix_mode = Some(self.config.live_mix_mode().next());

@@ -7,7 +7,7 @@
 //! imports declared in the parent module.
 
 use super::*;
-use crate::t;
+use crate::{model::artist_label, t};
 
 /// Mix a place an image can be drawn into the signature.
 ///
@@ -126,7 +126,7 @@ fn draw_compact(frame: &mut Frame<'_>, app: &mut App) {
                 "{:02}  {} — {}",
                 position + 1,
                 track.title,
-                track.artist
+                artist_label(&track.artist)
             ))
         })
         .collect::<Vec<_>>();
@@ -236,11 +236,11 @@ fn draw_content(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         View::AlbumDetail => app
             .opened_album()
             .map(|album| t!("panel.back_hint", name = album.title))
-            .unwrap_or_else(|| " Álbum ".into()),
+            .unwrap_or_else(|| format!(" {} ", t!("view.album"))),
         View::ArtistDetail => app
             .opened_artist_name()
-            .map(|artist| t!("panel.artist_hint", name = artist))
-            .unwrap_or_else(|| " Artista ".into()),
+            .map(|artist| t!("panel.artist_hint", name = artist_label(artist)))
+            .unwrap_or_else(|| format!(" {} ", t!("view.artist"))),
         View::GenreDetail => app
             .opened_genre_name()
             .map(|genre| t!("panel.genre_hint", name = genre))
@@ -316,7 +316,7 @@ fn draw_home(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Some(ListItem::new(format!(
                 "{section:<9}  {:<42}  {:<24}  {} / {}",
                 track.title,
-                track.artist,
+                artist_label(&track.artist),
                 format_duration(progress),
                 format_duration(track.duration_ms)
             )))
@@ -407,18 +407,28 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .filter_map(|position| app.genre_album_indices().get(position).copied())
             .map(|index| {
                 let album = &app.albums[index];
-                ListItem::new(format!("󰀥  {} — {}", album.title, album.artist))
+                ListItem::new(format!(
+                    "󰀥  {} — {}",
+                    album.title,
+                    artist_label(&album.artist)
+                ))
             })
             .collect(),
         1 => viewport
             .clone()
             .filter_map(|position| app.genre_artist_indices().get(position).copied())
-            .map(|index| ListItem::new(format!("󰠃  {}", app.artists[index].name)))
+            .map(|index| ListItem::new(format!("󰠃  {}", artist_label(&app.artists[index].name))))
             .collect(),
         _ => viewport
             .filter_map(|position| app.genre_track_ids().get(position))
             .filter_map(|id| app.track_index.get(id).map(|index| &app.tracks[*index]))
-            .map(|track| ListItem::new(format!("󰎆  {} — {}", track.title, track.artist)))
+            .map(|track| {
+                ListItem::new(format!(
+                    "󰎆  {} — {}",
+                    track.title,
+                    artist_label(&track.artist)
+                ))
+            })
             .collect(),
     };
     let mut state = ListState::default().with_selected(Some(app.selected.saturating_sub(first)));
@@ -620,7 +630,7 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             let album = &app.albums[index];
             (
                 album.title.clone(),
-                album.artist.clone(),
+                artist_label(&album.artist).into_owned(),
                 album.track_ids.len(),
                 album.available_tracks,
                 album.cover_path.clone(),
@@ -718,7 +728,7 @@ fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|artist| {
             ListItem::new(format!(
                 "󰠃  {:<32}  {}",
-                artist.name,
+                artist_label(&artist.name),
                 t!(
                     "label.artist_summary",
                     albums = artist.album_count,
@@ -832,7 +842,7 @@ fn draw_tracks(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     }
                 )),
                 Cell::from(track.title.as_str()),
-                Cell::from(track.artist.as_str()),
+                Cell::from(artist_label(&track.artist)),
                 Cell::from(track.album.as_str()),
                 Cell::from(format_duration(track.duration_ms)),
             ])
@@ -911,7 +921,7 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                track.artist.clone(),
+                artist_label(&track.artist).into_owned(),
                 Style::default().fg(app.theme.accent),
             )),
             Line::from(Span::styled(
@@ -946,8 +956,8 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     .split(inner);
     let (title, subtitle) = app
         .presented_track()
-        .map(|t| (t.title.as_str(), t.artist.as_str()))
-        .unwrap_or((t!("empty.nothing_playing"), t!("empty.press_enter")));
+        .map(|t| (t.title.as_str(), artist_label(&t.artist)))
+        .unwrap_or((t!("empty.nothing_playing"), t!("empty.press_enter").into()));
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -965,7 +975,7 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         PlaybackStatus::Stopped => "󰓛",
     };
     let mut label = format!(
-        "󰒮 {icon} 󰒭  {}/{}",
+        "󰒮   {icon}   󰒭    {} / {}",
         format_duration(presented.position_ms),
         format_duration(presented.duration_ms)
     );

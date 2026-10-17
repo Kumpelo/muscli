@@ -36,6 +36,21 @@ impl Track {
     }
 }
 
+/// Format multi-value artist separators for presentation without changing tags.
+pub fn artist_label(artist: &str) -> std::borrow::Cow<'_, str> {
+    if !artist.contains(';') {
+        return std::borrow::Cow::Borrowed(artist);
+    }
+    std::borrow::Cow::Owned(
+        artist
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Album {
     pub key: String,
@@ -310,6 +325,15 @@ pub fn normalize_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn artist_separators_are_only_changed_for_presentation() {
+        let raw = "Chystemc; Movimiento Original";
+        assert_eq!(artist_label(raw), "Chystemc, Movimiento Original");
+        assert_eq!(raw, "Chystemc; Movimiento Original");
+        assert_eq!(artist_label("AC/DC"), "AC/DC");
+        assert_eq!(artist_label("Earth, Wind & Fire"), "Earth, Wind & Fire");
+    }
+
     use super::*;
 
     #[test]

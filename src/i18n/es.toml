@@ -288,3 +288,8 @@
 "setting.discord_images" = "Imágenes de Discord"
 "setting.mix_live" = "MIX en vivo"
 "setting.mix_duration" = "MIX: duración"
+
+"status.mix_analysis_updated" = "MIX: análisis musical actualizado"
+"status.gain_progress" = "Analizando volumen {completed}/{total}"
+
+"status.mix_requires_native" = "MIX en vivo requiere el motor nativo"
