@@ -754,7 +754,10 @@ impl App {
                 self.gain_running = false;
                 self.gain_progress = None;
                 self.status = if self.gain_failed_count > 0 {
-                    t!("status.gain_finished_with_failures", count = self.gain_failed_count)
+                    t!(
+                        "status.gain_finished_with_failures",
+                        count = self.gain_failed_count
+                    )
                 } else {
                     t!("status.gain_finished").into()
                 };
