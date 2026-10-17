@@ -499,8 +499,7 @@ impl App {
         self.auto_dj_attempt = None;
         self.sync_crossfade()?;
         self.config.save(&self.paths)?;
-        self.status = if self.config.live_mix_mode()
-            != crate::audio::smart_mix::LiveMixMode::Off
+        self.status = if self.config.live_mix_mode() != crate::audio::smart_mix::LiveMixMode::Off
             && !self.config.bit_perfect
             && !self.config.gapless
         {
