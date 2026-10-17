@@ -65,6 +65,21 @@ fn album_card_rows(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(area)
 }
 
+/// Clear the old graphics placement, then restore every cell to the current
+/// theme. Clear alone resets cells to the terminal default (black in many
+/// Windows profiles), leaving dark gutters beside narrow covers in light mode.
+fn clear_cover_area(frame: &mut Frame<'_>, area: Rect, theme: UiTheme) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(
+            Style::default()
+                .fg(theme.foreground)
+                .bg(theme.background),
+        ),
+        area,
+    );
+}
+
 pub(super) fn draw(frame: &mut Frame<'_>, app: &mut App) {
     app.covers.pending_signature = 0;
     let area = frame.area();
@@ -352,7 +367,8 @@ fn draw_genres(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|genre| {
             ListItem::new(format!(
-                "󰌳  {:<36} {}",
+                "{}  {:<36} {}",
+                icons::display("󰌳", "G"),
                 genre.name,
                 t!("label.genre_summary", tracks = genre.track_ids.len())
             ))
@@ -408,7 +424,8 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .map(|index| {
                 let album = &app.albums[index];
                 ListItem::new(format!(
-                    "󰀥  {} — {}",
+                    "{}  {} — {}",
+                    icons::display("󰀥", "A"),
                     album.title,
                     artist_label(&album.artist)
                 ))
@@ -417,14 +434,15 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         1 => viewport
             .clone()
             .filter_map(|position| app.genre_artist_indices().get(position).copied())
-            .map(|index| ListItem::new(format!("󰠃  {}", artist_label(&app.artists[index].name))))
+            .map(|index| ListItem::new(format!("{}  {}", icons::display("󰠃", "@"), artist_label(&app.artists[index].name))))
             .collect(),
         _ => viewport
             .filter_map(|position| app.genre_track_ids().get(position))
             .filter_map(|id| app.track_index.get(id).map(|index| &app.tracks[*index]))
             .map(|track| {
                 ListItem::new(format!(
-                    "󰎆  {} — {}",
+                    "{}  {} — {}",
+                    icons::display("󰎆", "T"),
                     track.title,
                     artist_label(&track.artist)
                 ))
@@ -449,7 +467,8 @@ fn draw_smart_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|playlist| {
             ListItem::new(format!(
-                "󰘬  {:<32} {}",
+                "{}  {:<32} {}",
+                icons::display("󰘬", "S"),
                 playlist.display_name(),
                 t!(
                     "smart.summary",
@@ -680,11 +699,11 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         if let Some(path) = cover_path
             && let Some(protocol) = app.covers.grid.get_mut(&path)
         {
-            frame.render_widget(Clear, cover_area); // same reason as the detail panel
+            clear_cover_area(frame, cover_area, app.theme);
             frame.render_stateful_widget(StatefulImage::new(), cover_area, protocol);
         } else {
             frame.render_widget(
-                Paragraph::new("󰀥").alignment(Alignment::Center).style(
+                Paragraph::new(icons::display("󰀥", "A")).alignment(Alignment::Center).style(
                     Style::default()
                         .fg(if selected {
                             app.theme.background
@@ -727,7 +746,8 @@ fn draw_artists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|artist| {
             ListItem::new(format!(
-                "󰠃  {:<32}  {}",
+                "{}  {:<32}  {}",
+                icons::display("󰠃", "@"),
                 artist_label(&artist.name),
                 t!(
                     "label.artist_summary",
@@ -766,7 +786,8 @@ fn draw_playlists(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .iter()
         .map(|playlist| {
             ListItem::new(format!(
-                "󰲸  {:<36}  {}",
+                "{}  {:<36}  {}",
+                icons::display("󰲸", "P"),
                 playlist.name,
                 t!("label.playlist_summary", tracks = playlist.track_ids.len())
             ))
@@ -904,11 +925,11 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         // Clear before drawing: with the kitty image protocol the previous
         // cover leaves a band of itself behind unless the cells are wiped
         // first.
-        frame.render_widget(Clear, cover_area);
+        clear_cover_area(frame, cover_area, app.theme);
         frame.render_stateful_widget(StatefulImage::new(), cover_area, &mut cover.protocol);
     } else {
         frame.render_widget(
-            Paragraph::new("\n\n󰀥\nSin portada")
+            Paragraph::new(format!("\n\n{}\nSin portada", icons::display("󰀥", "A")))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(app.theme.muted)),
             parts[0],
@@ -970,12 +991,14 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
     let presented = app.presented_playback();
     let icon = match app.playback.status {
-        PlaybackStatus::Playing => "󰏤",
-        PlaybackStatus::Paused => "󰐊",
-        PlaybackStatus::Stopped => "󰓛",
+        PlaybackStatus::Playing => icons::display("󰏤", "||"),
+        PlaybackStatus::Paused => icons::display("󰐊", ">"),
+        PlaybackStatus::Stopped => icons::display("󰓛", "[]"),
     };
     let mut label = format!(
-        "󰒮   {icon}   󰒭    {} / {}",
+        "{}   {icon}   {}    {} / {}",
+        icons::display("󰒮", "<"),
+        icons::display("󰒭", ">"),
         format_duration(presented.position_ms),
         format_duration(presented.duration_ms)
     );
@@ -1013,19 +1036,20 @@ fn draw_player(frame: &mut Frame<'_>, area: Rect, app: &App) {
         RepeatMode::Queue => t!("label.repeat_queue"),
     };
     let shuffle = if app.shuffle && !app.playback_context.is_album() {
-        "󰒟"
+        icons::display("󰒟", "S")
     } else {
-        "󰒞"
+        icons::display("󰒞", "-")
     };
     let modes = if columns[2].width < 24 {
-        format!("{shuffle} · 󰑖 {repeat}")
+        format!("{shuffle} · {} {repeat}", icons::display("󰑖", "R"))
     } else {
         t!("label.shuffle_repeat", shuffle = shuffle, repeat = repeat)
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{}\n󰕾 {:>3}% {}",
+            "{}\n{} {:>3}% {}",
             modes,
+            icons::display("󰕾", "V"),
             (app.playback.volume * 100.0).round() as u8,
             // The decibels as well as the percentage: the control moves in
             // decibels now, and the number that says how loud it is should
@@ -1242,6 +1266,38 @@ mod tests {
 
     fn slot(x: u16, y: u16) -> Rect {
         Rect::new(x, y, 20, 10)
+    }
+
+    #[test]
+    fn cover_clear_restores_light_palette_instead_of_terminal_black() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(12, 5)).unwrap();
+        terminal
+            .draw(|frame| {
+                let region = Rect::new(2, 1, 8, 3);
+                frame.render_widget(
+                    Block::default().style(Style::default().bg(Color::Black)),
+                    region,
+                );
+                clear_cover_area(frame, region, UiTheme::light());
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 1..4 {
+            for x in 2..10 {
+                assert_eq!(buffer[(x, y)].bg, UiTheme::light().background);
+            }
+        }
+    }
+
+    #[test]
+    fn cover_clear_keeps_dark_palette_dark() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        terminal
+            .draw(|frame| clear_cover_area(frame, frame.area(), UiTheme::dark()))
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(5, 1)].bg, Color::Black);
     }
 
     #[test]
