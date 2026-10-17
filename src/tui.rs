@@ -164,24 +164,23 @@ impl View {
     }
 
     fn icon(self) -> &'static str {
-        match self {
-            Self::Home => "󰋜",
-            Self::Albums => "󰀥",
-            Self::AlbumDetail => "󰀥",
-            Self::Artists => "󰠃",
-            Self::ArtistDetail => "󰠃",
-            Self::Genres | Self::GenreDetail => "󰌳",
-            Self::Tracks => "󰎆",
-            Self::Playlists => "󰲸",
-            Self::SmartPlaylists | Self::SmartPlaylistDetail => "󰘬",
-            Self::Favorites => "󰋑",
-            Self::History => "󰋚",
-            Self::Search => "󰍉",
-            Self::Queue => "󰕲",
-            Self::Settings => "󰒓",
-            Self::Help => "󰋖",
-            Self::Lyrics => "󰲹",
-        }
+        let (nerd, ascii) = match self {
+            Self::Home => ("󰋜", "H"),
+            Self::Albums | Self::AlbumDetail => ("󰀥", "A"),
+            Self::Artists | Self::ArtistDetail => ("󰠃", "@"),
+            Self::Genres | Self::GenreDetail => ("󰌳", "G"),
+            Self::Tracks => ("󰎆", "T"),
+            Self::Playlists => ("󰲸", "P"),
+            Self::SmartPlaylists | Self::SmartPlaylistDetail => ("󰘬", "S"),
+            Self::Favorites => ("󰋑", "*"),
+            Self::History => ("󰋚", "R"),
+            Self::Search => ("󰍉", "/"),
+            Self::Queue => ("󰕲", "Q"),
+            Self::Settings => ("󰒓", "#"),
+            Self::Help => ("󰋖", "?"),
+            Self::Lyrics => ("󰲹", "L"),
+        };
+        icons::display(nerd, ascii)
     }
 }
 
@@ -1542,6 +1541,7 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
 }
 
 mod covers;
+mod icons;
 mod input;
 pub mod keys;
 mod library;
