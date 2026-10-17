@@ -27,6 +27,7 @@ done
 case "$MUSCLI_WIDGET_CORNER" in top-left|top-right|bottom-left|bottom-right) ;; *) echo "Invalid corner" >&2; exit 2 ;; esac
 [[ $MUSCLI_WIDGET_MARGIN =~ ^[0-9]+$ && ${#MUSCLI_WIDGET_MARGIN} -le 4 ]] || { echo "Invalid margin" >&2; exit 2; }
 [[ $MUSCLI_WIDGET_WIDTH =~ ^[0-9]+$ && ${#MUSCLI_WIDGET_WIDTH} -le 3 ]] && ((10#$MUSCLI_WIDGET_WIDTH >= 280 && 10#$MUSCLI_WIDGET_WIDTH <= 600)) || { echo "Width must be 280..600" >&2; exit 2; }
+[[ -d /usr/share/omarchy || -n ${OMARCHY_PATH:-} ]] || { echo "This widget currently supports Omarchy only." >&2; exit 1; }
 command -v qs >/dev/null || { echo "Optional widget requires Quickshell (qs). muscli works without it." >&2; exit 1; }
 command -v "$MUSCLI_WIDGET_BINARY" >/dev/null || { echo "muscli binary not found; build it and pass --binary PATH." >&2; exit 1; }
 exec qs --no-duplicate --path "$widget_dir"

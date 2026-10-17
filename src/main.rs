@@ -26,6 +26,13 @@ use muscli::{
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.large {
+        anyhow::ensure!(
+            cli.command.is_none(),
+            "--large opens the player; omit the subcommand"
+        );
+        return omarchy::launch_large(cli.lang.as_deref(), cli.theme.as_deref());
+    }
     let compact = cli.compact;
     let theme = cli.theme.clone();
     let paths = AppPaths::discover()?;

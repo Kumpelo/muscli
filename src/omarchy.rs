@@ -70,6 +70,41 @@ o.window({ class = "^muscli-compact$" }, {
 -- <<< muscli compact window <<<
 "#;
 
+/// Launch this executable, rather than a potentially older muscli from PATH.
+pub fn launch_large(language: Option<&str>, theme: Option<&str>) -> Result<()> {
+    anyhow::ensure!(
+        cfg!(target_os = "linux"),
+        "--large requires Linux and Kitty"
+    );
+    let executable = std::env::current_exe().context("could not locate muscli")?;
+    let mut terminal = Command::new("kitty");
+    terminal.args([
+        "--class",
+        "muscli-compact",
+        "--title",
+        "muscli",
+        "--start-as=maximized",
+        "-o",
+        "font_size=12",
+        "-e",
+    ]);
+    terminal.arg(executable);
+    if let Some(language) = language {
+        terminal.args(["--lang", language]);
+    }
+    if let Some(theme) = theme {
+        terminal.args(["--theme", theme]);
+    }
+    let status = terminal
+        .status()
+        .context("could not open Kitty; install it to use --large")?;
+    anyhow::ensure!(
+        status.success(),
+        "Kitty could not open the large player window"
+    );
+    Ok(())
+}
+
 pub fn setup(paths: &AppPaths) -> Result<String> {
     #[cfg(windows)]
     anyhow::bail!("Omarchy integration is only available on Linux");

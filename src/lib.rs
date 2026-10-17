@@ -23,6 +23,10 @@ pub mod omarchy {
 
     use crate::paths::AppPaths;
 
+    pub fn launch_large(_language: Option<&str>, _theme: Option<&str>) -> Result<()> {
+        anyhow::bail!("--large requires Linux and Kitty");
+    }
+
     pub fn setup(_paths: &AppPaths) -> Result<String> {
         anyhow::bail!("Omarchy integration is only available on Linux");
     }

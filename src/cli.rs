@@ -14,6 +14,9 @@ use crate::audio::{
     about = "Fast local music player for the terminal"
 )]
 pub struct Cli {
+    /// Open the full TUI in a large Kitty window with a larger font (Linux)
+    #[arg(long, conflicts_with = "compact")]
+    pub large: bool,
     /// Start with the compact player layout
     #[arg(long, global = true)]
     pub compact: bool,

@@ -20,7 +20,7 @@ impl WidgetTrack {
             occurrence,
             id: track.id.clone(),
             title: bounded(&track.title),
-            artist: bounded(track.display_artist()),
+            artist: bounded(&crate::model::artist_label(track.display_artist())),
             duration_ms: track.duration_ms,
             cover_uri: track.cover_path.as_ref().and_then(|path| {
                 #[cfg(unix)]

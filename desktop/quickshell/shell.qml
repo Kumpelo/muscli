@@ -8,11 +8,12 @@ import Quickshell.Wayland
 
 ShellRoot {
     id: root
+    property string interfaceFont: "monospace"
     component TransportButton: Button {
         implicitWidth: 58; implicitHeight: 38
         opacity: enabled ? 1 : 0.35
-        background: Rectangle { radius: 10; color: parent.down ? "#43574a" : parent.hovered ? "#34443a" : "#26332c" }
-        contentItem: Text { text: parent.text; color: root.foreground; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.pixelSize: 16 }
+        background: Rectangle { radius: 0; color: parent.down || parent.hovered ? root.surface : "transparent"; border.width: 1; border.color: root.border }
+        contentItem: Text { text: parent.text; color: root.foreground; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter; font.family: root.interfaceFont; font.pixelSize: 16 }
     }
     property var snapshot: ({ available: false, upcoming: [] })
     property double receivedAt: 0
@@ -28,10 +29,28 @@ ShellRoot {
     readonly property real duration: connected ? (snapshot.duration_ms || 0) : 0
     readonly property real position: connected ? Math.min(duration, (snapshot.position_ms || 0)
         + (snapshot.status === "playing" ? Math.min(now - receivedAt, 1500) : 0)) : 0
-    readonly property color background: "#151a1c"
-    readonly property color foreground: "#edf0ed"
-    readonly property color muted: "#9daaa7"
-    readonly property color accent: "#aecdb8"
+    readonly property color background: palette.background || "#111318"
+    readonly property color foreground: palette.foreground || "#e8ebef"
+    readonly property color muted: palette.muted || palette.dark_foreground || "#8995a1"
+    readonly property color accent: palette.accent || "#8fa8b8"
+    readonly property color border: palette.muted || "#39424b"
+    readonly property color surface: Qt.alpha(root.accent, 0.12)
+    property var palette: ({})
+    FileView {
+        id: themeFile
+        path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: {
+            const values = {}
+            for (const line of text().split("\n")) {
+                const match = line.match(/^\s*([a-z_]+)\s*=\s*["'](#[0-9a-fA-F]{6})["']/)
+                if (match) values[match[1]] = match[2]
+            }
+            root.palette = values
+        }
+    }
+    Timer { interval: 3000; running: true; repeat: true; onTriggered: themeFile.reload() }
 
     function acceptSnapshot(text) {
         try {
@@ -79,8 +98,8 @@ ShellRoot {
         implicitHeight: content.implicitHeight + 36
         color: "transparent"
         Rectangle {
-            anchors.fill: parent; radius: 18; color: root.background
-            border.width: 1; border.color: "#34413e"
+            anchors.fill: parent; radius: 0; color: root.background
+            border.width: 1; border.color: root.border
         }
         ColumnLayout {
             id: content
@@ -88,19 +107,19 @@ ShellRoot {
             spacing: 14
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "muscli"; color: root.accent; font.pixelSize: 14; font.weight: Font.DemiBold }
+                Text { text: "muscli"; color: root.accent; font.family: root.interfaceFont; font.pixelSize: 14; font.weight: Font.DemiBold }
                 Item { Layout.fillWidth: true }
                 Text {
-                    text: !root.connected ? "OFFLINE" : root.snapshot.context?.album ? "ALBUM" : root.snapshot.mix_progress !== null ? "MIX" : "LOCAL"
-                    color: root.muted; font.pixelSize: 10; font.letterSpacing: 1.5
+                    text: !root.connected ? "OFFLINE" : root.snapshot.context?.album ? "ALBUM" : root.snapshot.mix_progress != null ? "MIX" : ""
+                    color: root.muted; font.family: root.interfaceFont; font.pixelSize: 10; font.letterSpacing: 0
                 }
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 14
                 Rectangle {
                     Layout.preferredWidth: 96; Layout.preferredHeight: 96
-                    color: "#242e2b"; radius: 8
-                    Text { anchors.centerIn: parent; text: "♪"; color: root.muted; font.pixelSize: 34 }
+                    color: root.surface; radius: 0
+                    Text { anchors.centerIn: parent; text: "♪"; color: root.muted; font.family: root.interfaceFont; font.pixelSize: 34 }
                     Image {
                         anchors.fill: parent; source: root.readyCover
                         visible: root.connected && source.toString() !== ""
@@ -111,23 +130,23 @@ ShellRoot {
                     Layout.fillWidth: true; spacing: 8
                     Text {
                         Layout.fillWidth: true; text: root.current?.title || (root.connected ? "Ready to play" : "Player disconnected")
-                        color: root.foreground; font.pixelSize: 18; font.weight: Font.DemiBold
+                        color: root.foreground; font.family: root.interfaceFont; font.pixelSize: 18; font.weight: Font.DemiBold
                         wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
                     }
-                    Text { Layout.fillWidth: true; text: root.current?.artist || "muscli · local music"; color: root.muted; font.pixelSize: 12; elide: Text.ElideRight }
+                    Text { Layout.fillWidth: true; text: root.current?.artist || "muscli"; color: root.muted; font.family: root.interfaceFont; font.pixelSize: 12; elide: Text.ElideRight }
                 }
             }
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 7
                 Rectangle {
-                    Layout.fillWidth: true; height: 3; color: "#34413e"; radius: 2
+                    Layout.fillWidth: true; height: 3; color: root.border; radius: 2
                     Rectangle { width: parent.width * (root.duration > 0 ? root.position / root.duration : 0); height: parent.height; radius: 2; color: root.accent }
                 }
                 RowLayout {
                     Layout.fillWidth: true
-                    Text { text: root.timeLabel(root.position); color: root.muted; font.pixelSize: 10 }
+                    Text { text: root.timeLabel(root.position); color: root.muted; font.family: root.interfaceFont; font.pixelSize: 10 }
                     Item { Layout.fillWidth: true }
-                    Text { text: root.timeLabel(root.duration); color: root.muted; font.pixelSize: 10 }
+                    Text { text: root.timeLabel(root.duration); color: root.muted; font.family: root.interfaceFont; font.pixelSize: 10 }
                 }
             }
             RowLayout {
@@ -138,14 +157,14 @@ ShellRoot {
             }
             RowLayout {
                 Layout.fillWidth: true; spacing: 12
-                Text { text: "VOL"; color: root.muted; font.pixelSize: 10 }
+                Text { text: "VOL"; color: root.muted; font.family: root.interfaceFont; font.pixelSize: 10 }
                 Slider {
                     id: volumeSlider
                     Layout.fillWidth: true; from: 0; to: 1
                     value: root.player?.volume ?? (root.snapshot.volume || 0)
                     enabled: (root.player?.canControl ?? false) && (root.player?.volumeSupported ?? false)
                     onMoved: if (root.player) root.player.volume = value
-                    background: Rectangle { x: volumeSlider.leftPadding; y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2; width: volumeSlider.availableWidth; height: 3; color: "#34413e"; radius: 2
+                    background: Rectangle { x: volumeSlider.leftPadding; y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2; width: volumeSlider.availableWidth; height: 3; color: root.border; radius: 2
                         Rectangle { width: volumeSlider.visualPosition * parent.width; height: parent.height; color: root.accent; radius: 2 }
                     }
                     handle: Rectangle { x: volumeSlider.leftPadding + volumeSlider.visualPosition * (volumeSlider.availableWidth - width); y: volumeSlider.topPadding + volumeSlider.availableHeight / 2 - height / 2; width: 12; height: 12; radius: 6; color: root.accent }
@@ -155,7 +174,7 @@ ShellRoot {
             ColumnLayout {
                 Layout.fillWidth: true; spacing: 8
                 visible: root.connected && (root.snapshot.upcoming?.length || 0) > 0
-                Text { text: "UP NEXT"; color: root.muted; font.pixelSize: 10; font.letterSpacing: 1.5 }
+                Text { text: "UP NEXT"; color: root.muted; font.family: root.interfaceFont; font.pixelSize: 10; font.letterSpacing: 0 }
                 Repeater {
                     model: root.connected ? (root.snapshot.upcoming || []).slice(0, 4) : []
                     delegate: Text {
@@ -163,7 +182,7 @@ ShellRoot {
                         required property int index
                         Layout.fillWidth: true
                         text: (index + 1) + "   " + modelData.title + "  ·  " + modelData.artist
-                        color: index === 0 ? root.foreground : root.muted; font.pixelSize: 12; elide: Text.ElideRight
+                        color: index === 0 ? root.foreground : root.muted; font.family: root.interfaceFont; font.pixelSize: 12; elide: Text.ElideRight
                     }
                 }
             }
