@@ -760,9 +760,9 @@ impl Engine {
                 // do this conversion. Channel changes still use a normal load.
                 let compatible = !stream.announced_end
                     && self.prefetch.as_ref().is_some_and(|(_, next)| {
-                        next.spec().channels == stream.source_spec.channels
-                            && (next.spec().sample_rate == stream.source_spec.sample_rate
-                                || !self.settings.bit_perfect)
+                        next.spec() == stream.source_spec
+                            || (!self.settings.bit_perfect
+                                && next.spec().channels == stream.source_spec.channels)
                     });
                 if compatible {
                     let next_spec = self.prefetch.as_ref().expect("checked above").1.spec();
