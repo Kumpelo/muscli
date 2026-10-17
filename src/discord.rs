@@ -12,6 +12,7 @@ use discord_rich_presence::{
     activity::{Activity, ActivityType, Assets, StatusDisplayType, Timestamps},
 };
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::{
     fsutil::atomic_replace,
@@ -448,7 +449,15 @@ fn valid_mbid(value: &str) -> bool {
 }
 
 fn lucene_literal(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value
+        .nfc()
+        .collect::<String>()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+fn same_album_text(left: &str, right: &str) -> bool {
+    left.nfc().collect::<String>().to_lowercase() == right.nfc().collect::<String>().to_lowercase()
 }
 
 fn comparable_album_title(value: &str) -> &str {
@@ -481,8 +490,8 @@ fn select_release_group(
                 .unwrap_or_default();
             score >= 95
                 && first_year == Some(year)
-                && artist.eq_ignore_ascii_case(&identity.artist)
-                && comparable_album_title(title).eq_ignore_ascii_case(&identity.title)
+                && same_album_text(artist, &identity.artist)
+                && same_album_text(comparable_album_title(title), &identity.title)
         });
     let ids = matches
         .filter_map(|candidate| candidate["id"].as_str())
@@ -791,6 +800,28 @@ mod tests {
         assert_eq!(
             select_release_group(&response, &identity, 2019).as_deref(),
             Some("e4d39d2e-9420-4007-881a-9b5bc23944e0")
+        );
+    }
+
+    #[test]
+    fn album_search_matches_canonically_equivalent_accents() {
+        let identity = AlbumIdentity {
+            release_id: String::new(),
+            artist: "Chystemc".into(),
+            title: "Ine\u{301}ditos Dos Mil Siete".into(),
+            year: Some(2020),
+        };
+        let response = serde_json::json!({"release-groups": [{
+            "id": "a9ee271a-4b70-4937-adf6-8ad6b2598118",
+            "score": 100,
+            "title": "Inéditos Dos Mil Siete",
+            "first-release-date": "2020",
+            "artist-credit": [{"name": "Chystemc"}]
+        }]});
+        assert_eq!(lucene_literal(&identity.title), "Inéditos Dos Mil Siete");
+        assert_eq!(
+            select_release_group(&response, &identity, 2020).as_deref(),
+            Some("a9ee271a-4b70-4937-adf6-8ad6b2598118")
         );
     }
 
