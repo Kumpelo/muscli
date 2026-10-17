@@ -1634,15 +1634,20 @@ impl Database {
         ))
     }
 
+    /// Failed analyses are cached by the same file fingerprint as successful
+    /// results. An explicit retry requests only failures, not valid analyses.
     pub fn gain_analysis_candidates(
         &self,
-        force: bool,
+        retry_failed: bool,
     ) -> Result<Vec<(String, std::path::PathBuf, u64, i64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT id,path,file_size,modified_ns FROM tracks
-             WHERE available=1 AND (?1 OR gain_db IS NULL OR gain_file_size<>file_size OR gain_modified_ns<>modified_ns)",
+             WHERE available=1 AND
+                 (gain_file_size IS NULL OR gain_modified_ns IS NULL
+                  OR gain_file_size<>file_size OR gain_modified_ns<>modified_ns
+                  OR (?1 AND gain_db IS NULL))",
         )?;
-        let rows = stmt.query_map([force], |row| {
+        let rows = stmt.query_map([retry_failed], |row| {
             Ok((
                 row.get(0)?,
                 std::path::PathBuf::from(row.get::<_, String>(1)?),
@@ -1663,6 +1668,20 @@ impl Database {
         self.conn.execute(
             "UPDATE tracks SET gain_db=?2,true_peak_db=?3,gain_file_size=?4,gain_modified_ns=?5 WHERE id=?1",
             params![track_id, result.gain_db, result.true_peak_db, size.min(i64::MAX as u64) as i64, modified],
+        )?;
+        Ok(())
+    }
+
+    /// Cache failures without changing audio files or requiring a schema
+    /// migration. NULL gain_db plus matching fingerprint marks a failed file.
+    /// A later source change or explicit retry makes it eligible again.
+    pub fn save_gain_failure(&self, track_id: &str, size: u64, modified: i64) -> Result<()> {
+        let size = size.min(i64::MAX as u64) as i64;
+        self.conn.execute(
+            "UPDATE tracks
+             SET gain_db=NULL, true_peak_db=NULL, gain_file_size=?2, gain_modified_ns=?3
+             WHERE id=?1 AND available=1 AND file_size=?2 AND modified_ns=?3",
+            params![track_id, size, modified],
         )?;
         Ok(())
     }
@@ -2373,6 +2392,69 @@ mod tests {
             candidates.iter().any(|(id, _, _, _)| id == "existing-0"),
             "a modified track should be reanalyzed"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn replaygain_failures_are_not_retried_on_every_start() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let database = directory.path().join("library.db");
+        let mut db = Database::open(&database)?;
+        let entry = ScannedTrack {
+            track: track("broken-audio", 1),
+            file_size: 100,
+            modified_ns: 1,
+        };
+        db.upsert_scan("s", Path::new("/music"), "Music", &[entry], &[])?;
+        assert_eq!(db.gain_analysis_candidates(false)?.len(), 1);
+
+        db.save_gain_failure("broken-audio", 100, 1)?;
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+        assert!(db.track_gain("broken-audio", false)?.is_none());
+        drop(db);
+
+        let mut db = Database::open(&database)?;
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+        assert_eq!(db.gain_analysis_candidates(true)?.len(), 1);
+
+        // A stale worker result cannot suppress analysis of a changed file.
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            &[ScannedTrack {
+                track: track("broken-audio", 1),
+                file_size: 101,
+                modified_ns: 2,
+            }],
+            &[],
+        )?;
+        db.save_gain_failure("broken-audio", 100, 1)?;
+        assert_eq!(db.gain_analysis_candidates(false)?.len(), 1);
+        db.save_gain_failure("broken-audio", 101, 2)?;
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn retrying_failed_gain_does_not_reanalyze_cached_successes() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let entries = [ScannedTrack {
+            track: track("ok", 1),
+            file_size: 100,
+            modified_ns: 1,
+        }, ScannedTrack {
+            track: track("failed", 2),
+            file_size: 100,
+            modified_ns: 1,
+        }];
+        db.upsert_scan("s", Path::new("/music"), "Music", &entries, &[])?;
+        db.save_gain("ok", ReplayGainAnalysis { gain_db: -4.0, true_peak_db: -1.0 }, 100, 1)?;
+        db.save_gain_failure("failed", 100, 1)?;
+        assert!(db.gain_analysis_candidates(false)?.is_empty());
+        let retry = db.gain_analysis_candidates(true)?;
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].0, "failed");
         Ok(())
     }
 
