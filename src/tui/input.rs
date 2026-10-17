@@ -419,6 +419,14 @@ impl App {
 
     pub(super) fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) -> Result<()> {
         match mouse.kind {
+            // Shift+wheel controls muscli's own volume; an unmodified wheel
+            // retains normal scrolling in lists and the album grid.
+            MouseEventKind::ScrollUp if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.handle_remote_action(RemoteCommand::VolumeUp)?;
+            }
+            MouseEventKind::ScrollDown if mouse.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.handle_remote_action(RemoteCommand::VolumeDown)?;
+            }
             MouseEventKind::ScrollUp if keys::Scope::AlbumGrid.matches(self.view, self.focus) => {
                 self.move_album_selection(-(self.album_columns as isize))
             }
