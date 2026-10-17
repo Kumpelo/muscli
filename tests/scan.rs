@@ -39,6 +39,43 @@ fn titles(db: &Database) -> Vec<String> {
 }
 
 #[test]
+fn adding_a_flac_preserves_existing_volume_analysis_after_real_rescan() {
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("a.flac"), &TrackSpec::new("A"));
+    write_track(&fixture.source().join("b.flac"), &TrackSpec::new("B"));
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    for (id, _, size, modified) in db.gain_analysis_candidates(false).unwrap() {
+        db.save_gain(
+            &id,
+            muscli::model::ReplayGainAnalysis {
+                gain_db: -4.0,
+                true_peak_db: -1.0,
+            },
+            size,
+            modified,
+        )
+        .unwrap();
+    }
+    drop(db);
+    let mut db = open_db(&fixture);
+    write_track(&fixture.source().join("new.flac"), &TrackSpec::new("New"));
+    let report = scan(&fixture, &mut db);
+    assert!(report.errors.is_empty());
+    let candidates = db.gain_analysis_candidates(false).unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert!(candidates[0].1.ends_with("new.flac"));
+    let cached = db
+        .load_tracks()
+        .unwrap()
+        .into_iter()
+        .filter(|track| track.title != "New");
+    for track in cached {
+        assert!(db.track_gain(&track.id, false).unwrap().is_some());
+    }
+}
+
+#[test]
 fn first_scan_indexes_every_track_with_its_tags() {
     let fixture = Fixture::new();
     let source = fixture.source();
