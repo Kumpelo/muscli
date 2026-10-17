@@ -234,11 +234,7 @@ pub(super) const BINDINGS: &[Binding] = &[
     ),
     // Ctrl+Up/Down are convenient on keyboards without a numeric keypad.
     // Unlike system media keys, they control muscli's own volume on Windows.
-    ctrl(
-        KeyCode::Up,
-        Anywhere,
-        A::Remote(RemoteCommand::VolumeUp),
-    ),
+    ctrl(KeyCode::Up, Anywhere, A::Remote(RemoteCommand::VolumeUp)),
     ctrl(
         KeyCode::Down,
         Anywhere,
