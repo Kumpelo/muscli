@@ -32,7 +32,10 @@ fn portable_lyrics_follow_the_audio_and_preserve_existing_files() {
         lyrics::lyrics_path(fixture.paths(), &track)
     );
     let exported = lyrics::export(fixture.paths(), &track, None).unwrap();
-    assert_eq!(exported, audio.with_extension("lrc"));
+    assert_eq!(
+        exported.canonicalize().unwrap(),
+        audio.with_extension("lrc").canonicalize().unwrap()
+    );
     assert!(lyrics::export(fixture.paths(), &track, None).is_err());
     assert!(lyrics::export(fixture.paths(), &track, Some(&audio)).is_err());
     assert_eq!(fs::read(&audio).unwrap(), original_audio);
