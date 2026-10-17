@@ -2,14 +2,12 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     fs,
     hash::{Hash, Hasher},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread,
     time::{Duration, Instant},
 };
 
-#[cfg(any(unix, test))]
-use std::path::Path;
 use std::time::SystemTime;
 
 use anyhow::Result;
