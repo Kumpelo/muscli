@@ -65,10 +65,10 @@ fn album_card_rows(area: Rect) -> [Rect; 2] {
     Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).areas(area)
 }
 
-/// Clear the old graphics placement, then restore every cell to the current
-/// theme. Clear alone resets cells to the terminal default (black in many
-/// Windows profiles), leaving dark gutters beside narrow covers in light mode.
-fn clear_cover_area(frame: &mut Frame<'_>, area: Rect, theme: UiTheme) {
+/// Erase a previous image or dialog, then restore the active theme in every
+/// cell. Clear alone resets cells to the terminal's default background,
+/// leaving dark rectangles in light palettes on many Windows profiles.
+fn clear_themed_area(frame: &mut Frame<'_>, area: Rect, theme: UiTheme) {
     frame.render_widget(Clear, area);
     frame.render_widget(
         Block::default().style(Style::default().fg(theme.foreground).bg(theme.background)),
@@ -701,7 +701,7 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         if let Some(path) = cover_path
             && let Some(protocol) = app.covers.grid.get_mut(&path)
         {
-            clear_cover_area(frame, cover_area, app.theme);
+            clear_themed_area(frame, cover_area, app.theme);
             frame.render_stateful_widget(StatefulImage::new(), cover_area, protocol);
         } else {
             frame.render_widget(
@@ -929,7 +929,7 @@ fn draw_details(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         // Clear before drawing: with the kitty image protocol the previous
         // cover leaves a band of itself behind unless the cells are wiped
         // first.
-        clear_cover_area(frame, cover_area, app.theme);
+        clear_themed_area(frame, cover_area, app.theme);
         frame.render_stateful_widget(StatefulImage::new(), cover_area, &mut cover.protocol);
     } else {
         frame.render_widget(
@@ -1078,7 +1078,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &App) {
         _ => 5,
     };
     let area = centered(frame.area(), width, height);
-    frame.render_widget(Clear, area);
+    clear_themed_area(frame, area, app.theme);
     match &app.input {
         Some(InputMode::Search) => frame.render_widget(
             Paragraph::new(format!("> {}_", app.input_buffer)).block(
@@ -1283,7 +1283,7 @@ mod tests {
                     Block::default().style(Style::default().bg(Color::Black)),
                     region,
                 );
-                clear_cover_area(frame, region, UiTheme::light());
+                clear_themed_area(frame, region, UiTheme::light());
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -1299,7 +1299,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
         let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
         terminal
-            .draw(|frame| clear_cover_area(frame, frame.area(), UiTheme::dark()))
+            .draw(|frame| clear_themed_area(frame, frame.area(), UiTheme::dark()))
             .unwrap();
         assert_eq!(terminal.backend().buffer()[(5, 1)].bg, Color::Black);
     }
