@@ -716,6 +716,8 @@ impl App {
             self.gain_tx.clone(),
         );
         self.gain_progress = Some((0, total));
+        self.status = t!("status.gain_started", total = total);
+        self.dirty = true;
         Ok(())
     }
 
