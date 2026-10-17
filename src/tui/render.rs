@@ -71,11 +71,7 @@ fn album_card_rows(area: Rect) -> [Rect; 2] {
 fn clear_cover_area(frame: &mut Frame<'_>, area: Rect, theme: UiTheme) {
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Block::default().style(
-            Style::default()
-                .fg(theme.foreground)
-                .bg(theme.background),
-        ),
+        Block::default().style(Style::default().fg(theme.foreground).bg(theme.background)),
         area,
     );
 }
@@ -434,7 +430,13 @@ fn draw_genre_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         1 => viewport
             .clone()
             .filter_map(|position| app.genre_artist_indices().get(position).copied())
-            .map(|index| ListItem::new(format!("{}  {}", icons::display("󰠃", "@"), artist_label(&app.artists[index].name))))
+            .map(|index| {
+                ListItem::new(format!(
+                    "{}  {}",
+                    icons::display("󰠃", "@"),
+                    artist_label(&app.artists[index].name)
+                ))
+            })
             .collect(),
         _ => viewport
             .filter_map(|position| app.genre_track_ids().get(position))
@@ -703,23 +705,25 @@ fn draw_albums(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             frame.render_stateful_widget(StatefulImage::new(), cover_area, protocol);
         } else {
             frame.render_widget(
-                Paragraph::new(icons::display("󰀥", "A")).alignment(Alignment::Center).style(
-                    Style::default()
-                        .fg(if selected {
-                            app.theme.background
-                        } else {
-                            app.theme.muted
-                        })
-                        // The theme's own background rather than Color::Reset:
-                        // resetting would punch the terminal's background
-                        // through a themed interface, which is a visible dark
-                        // patch under a light palette.
-                        .bg(if selected {
-                            app.theme.accent
-                        } else {
-                            app.theme.background
-                        }),
-                ),
+                Paragraph::new(icons::display("󰀥", "A"))
+                    .alignment(Alignment::Center)
+                    .style(
+                        Style::default()
+                            .fg(if selected {
+                                app.theme.background
+                            } else {
+                                app.theme.muted
+                            })
+                            // The theme's own background rather than Color::Reset:
+                            // resetting would punch the terminal's background
+                            // through a themed interface, which is a visible dark
+                            // patch under a light palette.
+                            .bg(if selected {
+                                app.theme.accent
+                            } else {
+                                app.theme.background
+                            }),
+                    ),
                 rows[0],
             );
         }
