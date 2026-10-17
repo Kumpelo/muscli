@@ -33,6 +33,7 @@ pub enum ReplayGainMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub update_mode: crate::updater::UpdateMode,
     pub sources: Vec<PathBuf>,
     pub auto_discover_removable: bool,
     pub cover_cache_mb: u64,
@@ -100,6 +101,7 @@ pub const EQUALIZER_BANDS: [u32; 8] = [60, 150, 400, 1_000, 2_400, 6_000, 12_000
 impl Default for Config {
     fn default() -> Self {
         Self {
+            update_mode: crate::updater::UpdateMode::default(),
             sources: Vec::new(),
             auto_discover_removable: true,
             cover_cache_mb: 64,

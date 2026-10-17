@@ -18,6 +18,7 @@ cpal = "0.18.2"
 crossterm = "0.29"
 directories = "6.0"
 discord-rich-presence = "1.1"
+flate2 = "1"
 fs4 = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 interprocess = "2.4.4"
@@ -29,9 +30,13 @@ ratatui-image = { version = "11.0.8", default-features = false, features = ["cro
 rtrb = "0.4.0"
 rubato = "5.0.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 symphonia = { version = "0.6.1", default-features = false, features = ["flac", "mp3", "aac", "alac", "vorbis", "isomp4", "ogg", "wav", "aiff", "pcm"] }
+tar = "0.4"
+tempfile = "3"
 tokio = { version = "1.48", features = ["macros", "rt", "sync", "time", "signal"] }
 toml = "1.1"
 unicode-normalization = "0.1"
@@ -64,7 +69,6 @@ windows = { version = "0.62.2", features = [
 
 [dev-dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-tempfile = "3.23"
 
 [profile.release]
 # "fat" over "thin": this is a single binary where cross-crate inlining pays,

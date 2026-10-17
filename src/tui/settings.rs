@@ -36,6 +36,8 @@ pub(super) enum SettingId {
     CoverCache,
     Discord,
     DiscordImages,
+    UpdateMode,
+    InstallUpdate,
     Rescan,
     AnalyzeGain,
 }
@@ -54,7 +56,7 @@ const fn band(index: usize) -> SettingRow {
     row(SettingId::EqualizerBand(index), "setting.equalizer_band")
 }
 
-pub(super) const SETTINGS: [SettingRow; 32] = [
+pub(super) const SETTINGS: [SettingRow; 34] = [
     row(SettingId::Theme, "setting.theme"),
     row(SettingId::Language, "setting.language"),
     row(SettingId::CompactDefault, "setting.compact_default"),
@@ -85,6 +87,8 @@ pub(super) const SETTINGS: [SettingRow; 32] = [
     row(SettingId::CoverCache, "setting.cover_cache"),
     row(SettingId::Discord, "setting.discord"),
     row(SettingId::DiscordImages, "setting.discord_images"),
+    row(SettingId::UpdateMode, "setting.updates"),
+    row(SettingId::InstallUpdate, "setting.install_update"),
     row(SettingId::Rescan, "setting.rescan"),
     row(SettingId::AnalyzeGain, "setting.analyze_gain"),
 ];
@@ -251,6 +255,18 @@ impl App {
                 }
             }
             SettingId::CoverCache => t!("setting.value.mib", value = self.config.cover_cache_mb),
+            SettingId::UpdateMode => t!(match self.config.update_mode {
+                crate::updater::UpdateMode::Off => "update.mode.off",
+                crate::updater::UpdateMode::Notify => "update.mode.notify",
+                crate::updater::UpdateMode::Automatic => "update.mode.automatic",
+            })
+            .to_owned(),
+            SettingId::InstallUpdate => t!(if self.update_rx.is_some() {
+                "setting.value.running"
+            } else {
+                "setting.value.activate"
+            })
+            .to_owned(),
             SettingId::Discord => switch(self.config.discord_enabled),
             SettingId::DiscordImages => switch(self.config.discord_images),
             SettingId::Rescan => t!(if self.scan_running {
@@ -409,6 +425,27 @@ impl App {
                 } else {
                     self.config.cover_cache_mb.saturating_sub(8).max(16)
                 };
+            }
+            SettingId::UpdateMode => {
+                use crate::updater::UpdateMode;
+                self.update_rx = None;
+                self.update_installer = None;
+                self.config.update_mode = match (self.config.update_mode, increase) {
+                    (UpdateMode::Off, true) | (UpdateMode::Automatic, false) => UpdateMode::Notify,
+                    (UpdateMode::Notify, true) | (UpdateMode::Off, false) => UpdateMode::Automatic,
+                    _ => UpdateMode::Off,
+                };
+            }
+            SettingId::InstallUpdate => {
+                if horizontal || self.update_rx.is_some() {
+                    return Ok(());
+                }
+                self.update_rx = crate::updater::background(
+                    self.paths.cache_dir.clone(),
+                    self.config.update_mode,
+                    true,
+                );
+                self.status = t!("update.checking").to_owned();
             }
             SettingId::DiscordImages => {
                 self.config.discord_images = !self.config.discord_images;

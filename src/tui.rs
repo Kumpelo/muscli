@@ -296,6 +296,8 @@ struct App {
     player_events: tokio_mpsc::UnboundedReceiver<PlayerEvent>,
     mpris: Option<MprisBridge>,
     discord: Option<DiscordPresence>,
+    update_rx: Option<crate::updater::UpdateJob>,
+    update_installer: Option<crate::updater::Installer>,
     actions: tokio_mpsc::UnboundedReceiver<PlayerAction>,
     remote_actions: tokio_mpsc::UnboundedReceiver<RemoteCommand>,
     _control_server: ControlServer,
@@ -386,7 +388,11 @@ pub async fn run(
     let result = run_inner(&mut terminal, paths, config, picker, compact, theme).await;
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
-    result
+    drop(_guard);
+    if let Some(installer) = result? {
+        installer.launch()?;
+    }
+    Ok(())
 }
 
 /// Build the backend the configuration asks for.
@@ -436,7 +442,7 @@ async fn run_inner(
     picker: Picker,
     compact_requested: bool,
     theme_requested: Option<String>,
-) -> Result<()> {
+) -> Result<Option<crate::updater::Installer>> {
     let db = Database::open(&paths.database_file())?;
     let saved = db.load_playback()?;
     let (player_events_tx, player_events) = tokio_mpsc::unbounded_channel();
@@ -496,6 +502,7 @@ async fn run_inner(
     start_search_worker(search_requests, search_results_tx);
 
     let (lyrics_tx, lyrics_rx) = tokio_mpsc::unbounded_channel();
+    let update_rx = crate::updater::background(paths.cache_dir.clone(), config.update_mode, false);
     let mut app = App {
         paths,
         config,
@@ -559,6 +566,8 @@ async fn run_inner(
         player_events,
         mpris,
         discord,
+        update_rx,
+        update_installer: None,
         actions,
         remote_actions,
         _control_server: control_server,
@@ -774,6 +783,7 @@ async fn run_inner(
                 app.lyrics_track = None;
                 app.dirty = true;
             }
+            app.poll_update();
             app.tick_pause_fade()?;
             app.tick_history()?;
             app.publish_widget()?;
@@ -824,10 +834,43 @@ async fn run_inner(
 
     let save_result = app.save_state();
     loop_result?;
-    save_result
+    save_result?;
+    Ok(app.update_installer.take())
 }
 
 impl App {
+    fn poll_update(&mut self) {
+        let Some(receiver) = self.update_rx.as_ref() else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.update_rx = None;
+                return;
+            }
+        };
+        self.update_rx = None;
+        self.dirty = true;
+        self.status = match result {
+            Ok(crate::updater::UpdateEvent::Current) => return,
+            Ok(crate::updater::UpdateEvent::Available(version)) => {
+                t!("update.available", version = version)
+            }
+            Ok(crate::updater::UpdateEvent::Installed(version)) => {
+                t!("update.installed", version = version)
+            }
+            Ok(crate::updater::UpdateEvent::InstallerReady(installer)) => {
+                let status = t!("update.on_exit", version = installer.version);
+                self.update_installer = Some(installer);
+                status
+            }
+            Err(error) => t!("update.error", error = error),
+        };
+        self.dirty = true;
+    }
+
     fn item_count(&self) -> usize {
         match self.view {
             View::Home => self.home_track_ids().len(),

@@ -33,6 +33,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Check official releases or install a verified update
+    Update {
+        /// Only check; do not download or replace the installation
+        #[arg(long)]
+        check: bool,
+    },
     /// Render a local DJ transition demo without modifying source music
     Mix {
         #[command(subcommand)]

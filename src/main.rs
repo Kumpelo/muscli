@@ -52,6 +52,32 @@ fn main() -> Result<()> {
     ));
 
     match cli.command {
+        Some(Command::Update { check }) => {
+            #[cfg(windows)]
+            let guard = if check {
+                None
+            } else {
+                Some(muscli::instance::InstanceGuard::acquire(
+                    &paths.lock_file(),
+                )?)
+            };
+            let result = muscli::updater::update(&paths.cache_dir, !check)?;
+            match result {
+                muscli::updater::UpdateEvent::Current => println!("{}", t!("update.current")),
+                muscli::updater::UpdateEvent::Available(version) => {
+                    println!("{}", t!("update.available", version = version))
+                }
+                muscli::updater::UpdateEvent::Installed(version) => {
+                    println!("{}", t!("update.installed", version = version))
+                }
+                muscli::updater::UpdateEvent::InstallerReady(installer) => {
+                    #[cfg(windows)]
+                    drop(guard);
+                    installer.launch()?;
+                }
+            }
+        }
+
         Some(Command::Mix { command }) => match command {
             MixCommand::Presets => {
                 if config.mix_presets.is_empty() {
