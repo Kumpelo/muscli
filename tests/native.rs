@@ -902,8 +902,8 @@ fn songs_at_different_rates_join_without_restarting_the_device() {
 
         // Resampling preserves musical pitch; it must not interpret incoming
         // 48 kHz samples as 44.1 kHz (or the reverse).
-        let sample = &heard[boundary + first_rate as usize / 4
-            ..boundary + first_rate as usize / 4 + 8_192];
+        let sample =
+            &heard[boundary + first_rate as usize / 4..boundary + first_rate as usize / 4 + 8_192];
         let spectrum = muscli::audio::measure::spectrum(sample, first_rate);
         let found = spectrum.frequency(spectrum.peak_bin());
         assert!(
@@ -963,7 +963,10 @@ fn bit_perfect_refuses_cross_rate_handover() {
         }
     }
     assert_eq!(ends, 1, "bit-perfect should finish the current song");
-    assert_eq!(handovers, 0, "bit-perfect unexpectedly resampled the next song");
+    assert_eq!(
+        handovers, 0,
+        "bit-perfect unexpectedly resampled the next song"
+    );
 }
 
 #[test]
