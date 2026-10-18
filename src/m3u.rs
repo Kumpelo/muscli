@@ -93,6 +93,15 @@ pub fn render(tracks: &[(PathBuf, String, u64)], base: Option<&Path>) -> String 
 mod tests {
     use super::*;
 
+    #[test]
+    fn malicious_extinf_label_cannot_emit_terminal_escapes() {
+        let parsed = parse("#EXTM3U\n#EXTINF:7,\u{1b}[31mDanger\u{202e}\nmissing.flac\n", Path::new("/music"));
+        let label = parsed[0].label.as_deref().unwrap();
+        assert!(!label.chars().any(char::is_control));
+        assert!(!label.contains('\u{202e}'));
+        assert!(label.contains("Danger"));
+    }
+
     fn base() -> PathBuf {
         PathBuf::from("/music")
     }
