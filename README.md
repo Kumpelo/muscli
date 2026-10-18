@@ -24,7 +24,8 @@ local folders and removable-drive libraries. No account or streaming service.
 
 ## Install
 
-Download a package from [Releases](https://github.com/Kumpelo/muscli/releases).
+Current beta: **0.2.0-beta.4**. Download a package from
+[Releases](https://github.com/Kumpelo/muscli/releases).
 On Windows, run the `.exe` installer; mpv and FFmpeg are bundled. On Linux,
 install ALSA, mpv and FFmpeg, then extract the archive and place `muscli` in
 `~/.local/bin`.
@@ -74,5 +75,5 @@ preferences. Run `muscli keys` for all bindings or `muscli doctor` to check setu
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 muscli is in beta. Native gapless playback requires compatible track formats;
-Opus, WavPack and Monkey's Audio use the mpv fallback. See the
+Opus now decodes natively; WavPack and Monkey's Audio use the mpv fallback. See the
 [audio guide](docs/usage.md#audio) for the current limits.

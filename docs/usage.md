@@ -146,10 +146,12 @@ mpv is the default backend. Select the native backend in Settings or set
 `audio_backend = "native"` in `config.toml`. `muscli devices` lists native output
 devices; `audio_device` selects one by name.
 
-The native path provides ReplayGain, an eight-band equalizer, limiting and
-optional bit-perfect output. Opus, WavPack and Monkey's Audio fall back to mpv.
-Gapless playback requires compatible stream formats; a sample-rate change may
-open a new output stream. Disconnecting a device may require restarting playback.
+The native path decodes MP3, FLAC, AAC, ALAC, Vorbis, Opus, WAV and AIFF.
+It provides ReplayGain, an eight-band equalizer, limiting and optional bit-perfect
+output. WavPack and Monkey's Audio fall back to mpv.
+Gapless playback can resample between 44.1 and 48 kHz while keeping the output
+stream open. Bit-perfect playback requires matching stream formats; a format
+change opens a new output stream. Disconnecting a device may require restarting playback.
 
 Bit-perfect output bypasses muscli's volume, ReplayGain and equalizer. A shared
 system audio service may still mix or resample the output afterward.

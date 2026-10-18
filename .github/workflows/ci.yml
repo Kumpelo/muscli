@@ -53,16 +53,6 @@ jobs:
       # gate on. Compiling them still catches API drift in the bench targets.
       - run: cargo bench --no-run --locked
       - run: cargo build --release --locked
-      # Beta testers can try the validated executable without tagging a release
-      # or installing Rust on Windows. Never publish it from PRs or main.
-      - name: Upload Windows beta test executable
-        if: runner.os == 'Windows' && github.event_name == 'push' && github.ref == 'refs/heads/release/beta3'
-        uses: actions/upload-artifact@v7
-        with:
-          name: muscli-windows-beta3-test
-          path: target/release/muscli.exe
-          if-no-files-found: error
-          retention-days: 5
 
   msrv:
     name: MSRV 1.90

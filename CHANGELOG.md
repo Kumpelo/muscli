@@ -4,6 +4,40 @@ All notable user-visible changes are documented here.
 
 ## Unreleased
 
+## 0.2.0-beta.4 - 2026-10-18
+
+- Added native Ogg Opus decoding with encoder delay and padding trimming,
+  header gain, seeking with preroll, and multichannel channel ordering.
+  Invalid headers, excessive internal streams and malformed packets are bounded
+  or rejected without interrupting playback of supported files.
+- Added generic discovery of conventional music folders on mounted USB drives
+  and SD cards, with hot-plug watching, stable volume identities when available,
+  and preservation of favorites, playlists and listening history on reconnect.
+  Dedicated music folders avoid Ventoy ISO trees, overlapping sources and
+  unsafe symbolic links.
+- Bounded artwork reads and image decoding, sanitized untrusted tag and playlist
+  display text, and limited ReplayGain subprocess runtime and captured output.
+- Improved native gapless handovers across 44.1 and 48 kHz with resampling;
+  bit-perfect playback retains matching-format requirements.
+- Cached failed ReplayGain analyses and added retries for failed files without
+  repeating successful work; clarified progress and MIX requirements.
+- Added portable terminal symbols and volume shortcuts, including Shift and
+  mouse-wheel controls, and fixed theme backgrounds around covers and dialogs.
+- Fixed missing-instance remote commands on Windows.
+
+## 0.2.0-beta.3 - 2026-10-17
+
+- Added native live MIX transitions, persistent incremental BPM and energy
+  analysis, transition previews, and configurable transition effects.
+- Added album sessions, conservative compilation grouping and album ReplayGain
+  based on actual group membership; preserved distinct releases.
+- Added portable synced lyrics, configurable pause fade, an optional Quickshell
+  widget and verified updates from official releases.
+- Improved Discord playback synchronization and canonical album covers, persisted
+  resolved cover URLs and cleared presence while paused.
+- Fixed queue prefetch after edits, seek and pause behavior, incremental
+  ReplayGain scheduling, integer PCM clipping and ALSA callback buffering.
+
 ## 0.2.0-beta.2 - 2026-09-25
 
 - Added an optional native audio backend with ReplayGain, an eight-band

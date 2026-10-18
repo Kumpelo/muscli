@@ -1,6 +1,6 @@
 [package]
 name = "muscli"
-version = "0.2.0-beta.3"
+version = "0.2.0-beta.4"
 edition = "2024"
 rust-version = "1.90"
 description = "A fast local-first music library and terminal player for Linux and Windows"

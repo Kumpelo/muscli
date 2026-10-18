@@ -6,7 +6,7 @@ on:
       version:
         description: Version to package, without a leading v
         required: true
-        default: 0.2.0-beta.3
+        default: 0.2.0-beta.4
   push:
     tags: ["v*"]
 

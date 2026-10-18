@@ -23,7 +23,8 @@ bibliotecas en carpetas, USB o SD. No requiere cuenta ni servicio de streaming.
 
 ## Instalación
 
-Descarga un paquete desde [Releases](https://github.com/Kumpelo/muscli/releases).
+Beta actual: **0.2.0-beta.4**. Descarga un paquete desde
+[Releases](https://github.com/Kumpelo/muscli/releases).
 En Windows, ejecuta el instalador `.exe`, que incluye mpv y FFmpeg. En Linux,
 instala las dependencias, extrae el archivo y coloca `muscli` en `~/.local/bin`.
 
@@ -76,4 +77,5 @@ la configuración.
 - [Contribuciones](../CONTRIBUTING.md) · [Seguridad](../SECURITY.md) · [Avisos de terceros](../THIRD_PARTY_NOTICES.md)
 
 muscli está en beta. La reproducción nativa sin huecos requiere formatos
-compatibles entre pistas. Opus, WavPack y Monkey's Audio usan mpv como respaldo.
+compatibles entre pistas. Opus ya se decodifica de forma nativa; WavPack y
+Monkey's Audio usan mpv como respaldo.
