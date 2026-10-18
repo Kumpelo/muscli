@@ -1007,3 +1007,145 @@ fn artist_sorted_compilation_groups_without_retagging_or_rebuilding_user_data() 
         );
     }
 }
+
+#[test]
+fn switching_between_mount_root_and_music_folder_preserves_track_identity() {
+    let fixture = Fixture::new();
+    let music = fixture.source().join("Music");
+    write_track(
+        &music.join("Artist/Album/01.flac"),
+        &TrackSpec::new("Opening"),
+    );
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    let original = db.load_tracks().unwrap().remove(0);
+    db.toggle_favorite(&original.id).unwrap();
+    let history_id = db.start_history(&original.id).unwrap();
+    db.update_history(muscli::db::HistoryUpdate {
+        history_id,
+        track_id: &original.id,
+        listened_delta_ms: 6000,
+        position_ms: 6000,
+        was_counted: false,
+        count_now: true,
+        completed: false,
+    })
+    .unwrap();
+    let playlist = db.create_playlist("Keep").unwrap();
+    db.add_to_playlist(playlist, &original.id).unwrap();
+    for root in [&music, &fixture.source(), &music] {
+        let report = scan_to_database(
+            &mut db,
+            fixture.paths(),
+            std::slice::from_ref(root),
+            &options(),
+        )
+        .unwrap();
+        assert!(report.errors.is_empty());
+        let tracks = db.load_tracks().unwrap();
+        assert_eq!(tracks.len(), 1, "one physical file must have one row");
+        assert_eq!(tracks[0].id, original.id);
+        assert!(tracks[0].available && tracks[0].favorite);
+        assert_eq!(db.load_history(500).unwrap().len(), 1);
+        assert_eq!(
+            db.load_playlists().unwrap()[0].track_ids,
+            vec![original.id.clone()]
+        );
+    }
+}
+
+#[test]
+fn identical_metadata_in_distinct_collections_and_offline_sources_stays_separate() {
+    let fixture = Fixture::new();
+    let first = fixture.source().join("First");
+    let second = fixture.source().join("Second");
+    for root in [&first, &second] {
+        write_track(&root.join("Album/01.flac"), &TrackSpec::new("Same title"));
+    }
+    let mut db = open_db(&fixture);
+    scan_to_database(
+        &mut db,
+        fixture.paths(),
+        &[first.clone(), second.clone()],
+        &options(),
+    )
+    .unwrap();
+    let before = db.load_tracks().unwrap();
+    assert_eq!(before.len(), 2);
+    scan_to_database(&mut db, fixture.paths(), &[first], &options()).unwrap();
+    let tracks = db.load_tracks().unwrap();
+    assert_eq!(tracks.len(), 2);
+    assert_eq!(tracks.iter().filter(|t| t.available).count(), 1);
+    assert_eq!(muscli::db::group_albums(&tracks).len(), 2);
+}
+
+#[test]
+fn concurrent_scans_of_the_same_library_are_idempotent() {
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("a.flac"), &TrackSpec::new("A"));
+    let _ = open_db(&fixture);
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut db = open_db(&fixture);
+                    barrier.wait();
+                    scan(&fixture, &mut db)
+                })
+            })
+            .collect();
+        for job in jobs {
+            assert!(job.join().unwrap().errors.is_empty());
+        }
+    });
+    let mut db = open_db(&fixture);
+    let before = db.load_tracks().unwrap();
+    assert_eq!(before.len(), 1);
+    scan(&fixture, &mut db);
+    assert_eq!(db.load_tracks().unwrap(), before);
+}
+
+#[test]
+fn disconnecting_during_a_scan_does_not_commit_an_empty_library() {
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("a.flac"), &TrackSpec::new("A"));
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    let before = db.load_tracks().unwrap();
+    let disconnected = fixture.source().with_file_name("disconnected");
+    let moved = std::sync::atomic::AtomicBool::new(false);
+    let progress = |_: usize, _: usize| {
+        if !moved.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            fs::rename(fixture.source(), &disconnected).unwrap();
+        }
+    };
+    assert!(
+        muscli::library::scan_source_reporting(
+            fixture.paths(),
+            &fixture.source(),
+            &db,
+            &options(),
+            &progress
+        )
+        .is_err()
+    );
+    assert_eq!(db.load_tracks().unwrap(), before);
+    fs::rename(disconnected, fixture.source()).unwrap();
+    scan(&fixture, &mut db);
+    assert_eq!(db.load_tracks().unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_and_symlinked_roots_share_one_source() {
+    let fixture = Fixture::new();
+    write_track(&fixture.source().join("a.flac"), &TrackSpec::new("A"));
+    let alias = fixture.source().with_file_name("alias");
+    std::os::unix::fs::symlink(fixture.source(), &alias).unwrap();
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+    let before = db.load_tracks().unwrap();
+    scan_to_database(&mut db, fixture.paths(), &[alias], &options()).unwrap();
+    assert_eq!(db.load_tracks().unwrap(), before);
+}

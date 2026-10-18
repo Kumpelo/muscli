@@ -83,6 +83,38 @@ impl HistoryTally {
     }
 }
 
+/// Retarget accounting after database reconciliation without issuing any
+/// backend commands or changing the current queue position or playback clock.
+pub(super) fn remap_library_tracks(
+    queue: &mut [String],
+    tally: &mut HistoryTally,
+    mix: Option<&mut AudibleMix>,
+    mappings: &[(String, String)],
+) -> bool {
+    let remap = |id: &mut String| {
+        if let Some((_, replacement)) = mappings.iter().find(|(old, _)| old == id) {
+            *id = replacement.clone();
+            true
+        } else {
+            false
+        }
+    };
+    let mut queue_changed = false;
+    for id in queue {
+        queue_changed |= remap(id);
+    }
+    if let Some(id) = tally.track_id.as_mut() {
+        remap(id);
+    }
+    if let Some(mix) = mix {
+        remap(&mut mix.track_id);
+        if let Some(id) = mix.tally.track_id.as_mut() {
+            remap(id);
+        }
+    }
+    queue_changed
+}
+
 fn shuffle_upcoming<T>(queue: &mut [T], current: Option<usize>, rng: &mut impl rand::Rng) {
     let start = current
         .map(|index| index.saturating_add(1))
@@ -1162,6 +1194,40 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reconciling_library_ids_keeps_active_playback_accounting_and_mix_clock() {
+        let mut tally = HistoryTally::new();
+        tally.restart(42, "old".into());
+        tally.pending_ms = 6000;
+        tally.listened_ms = 12000;
+        let tick = tally.last_tick;
+        let mut queue = vec!["old".into(), "next".into()];
+        let mut mix = AudibleMix {
+            track_id: "old".into(),
+            path: "/music/a.flac".into(),
+            position_ms: 11000,
+            progress: 0.5,
+            tally: HistoryTally::new(),
+        };
+        mix.tally.restart(43, "old".into());
+        assert!(remap_library_tracks(
+            &mut queue,
+            &mut tally,
+            Some(&mut mix),
+            &[("old".into(), "new".into())]
+        ));
+        assert_eq!(queue, vec!["new", "next"]);
+        assert_eq!(tally.track_id.as_deref(), Some("new"));
+        assert_eq!(tally.entry, Some(42));
+        assert_eq!(tally.pending_ms, 6000);
+        assert_eq!(tally.listened_ms, 12000);
+        assert_eq!(tally.last_tick, tick);
+        assert_eq!(mix.position_ms, 11000);
+        assert_eq!(mix.progress, 0.5);
+        assert_eq!(mix.tally.entry, Some(43));
+        assert_eq!(mix.tally.track_id.as_deref(), Some("new"));
+    }
+
     #[test]
     fn an_album_queue_can_skip_unavailable_tracks_but_cannot_repeat_or_reorder_them() {
         let album = Album {

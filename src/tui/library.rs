@@ -71,6 +71,10 @@ pub(super) struct LibrarySnapshot {
 
 impl LibrarySnapshot {
     pub(super) fn load(db: &Database) -> Result<Self> {
+        db.read_snapshot(Self::load_consistent)
+    }
+
+    fn load_consistent(db: &Database) -> Result<Self> {
         let _profile = crate::profiling::span("library_snapshot");
         let library = db.load_library_state()?;
         let tracks = library.tracks;
@@ -423,6 +427,14 @@ impl App {
                         return;
                     }
                 };
+                let _scanner_guard = match crate::library::lock_scanner(&paths) {
+                    Ok(guard) => guard,
+                    Err(error) => {
+                        let _ = tx.send(ScanMessage::Error(format!("{error:#}")));
+                        let _ = tx.send(ScanMessage::Done { changed: false });
+                        return;
+                    }
+                };
                 let mut ids = BTreeSet::new();
                 let mut changed = false;
                 for root in roots {
@@ -471,7 +483,10 @@ impl App {
                         &scan.tracks,
                         &scan.missing_track_ids,
                     ) {
-                        Ok(moved) => moved,
+                        Ok(moved) => {
+                            changed |= !moved.is_empty();
+                            moved
+                        }
                         Err(error) => {
                             let _ =
                                 tx.send(ScanMessage::Error(format!("{}: {error:#}", scan.label)));
@@ -564,15 +579,12 @@ impl App {
                 tracks,
                 moved_tracks,
             } => {
-                let mut queue_changed = false;
-                for id in &mut self.queue {
-                    if let Some((_, new_id)) = moved_tracks.iter().find(|(old_id, _)| id == old_id)
-                    {
-                        *id = new_id.clone();
-                        queue_changed = true;
-                    }
-                }
-                self.queue_dirty |= queue_changed;
+                self.queue_dirty |= playback::remap_library_tracks(
+                    &mut self.queue,
+                    &mut self.tally,
+                    self.audible_mix.as_mut(),
+                    &moved_tracks,
+                );
                 self.status = t!("status.indexed", tracks = tracks, label = label);
                 self.dirty = true;
             }

@@ -170,7 +170,7 @@ impl Database {
         let version: i64 = self
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 9 {
+        if version > 10 {
             anyhow::bail!("library database is newer than this muscli build");
         }
         if version == 0 {
@@ -441,6 +441,19 @@ impl Database {
             )?;
             tx.commit()?;
         }
+        let version: i64 = self
+            .conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 9 {
+            self.conn.execute_batch(
+                "CREATE TABLE source_aliases (
+                    observed_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE
+                 );
+                 CREATE INDEX tracks_physical_path ON tracks(path, file_size, modified_ns);
+                 PRAGMA user_version = 10;",
+            )?;
+        }
         Ok(())
     }
 
@@ -521,6 +534,107 @@ impl Database {
         Ok(())
     }
 
+    pub fn read_snapshot<T>(&self, read: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let tx = self.conn.unchecked_transaction()?;
+        let result = read(self)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// A failed volume lookup must not turn an already known root into a new
+    /// source. Remember both identities so reconnecting at another mount point
+    /// still finds the original source, including when the first lookup failed.
+    pub fn resolve_source_id(&self, observed: &str, root: &Path) -> Result<String> {
+        let fallback = blake3::hash(format!("path:{}", root.to_string_lossy()).as_bytes())
+            .to_hex()
+            .to_string();
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let known: Option<String> = tx
+            .query_row(
+                "SELECT source_id FROM source_aliases WHERE observed_id=?1
+             UNION SELECT id FROM sources WHERE id=?1 LIMIT 1",
+                [observed],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let id = if let Some(known) = known {
+            known
+        } else {
+            let candidates = {
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM sources WHERE root=?1
+                     AND (?2=?3 OR ((id=?3 OR id IN
+                         (SELECT source_id FROM source_aliases WHERE observed_id=?3))
+                         AND NOT EXISTS (SELECT 1 FROM source_aliases a
+                            WHERE a.source_id=sources.id AND a.observed_id<>?3 AND a.observed_id<>?2)))",
+                )?;
+                stmt.query_map(params![root.to_string_lossy(), observed, fallback], |r| {
+                    r.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            if candidates.len() == 1 {
+                candidates[0].clone()
+            } else {
+                observed.to_owned()
+            }
+        };
+        // New sources are inserted by upsert_scan, after their files are read.
+        tx.execute(
+            "INSERT OR IGNORE INTO source_aliases(observed_id, source_id)
+                    SELECT ?1,id FROM sources WHERE id=?2",
+            params![observed, id],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// Reuse rows for the same absolute files when discovery changes the scan
+    /// boundary (for example, a drive root becomes its Music subdirectory).
+    pub fn scan_cache_for_root(
+        &self,
+        source_id: &str,
+        root: &Path,
+    ) -> Result<HashMap<String, ScannedTrack>> {
+        let mut cached = self.scan_cache(source_id)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source_id, relative_path, path, title, artist, album_artist, album, genre,
+                    year, disc_number, track_number, duration_ms, cover_path, available, favorite,
+                    file_size, CASE WHEN metadata_version=0 THEN -1 ELSE modified_ns END, release_id, compilation
+             FROM tracks WHERE source_id<>?1
+                AND source_id IN (SELECT id FROM sources WHERE root<>?2
+                    OR ((id=?3 OR ?1=?3) AND NOT EXISTS
+                        (SELECT 1 FROM source_aliases a WHERE a.source_id=sources.id
+                         AND a.observed_id<>?3 AND a.observed_id<>?1)))
+             ORDER BY available DESC, added_at, id",
+        )?;
+        let fallback = blake3::hash(format!("path:{}", root.to_string_lossy()).as_bytes())
+            .to_hex()
+            .to_string();
+        let rows = stmt.query_map(
+            params![source_id, root.to_string_lossy(), fallback],
+            |row| {
+                Ok(ScannedTrack {
+                    track: row_to_track(row)?,
+                    file_size: row.get::<_, i64>(16)?.max(0) as u64,
+                    modified_ns: row.get(17)?,
+                })
+            },
+        )?;
+        for row in rows {
+            let item = row?;
+            if let Ok(relative) = item.track.path.strip_prefix(root) {
+                cached
+                    .entry(relative.to_string_lossy().into_owned())
+                    .or_insert(item);
+            }
+        }
+        Ok(cached)
+    }
+
     pub fn upsert_scan(
         &mut self,
         source_id: &str,
@@ -550,6 +664,7 @@ impl Database {
                     year, disc_number, track_number, duration_ms, cover_path, file_size, modified_ns, available, release_id, compilation, metadata_version
                  ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1,?17,?18,1)
                  ON CONFLICT(id) DO UPDATE SET
+                    source_id=excluded.source_id, relative_path=excluded.relative_path,
                     path=excluded.path, title=excluded.title, artist=excluded.artist,
                     album_artist=excluded.album_artist, album=excluded.album, genre=excluded.genre,
                     year=excluded.year, disc_number=excluded.disc_number, track_number=excluded.track_number,
@@ -583,7 +698,28 @@ impl Database {
                 ])?;
             }
         }
-        let moved_tracks = {
+        let mut moved_tracks = {
+            let mut stmt = tx.prepare(
+                "SELECT old.id, MIN(new.id) FROM tracks old
+                 JOIN tracks new ON new.path=old.path
+                    AND new.file_size=old.file_size AND new.modified_ns=old.modified_ns
+                    AND new.id<>old.id AND new.source_id=?1 AND new.available=1
+                 WHERE old.source_id<>?1 AND old.file_size>0
+                    AND old.source_id IN (SELECT id FROM sources WHERE root<>?2
+                        OR ((id=?3 OR ?1=?3) AND NOT EXISTS
+                            (SELECT 1 FROM source_aliases a WHERE a.source_id=sources.id
+                             AND a.observed_id<>?3 AND a.observed_id<>?1)))
+                 GROUP BY old.id HAVING COUNT(new.id)=1",
+            )?;
+            let fallback = blake3::hash(format!("path:{}", root.to_string_lossy()).as_bytes())
+                .to_hex()
+                .to_string();
+            stmt.query_map(params![source_id, root.to_string_lossy(), fallback], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<(String, String)>>>()?
+        };
+        let renamed_tracks = {
             let mut stmt = tx.prepare(
                 "SELECT old.id, MIN(new.id)
                  FROM tracks old
@@ -605,6 +741,7 @@ impl Database {
             stmt.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<Vec<(String, String)>>>()?
         };
+        moved_tracks.extend(renamed_tracks);
         let playback_queue: Option<String> = tx
             .query_row(
                 "SELECT value FROM app_state WHERE key='playback_queue'",
@@ -631,6 +768,33 @@ impl Database {
         }
         for (old_id, new_id) in &moved_tracks {
             tx.execute(
+                "UPDATE tracks SET added_at=MIN(added_at,(SELECT added_at FROM tracks WHERE id=?1))
+                 WHERE id=?2",
+                params![old_id, new_id],
+            )?;
+            // Carry analysis only when it describes the destination file.
+            tx.execute(
+                "UPDATE tracks SET (gain_db,true_peak_db,gain_file_size,gain_modified_ns)=
+                    (SELECT gain_db,true_peak_db,gain_file_size,gain_modified_ns FROM tracks WHERE id=?1)
+                 WHERE id=?2 AND (gain_file_size IS NOT file_size OR gain_modified_ns IS NOT modified_ns)
+                    AND EXISTS (SELECT 1 FROM tracks old WHERE old.id=?1
+                        AND old.gain_file_size=tracks.file_size AND old.gain_modified_ns=tracks.modified_ns)",
+                params![old_id,new_id],
+            )?;
+            tx.execute(
+                "INSERT INTO track_mix_analysis
+                 SELECT ?2,bpm,confidence,energy_rms,error_text,file_size,modified_ns,algorithm_version,boundaries
+                 FROM track_mix_analysis WHERE track_id=?1 AND EXISTS
+                    (SELECT 1 FROM tracks WHERE id=?2 AND tracks.file_size=track_mix_analysis.file_size
+                     AND tracks.modified_ns=track_mix_analysis.modified_ns)
+                 ON CONFLICT(track_id) DO UPDATE SET
+                    bpm=excluded.bpm,confidence=excluded.confidence,energy_rms=excluded.energy_rms,
+                    error_text=excluded.error_text,file_size=excluded.file_size,modified_ns=excluded.modified_ns,
+                    algorithm_version=excluded.algorithm_version,boundaries=excluded.boundaries
+                 WHERE track_mix_analysis.file_size<>excluded.file_size
+                    OR track_mix_analysis.modified_ns<>excluded.modified_ns", params![old_id,new_id],
+            )?;
+            tx.execute(
                 "UPDATE tracks
                  SET favorite = favorite OR COALESCE((SELECT favorite FROM tracks WHERE id=?1), 0)
                  WHERE id=?2",
@@ -650,7 +814,7 @@ impl Database {
                  ON CONFLICT(track_id) DO UPDATE SET
                     play_count=play_count+excluded.play_count,
                     total_listen_ms=total_listen_ms+excluded.total_listen_ms,
-                    last_played_at=MAX(last_played_at,excluded.last_played_at),
+                    last_played_at=COALESCE(MAX(last_played_at,excluded.last_played_at),last_played_at,excluded.last_played_at),
                     resume_position_ms=MAX(resume_position_ms,excluded.resume_position_ms)",
                 params![old_id, new_id],
             )?;
@@ -2126,6 +2290,196 @@ mod tests {
             available: true,
             favorite: false,
         }
+    }
+
+    #[test]
+    fn snapshot_stays_consistent_while_another_connection_reconciles_tracks() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("library.db");
+        let mut db = Database::open(&file)?;
+        let item = ScannedTrack {
+            track: track("old", 1),
+            file_size: 100,
+            modified_ns: 10,
+        };
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            std::slice::from_ref(&item),
+            &[],
+        )?;
+        let mut writer = Database::open(&file)?;
+        db.read_snapshot(|reader| {
+            assert_eq!(reader.load_tracks()?[0].source_id, "s");
+            let mut moved = item;
+            moved.track.source_id = "new-source".into();
+            writer.upsert_scan(
+                "new-source",
+                Path::new("/music/subdir"),
+                "Music",
+                &[moved],
+                &[],
+            )?;
+            assert_eq!(reader.load_tracks()?[0].source_id, "s");
+            Ok(())
+        })?;
+        assert_eq!(db.load_tracks()?[0].source_id, "new-source");
+        Ok(())
+    }
+
+    #[test]
+    fn source_identity_failures_and_recovery_reuse_the_persisted_source() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let root = Path::new("/media/usb/Music");
+        let fallback = blake3::hash(format!("path:{}", root.display()).as_bytes())
+            .to_hex()
+            .to_string();
+        db.upsert_scan(&fallback, root, "Music", &[], &[])?;
+        assert_eq!(db.resolve_source_id("volume-guid", root)?, fallback);
+        assert_eq!(db.resolve_source_id(&fallback, root)?, fallback);
+        assert_eq!(
+            db.resolve_source_id("volume-guid", Path::new("/new-mount/Music"))?,
+            fallback
+        );
+        // A positively identified different volume at the same root is distinct.
+        assert_eq!(
+            db.resolve_source_id("another-volume", root)?,
+            "another-volume"
+        );
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM sources", [], |r| r.get(0))?;
+        assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn different_identified_volumes_reusing_a_mount_path_do_not_merge() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let old = ScannedTrack {
+            track: track("old", 1),
+            file_size: 100,
+            modified_ns: 10,
+        };
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            std::slice::from_ref(&old),
+            &[],
+        )?;
+        db.mark_missing_sources(&BTreeSet::new())?;
+        let mut new = old;
+        new.track.id = "new".into();
+        new.track.source_id = "different-volume".into();
+        assert!(
+            db.scan_cache_for_root("different-volume", Path::new("/music"))?
+                .is_empty()
+        );
+        assert!(
+            db.upsert_scan(
+                "different-volume",
+                Path::new("/music"),
+                "Music",
+                &[new],
+                &[]
+            )?
+            .is_empty()
+        );
+        assert_eq!(db.load_tracks()?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_duplicate_paths_merge_references_and_analysis_transactionally() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let old = ScannedTrack {
+            track: track("old", 1),
+            file_size: 100,
+            modified_ns: 10,
+        };
+        db.upsert_scan(
+            "s",
+            Path::new("/music"),
+            "Music",
+            std::slice::from_ref(&old),
+            &[],
+        )?;
+        db.toggle_favorite("old")?;
+        db.conn
+            .execute("UPDATE tracks SET added_at=1 WHERE id='old'", [])?;
+        let playlist = db.create_playlist("Keep")?;
+        db.add_to_playlist(playlist, "old")?;
+        db.save_queue("Keep", &["old".into()])?;
+        let playback = SavedPlayback {
+            queue: vec!["old".into()],
+            current_index: Some(0),
+            position_ms: 6000,
+            ..Default::default()
+        };
+        db.save_playback(&playback, Some(&playback.queue))?;
+        let history_id = db.start_history("old")?;
+        db.update_history(HistoryUpdate {
+            history_id,
+            track_id: "old",
+            listened_delta_ms: 6000,
+            position_ms: 6000,
+            was_counted: false,
+            count_now: true,
+            completed: false,
+        })?;
+        let gain = ReplayGainAnalysis {
+            gain_db: -4.0,
+            true_peak_db: -1.0,
+        };
+        db.save_gain("old", gain, 100, 10)?;
+        let mix = crate::audio::mix::TrackAnalysis {
+            bpm: Some(120.0),
+            confidence: 0.9,
+            energy_rms: 0.1,
+            boundaries: None,
+        };
+        db.save_mix_analysis("old", mix, 100, 10)?;
+        db.mark_missing_sources(&BTreeSet::new())?;
+        let mut new = old;
+        new.track.id = "new".into();
+        new.track.source_id = "new-source".into();
+        let moved = db.upsert_scan(
+            "new-source",
+            Path::new("/music/subdir"),
+            "Music",
+            &[new],
+            &[],
+        )?;
+        assert_eq!(moved, vec![("old".into(), "new".into())]);
+        let tracks = db.load_tracks()?;
+        assert_eq!(tracks.len(), 1);
+        assert!(tracks[0].available && tracks[0].favorite);
+        assert_eq!(db.load_added_at()?["new"], 1);
+        assert_eq!(db.load_playlists()?[0].track_ids, vec!["new"]);
+        assert_eq!(db.load_saved_queues()?[0].track_ids, vec!["new"]);
+        let restored = db.load_playback()?;
+        assert_eq!(restored.queue, vec!["new"]);
+        assert_eq!(restored.position_ms, 6000);
+        assert_eq!(db.load_history(500)?[0].track_id, "new");
+        assert_eq!(db.load_track_stats()?["new"].play_count, 1);
+        assert_eq!(db.track_gain("new", false)?, Some(gain));
+        assert_eq!(db.load_mix_analyses()?["new"], mix);
+        assert_eq!(
+            db.conn
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r
+                    .get::<_, i64>(
+                    0
+                ))?,
+            0
+        );
+        assert!(
+            db.upsert_scan("new-source", Path::new("/music/subdir"), "Music", &[], &[])?
+                .is_empty()
+        );
+        assert_eq!(db.load_track_stats()?["new"].play_count, 1);
+        Ok(())
     }
 
     #[test]

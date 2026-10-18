@@ -153,12 +153,27 @@ impl ScanCaches {
     }
 }
 
+/// Serialize discovery, persistence and missing-source marking across scanner
+/// processes. SQLite transactions alone do not protect a whole scan pass.
+pub fn lock_scanner(paths: &AppPaths) -> Result<std::fs::File> {
+    use fs4::FileExt;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(paths.database_file().with_extension("scan.lock"))?;
+    FileExt::lock(&file)?;
+    Ok(file)
+}
+
 pub fn scan_to_database(
     db: &mut Database,
     paths: &AppPaths,
     roots: &[PathBuf],
     options: &ScanOptions,
 ) -> Result<ScanReport> {
+    let _scanner_guard = lock_scanner(paths)?;
     let mut report = ScanReport::default();
     let mut ids = BTreeSet::new();
     for root in roots {
@@ -240,9 +255,14 @@ fn scan_source_inner(
         .and_then(|v| v.to_str())
         .unwrap_or("Music")
         .to_owned();
-    let id = source_id(&root);
+    let observed_id = source_id(&root);
+    let id = match database {
+        Some(db) => db.resolve_source_id(&observed_id, &root)?,
+        None => observed_id,
+    };
     let cached = database
-        .and_then(|db| db.scan_cache(&id).ok())
+        .map(|db| db.scan_cache_for_root(&id, &root))
+        .transpose()?
         .unwrap_or_default();
 
     // Creating the cover directory once, rather than on every cached cover.
@@ -250,7 +270,7 @@ fn scan_source_inner(
 
     // Phase 1: walk the tree. Cheap, and it fixes the order everything else
     // reports in, so results stay identical run to run.
-    let candidates = collect_candidates(&root, &options.extensions);
+    let candidates = collect_candidates(&root, &options.extensions)?;
 
     // Phase 2: read tags and artwork, in parallel when it is worth it.
     let caches = ScanCaches::default();
@@ -303,6 +323,13 @@ fn scan_source_inner(
         .map(|(_, item)| item.track.id.clone())
         .collect();
 
+    // A removed drive is not an empty library. Do not commit a partial walk
+    // and prune its previously known files after a disconnect.
+    anyhow::ensure!(
+        root.is_dir(),
+        "source disconnected during scan: {}",
+        root.display()
+    );
     Ok(scan)
 }
 
@@ -332,22 +359,21 @@ pub fn has_extension(path: &Path, extensions: &[impl AsRef<str>]) -> bool {
         .any(|allowed| allowed.as_ref().eq_ignore_ascii_case(found))
 }
 
-fn collect_candidates(root: &Path, extensions: &[String]) -> Vec<(PathBuf, String)> {
-    WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_file() && has_extension(entry.path(), extensions))
-        .map(|entry| {
+fn collect_candidates(root: &Path, extensions: &[String]) -> Result<Vec<(PathBuf, String)>> {
+    let mut candidates = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry = entry.with_context(|| format!("cannot finish scanning {}", root.display()))?;
+        if entry.file_type().is_file() && has_extension(entry.path(), extensions) {
             let relative = entry
                 .path()
                 .strip_prefix(root)
                 .unwrap_or(entry.path())
                 .to_string_lossy()
                 .into_owned();
-            (entry.path().to_path_buf(), relative)
-        })
-        .collect()
+            candidates.push((entry.path().to_path_buf(), relative));
+        }
+    }
+    Ok(candidates)
 }
 
 /// What every reader needs and none of them changes.
@@ -453,19 +479,29 @@ fn read_candidate(context: &ReadContext<'_>, path: &Path, relative: &str) -> Sca
         })
     });
     if let Some(item) = unchanged {
-        if item.track.available {
+        if item.track.available && item.track.source_id == *source_id && item.track.path == path {
             return ScanOutcome::Unchanged;
         }
         // The file is back after the row was marked unavailable; refresh the
         // absolute path, which changes when a drive is remounted elsewhere.
         let mut item = item.clone();
         item.track.path = path.to_path_buf();
+        item.track.source_id = (*source_id).to_owned();
+        item.track.relative_path = relative.to_owned();
         item.track.available = true;
         return ScanOutcome::Reactivated(Box::new(item));
     }
 
     match read_track(paths, source_id, root, path, fingerprint, caches) {
-        Ok(track) => ScanOutcome::Updated(Box::new(track)),
+        Ok(mut track) => {
+            if let Some(previous) = cached.get(relative)
+                && (previous.track.source_id == *source_id
+                    || fingerprint == Some((previous.file_size, previous.modified_ns)))
+            {
+                track.track.id = previous.track.id.clone();
+            }
+            ScanOutcome::Updated(Box::new(track))
+        }
         Err(error) => ScanOutcome::Failed {
             relative: relative.to_owned(),
             error: format!("{}: {error:#}", path.display()),
@@ -754,19 +790,21 @@ fn cached_cover_is_valid(path: &Path) -> bool {
 
 #[cfg(unix)]
 fn source_id(root: &Path) -> String {
-    let mount_field = |field: &str| {
-        Command::new("findmnt")
-            .args(["-n", "-o", field, "--target"])
-            .arg(root)
-            .output()
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-            .filter(|value| !value.is_empty())
-    };
-    let uuid = mount_field("UUID");
-    let mount_target = mount_field("TARGET").map(PathBuf::from);
-    let identity = source_identity(uuid.as_deref(), mount_target.as_deref(), root);
+    let mount = Command::new("findmnt")
+        .args(["--json", "-o", "UUID,TARGET", "--target"])
+        .arg(root)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok());
+    let filesystem = mount.as_ref().and_then(|v| v["filesystems"].get(0));
+    let uuid = filesystem
+        .and_then(|v| v["uuid"].as_str())
+        .filter(|v| !v.is_empty());
+    let mount_target = filesystem
+        .and_then(|v| v["target"].as_str())
+        .map(PathBuf::from);
+    let identity = source_identity(uuid, mount_target.as_deref(), root);
     blake3::hash(identity.as_bytes()).to_hex().to_string()
 }
 
@@ -801,15 +839,52 @@ fn source_id(root: &Path) -> String {
     blake3::hash(identity.as_bytes()).to_hex().to_string()
 }
 
+#[cfg(windows)]
+fn volume_relative_path(root: &Path, mount: &Path) -> Option<PathBuf> {
+    // canonicalize() produces verbatim paths, while volume APIs can return
+    // ordinary drive paths. Compare the same Windows prefix representation.
+    fn comparable(path: &Path) -> PathBuf {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        let mut normalized = match components.next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    PathBuf::from(format!("{}:", char::from(drive.to_ascii_uppercase())))
+                }
+                _ => PathBuf::from(prefix.as_os_str()),
+            },
+            Some(component) => PathBuf::from(component.as_os_str()),
+            None => PathBuf::new(),
+        };
+        for component in components {
+            normalized.push(component.as_os_str());
+        }
+        normalized
+    }
+    comparable(root)
+        .strip_prefix(comparable(mount))
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+#[cfg(not(windows))]
+fn volume_relative_path(root: &Path, mount: &Path) -> Option<PathBuf> {
+    root.strip_prefix(mount).ok().map(Path::to_path_buf)
+}
+
 fn source_identity(uuid: Option<&str>, mount_target: Option<&Path>, root: &Path) -> String {
     match uuid {
-        Some(uuid) => {
+        Some(uuid)
+            if mount_target
+                .and_then(|mount| volume_relative_path(root, mount))
+                .is_some() =>
+        {
             let within_volume = mount_target
-                .and_then(|mount| root.strip_prefix(mount).ok())
-                .unwrap_or(root);
+                .and_then(|mount| volume_relative_path(root, mount))
+                .unwrap_or_else(|| root.to_path_buf());
             format!("uuid:{uuid}\0{}", within_volume.to_string_lossy())
         }
-        None => format!("path:{}", root.to_string_lossy()),
+        _ => format!("path:{}", root.to_string_lossy()),
     }
 }
 
@@ -939,6 +1014,88 @@ mod tests {
         assert_ne!(
             source_identity(Some("ABCD-1234"), Some(root), &root.join("Jazz")),
             source_identity(Some("ABCD-1234"), Some(root), &root.join("Rock")),
+        );
+    }
+
+    #[test]
+    fn a_still_available_cached_track_refreshes_its_path_after_remount() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("new-mount");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("a.flac");
+        fs::write(&path, b"cached fingerprint; no decoder is needed").unwrap();
+        let (file_size, modified_ns) = file_fingerprint(&path).unwrap();
+        let track = Track {
+            id: "persistent-track".into(),
+            source_id: "volume".into(),
+            relative_path: "a.flac".into(),
+            path: temp.path().join("old-mount/a.flac"),
+            title: "A".into(),
+            artist: "Artist".into(),
+            album_artist: "Artist".into(),
+            album: "Album".into(),
+            genre: String::new(),
+            year: None,
+            disc_number: 1,
+            track_number: 1,
+            duration_ms: 1000,
+            cover_path: None,
+            available: true,
+            favorite: true,
+            release_id: String::new(),
+            compilation: false,
+        };
+        let cached = HashMap::from([(
+            "a.flac".into(),
+            ScannedTrack {
+                track,
+                file_size,
+                modified_ns,
+            },
+        )]);
+        let paths = test_paths("remount");
+        let caches = ScanCaches::default();
+        let context = ReadContext {
+            paths: &paths,
+            source_id: "volume",
+            root: &root,
+            cached: &cached,
+            caches: &caches,
+        };
+        let ScanOutcome::Reactivated(item) = read_candidate(&context, &path, "a.flac") else {
+            panic!("a remount must refresh the cached absolute path");
+        };
+        assert_eq!(item.track.id, "persistent-track");
+        assert_eq!(item.track.path, path);
+        assert!(item.track.favorite && item.track.available);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_volume_identity_handles_verbatim_paths_and_drive_letter_changes() {
+        assert_eq!(
+            source_identity(
+                Some("volume-guid"),
+                Some(Path::new(r"E:\")),
+                Path::new(r"\\?\E:\Music")
+            ),
+            source_identity(
+                Some("volume-guid"),
+                Some(Path::new(r"F:\")),
+                Path::new(r"\\?\F:\Music")
+            ),
+        );
+        assert_eq!(
+            source_identity(
+                Some("volume-guid"),
+                Some(Path::new(r"E:\")),
+                Path::new(r"\\?\E:\Music")
+            ),
+            source_identity(
+                Some("volume-guid"),
+                Some(Path::new(r"E:\")),
+                Path::new(r"E:\Music")
+            ),
         );
     }
 

@@ -76,6 +76,20 @@ pub(super) enum WatchEvent {
 /// mechanism only on Windows.
 const REMOVABLE_POLL: Duration = Duration::from_secs(5);
 
+fn watch_event_may_affect_library(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(
+                notify::event::ModifyKind::Data(_)
+                    | notify::event::ModifyKind::Name(_)
+                    | notify::event::ModifyKind::Any
+                    | notify::event::ModifyKind::Other
+            )
+    )
+}
+
 fn watch_path_may_affect_library(kind: &EventKind, path: &Path, extensions: &[String]) -> bool {
     if crate::library::has_extension(path, extensions) || path.is_dir() {
         return true;
@@ -113,10 +127,7 @@ pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<Wa
                     // Access times and metadata touches are not library
                     // changes; reacting to them meant a rescan of every source
                     // whenever anything read a file.
-                    if !matches!(
-                        event.kind,
-                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                    ) {
+                    if !watch_event_may_affect_library(&event.kind) {
                         return;
                     }
                     let Ok(roots) = callback_roots.lock() else {
@@ -438,5 +449,26 @@ mod tests {
             Path::new("/music/notes.txt"),
             &extensions,
         ));
+    }
+}
+
+#[cfg(test)]
+mod library_event_tests {
+    use super::*;
+
+    #[test]
+    fn playback_reads_and_timestamp_changes_do_not_trigger_scans() {
+        use notify::event::{AccessKind, AccessMode, DataChange, MetadataKind, ModifyKind};
+        for kind in [
+            EventKind::Access(AccessKind::Read),
+            EventKind::Access(AccessKind::Open(AccessMode::Read)),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)),
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::WriteTime)),
+        ] {
+            assert!(!watch_event_may_affect_library(&kind));
+        }
+        assert!(watch_event_may_affect_library(&EventKind::Modify(
+            ModifyKind::Data(DataChange::Content)
+        )));
     }
 }
