@@ -4,6 +4,20 @@ All notable user-visible changes are documented here.
 
 ## Unreleased
 
+## 0.2.0-beta.5 - 2026-10-18
+
+- Fixed duplicate available/offline albums when scanning the same files through
+  a drive root and its music subfolder. Repeated scans preserve track identities,
+  and matching existing duplicate paths are reconciled without editing music.
+- Preserved favorites, playlists, queues, listening history, statistics and valid
+  ReplayGain/MIX analyses during reconciliation, including in-flight playback
+  accounting that still references an older track ID.
+- Stabilized source identities across temporary volume lookup failures and
+  Windows drive-path representations. Incomplete scans and device changes no
+  longer prune a disconnected source as though its files had been deleted.
+- Serialized scan passes, made library snapshots consistent, and ignored access
+  and timestamp-only watcher events to avoid unnecessary library reloads.
+
 ## 0.2.0-beta.4 - 2026-10-18
 
 - Added native Ogg Opus decoding with encoder delay and padding trimming,

@@ -24,7 +24,7 @@ local folders and removable-drive libraries. No account or streaming service.
 
 ## Install
 
-Current beta: **0.2.0-beta.4**. Download a package from
+Current beta: **0.2.0-beta.5**. Download a package from
 [Releases](https://github.com/Kumpelo/muscli/releases).
 On Windows, run the `.exe` installer; mpv and FFmpeg are bundled. On Linux,
 install ALSA, mpv and FFmpeg, then extract the archive and place `muscli` in
