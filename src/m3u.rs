@@ -43,7 +43,9 @@ pub fn parse(source: &str, base: &Path) -> Vec<Entry> {
         if let Some(rest) = line.strip_prefix("#EXTINF:") {
             // "#EXTINF:<seconds>,<name>"; the name is everything after the
             // first comma, which may itself contain commas.
-            pending_label = rest.split_once(',').map(|(_, name)| name.trim().to_owned());
+            pending_label = rest
+                .split_once(',')
+                .map(|(_, name)| crate::model::terminal_safe_text(name.trim()));
             continue;
         }
         if line.starts_with('#') {
@@ -90,6 +92,18 @@ pub fn render(tracks: &[(PathBuf, String, u64)], base: Option<&Path>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malicious_extinf_label_cannot_emit_terminal_escapes() {
+        let parsed = parse(
+            "#EXTM3U\n#EXTINF:7,\u{1b}[31mDanger\u{202e}\nmissing.flac\n",
+            Path::new("/music"),
+        );
+        let label = parsed[0].label.as_deref().unwrap();
+        assert!(!label.chars().any(char::is_control));
+        assert!(!label.contains('\u{202e}'));
+        assert!(label.contains("Danger"));
+    }
 
     fn base() -> PathBuf {
         PathBuf::from("/music")

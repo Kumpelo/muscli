@@ -515,13 +515,13 @@ fn read_track(
 
     let title = value(ItemKey::TrackTitle)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| strip_track_prefix(stem));
+        .unwrap_or_else(|| normalize_text(&strip_track_prefix(stem)));
     let artist = value(ItemKey::TrackArtist)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| parent_artist.to_owned());
+        .unwrap_or_else(|| normalize_text(parent_artist));
     let album = value(ItemKey::AlbumTitle)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| parent_album.to_owned());
+        .unwrap_or_else(|| normalize_text(parent_album));
     let album_artist = value(ItemKey::AlbumArtist)
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
@@ -611,10 +611,7 @@ fn find_or_cache_cover(
         "Folder.jpg",
     ] {
         let candidate = dir.join(name);
-        if !candidate.is_file() {
-            continue;
-        }
-        let Ok(data) = fs::read(&candidate) else {
+        let Some(data) = crate::cover_security::read_file(&candidate) else {
             continue;
         };
         if let Some(cached) = cache_cover_data(paths, &data, caches)? {
@@ -635,6 +632,10 @@ fn cover_cache_key(data: &[u8]) -> String {
 }
 
 fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Result<Option<PathBuf>> {
+    // Avoid hashing or decoding oversized pictures embedded in audio metadata.
+    if data.len() as u64 > crate::cover_security::MAX_COVER_BYTES {
+        return Ok(None);
+    }
     let key = cover_cache_key(data);
     if let Some(cached) = caches
         .artwork
@@ -665,7 +666,7 @@ fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Resul
 
     let cached = if let Some(existing) = existing_cover(paths, &key) {
         Some(existing)
-    } else if let Ok(image) = image::load_from_memory(data) {
+    } else if let Some(image) = crate::cover_security::decode_bytes(data) {
         Some(cache_cover(paths, &key, image)?)
     } else {
         None

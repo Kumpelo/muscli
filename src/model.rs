@@ -319,8 +319,34 @@ pub fn parse_slash_number(value: Option<&str>) -> u32 {
         .unwrap_or(0)
 }
 
+/// Remove terminal controls and bidirectional overrides from untrusted
+/// metadata before it is displayed or printed.
+pub fn terminal_safe_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_control()
+                || matches!(
+                    ch,
+                    '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                )
+            {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
 pub fn normalize_text(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
+    terminal_safe_text(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -376,6 +402,15 @@ mod tests {
         assert_eq!(RepeatMode::Off.next(), RepeatMode::Track);
         assert_eq!(RepeatMode::Track.next(), RepeatMode::Queue);
         assert_eq!(RepeatMode::Queue.next(), RepeatMode::Off);
+    }
+
+    #[test]
+    fn removes_terminal_and_bidi_controls_without_losing_accents() {
+        assert_eq!(
+            normalize_text("  Lechero\u{1b}[31m  Mon\u{202e}  "),
+            "Lechero [31m Mon"
+        );
+        assert_eq!(terminal_safe_text("Álbum\u{009b}X"), "Álbum X");
     }
 
     #[test]

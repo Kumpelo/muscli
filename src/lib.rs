@@ -2,6 +2,7 @@ pub mod audio;
 pub mod cli;
 pub mod config;
 pub mod control;
+pub(crate) mod cover_security;
 pub mod db;
 pub mod discord;
 pub mod doctor;

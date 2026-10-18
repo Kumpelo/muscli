@@ -93,6 +93,53 @@ M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio.
 Use `muscli library --help` for source removal, pruning and resume-position
 commands. `muscli summary` shows listening history stored on this computer.
 
+### Removable music: USB drives, SD cards and HiBy players
+
+Automatic removable discovery is enabled by default (`auto_discover_removable = true`).
+On a mounted removable drive, muscli looks for a conventional top-level
+`Music/`, `Música/` or `Musica/` folder (in that order) and indexes **only**
+the music beneath that folder. Other folders on the volume, including ISO
+images, installers and boot files, are not traversed. For example:
+
+```text
+USB/
+├── ISOs/
+├── ventoy/
+└── Music/
+    └── Artist/
+        └── Album/
+            └── 01.flac
+```
+
+A Ventoy drive without one of these music folders is skipped rather than
+recursively indexed. Ordinary legacy removable drives without a conventional
+music folder retain the previous whole-volume indexing behaviour.
+
+**No particular download manager, naming scheme or manifest is required.**
+You can copy music into `Music/Artist/Album/` using any file manager; muscli
+only reads files and does not manage transfers or reserve free space.
+
+A HiBy player or its microSD is detectable only when its filesystem is mounted
+by the computer, for example through a card reader or a supported USB
+mass-storage mode. An MTP/PTP device is not an ordinary filesystem mount; it
+is not indexed automatically. Likewise, a USB stick connected to the player
+via USB OTG is not simultaneously accessible to the PC.
+
+When a drive is unplugged, muscli keeps playlists, favourites and offline
+track metadata. Reinserting the same filesystem restores them; when available,
+filesystem UUID / volume identity is used to keep the source stable if its
+mount point changes. Drives without stable filesystem identity may need to be
+added manually if their mount path changes.
+
+Manually configured sources take precedence over overlapping automatically
+discovered directories, avoiding duplicate indexing.
+`auto_discover_removable = false` disables automatic discovery without
+removing manually configured sources. If the operating system reports the
+USB drive as fixed storage rather than removable, explicitly add its mounted
+`Music` directory to the library. On Linux, `lsblk -f` and `findmnt` can
+help identify the correct mounted device before adding it.
+
+
 ## Audio
 
 mpv is the default backend. Select the native backend in Settings or set
