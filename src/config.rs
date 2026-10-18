@@ -420,7 +420,7 @@ mod tests {
         fs::create_dir_all(usb.join("ISOs")).unwrap();
         fs::write(usb.join("ISOs/linux.iso"), b"test ISO").unwrap();
 
-        let sources = sources_for_mounts(&Config::default(), &[usb.clone()]);
+        let sources = sources_for_mounts(&Config::default(), std::slice::from_ref(&usb));
         assert_eq!(sources, vec![usb.join("Music/LucidaQ")]);
         assert!(!sources[0].starts_with(usb.join("ISOs")));
     }
@@ -450,7 +450,7 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(
-            sources_for_mounts(&config, &[drive.clone()]),
+            sources_for_mounts(&config, std::slice::from_ref(&drive)),
             vec![dedicated]
         );
         config.auto_discover_removable = false;
