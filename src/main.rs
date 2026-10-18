@@ -490,10 +490,17 @@ fn main() -> Result<()> {
                 }
                 println!(
                     "{}",
-                    t!("cli.playlist_imported", name = name, count = added)
+                    t!(
+                        "cli.playlist_imported",
+                        name = muscli::model::terminal_safe_text(&name),
+                        count = added
+                    )
                 );
                 for entry in &missing {
-                    eprintln!("warning: not in the library: {entry}");
+                    eprintln!(
+                        "warning: not in the library: {}",
+                        muscli::model::terminal_safe_text(entry)
+                    );
                 }
             }
         },
