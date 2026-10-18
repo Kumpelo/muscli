@@ -292,14 +292,128 @@ pub fn discover_removable_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-pub fn all_sources(config: &Config) -> Vec<PathBuf> {
+/// Conventional music directories on a removable filesystem. The player
+/// does not depend on the program that downloaded or organized the files.
+const MUSIC_SUBDIRS: [&str; 3] = ["Music", "Música", "Musica"];
+
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
+}
+
+/// On Windows a drive root is e.g. E:\\, whose final path component is not
+/// its volume label. Check that label before ever scanning a Ventoy ISO tree.
+#[cfg(windows)]
+fn has_ventoy_volume_label(mount: &Path) -> bool {
+    use windows::{Win32::Storage::FileSystem::GetVolumeInformationW, core::PCWSTR};
+
+    let wide: Vec<u16> = mount
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut label = [0u16; 256];
+    let result = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(wide.as_ptr()),
+            Some(&mut label),
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    if result.is_err() {
+        return false;
+    }
+    let end = label.iter().position(|ch| *ch == 0).unwrap_or(label.len());
+    let label = String::from_utf16_lossy(&label[..end]);
+    label.eq_ignore_ascii_case("ventoy") || label.eq_ignore_ascii_case("vtoyefi")
+}
+
+#[cfg(not(windows))]
+fn has_ventoy_volume_label(_mount: &Path) -> bool {
+    false
+}
+
+/// Find the music directory on a mounted removable volume.
+///
+/// Only a conventional top-level music directory is scanned when present,
+/// avoiding installers, ISO images and unrelated files on the same volume.
+/// Symlinks are ignored so a drive cannot redirect discovery outside itself.
+fn music_source_on_mount(mount: &Path) -> Option<PathBuf> {
+    if !is_real_directory(mount) {
+        return None;
+    }
+
+    let mut unsafe_link = false;
+    for name in MUSIC_SUBDIRS {
+        let folder = mount.join(name);
+        match fs::symlink_metadata(&folder) {
+            Ok(meta) if meta.file_type().is_dir() => return Some(folder),
+            Ok(meta) if meta.file_type().is_symlink() => unsafe_link = true,
+            _ => {}
+        }
+    }
+
+    // A symlink at a conventional music path must not trigger a recursive scan
+    // through the whole mount as a fallback.
+    if unsafe_link {
+        return None;
+    }
+
+    // Do not inspect a bootable Ventoy volume's ISO tree when it has no music
+    // directory. Ordinary legacy music drives retain whole-volume discovery.
+    let is_ventoy = mount
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("ventoy") || name.eq_ignore_ascii_case("vtoyefi")
+        })
+        || mount.join("ventoy").join("ventoy.json").is_file()
+        || has_ventoy_volume_label(mount);
+    (!is_ventoy).then(|| mount.to_path_buf())
+}
+
+/// Convert removable mount points into scan roots.
+///
+/// Shared with filesystem watchers so that creating a music directory or
+/// unplugging a drive updates the library without requiring a restart.
+pub fn removable_music_roots(mounts: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots: Vec<_> = mounts
+        .iter()
+        .filter_map(|mount| music_source_on_mount(mount))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Preserve explicitly configured sources. A discovered source must not
+/// overlap a configured source or another already accepted source: otherwise
+/// one song appears twice with different source IDs and separate history.
+pub fn sources_for_mounts(config: &Config, mounts: &[PathBuf]) -> Vec<PathBuf> {
     let mut sources = config.sources.clone();
     if config.auto_discover_removable {
-        sources.extend(discover_removable_roots());
+        for root in removable_music_roots(mounts) {
+            if !sources
+                .iter()
+                .any(|configured| root.starts_with(configured) || configured.starts_with(&root))
+            {
+                sources.push(root);
+            }
+        }
     }
     sources.sort();
     sources.dedup();
     sources
+}
+
+pub fn all_sources(config: &Config) -> Vec<PathBuf> {
+    if config.auto_discover_removable {
+        sources_for_mounts(config, &discover_removable_roots())
+    } else {
+        sources_for_mounts(config, &[])
+    }
 }
 
 impl Config {
@@ -336,6 +450,65 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removable_music_tree_is_preferred_without_scanning_iso_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let usb = temp.path().join("Ventoy");
+        let music = usb.join("Music/Artist/Album");
+        fs::create_dir_all(&music).unwrap();
+        fs::create_dir_all(usb.join("ISOs")).unwrap();
+        fs::write(usb.join("ISOs/linux.iso"), b"test ISO").unwrap();
+
+        let sources = sources_for_mounts(&Config::default(), std::slice::from_ref(&usb));
+        assert_eq!(sources, vec![usb.join("Music")]);
+        assert!(!sources[0].starts_with(usb.join("ISOs")));
+    }
+
+    #[test]
+    fn ventoy_without_music_is_not_scanned_and_legacy_music_usb_still_works() {
+        let temp = tempfile::tempdir().unwrap();
+        let ventoy = temp.path().join("Ventoy");
+        let legacy = temp.path().join("RegularMusic");
+        fs::create_dir_all(&ventoy).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(
+            removable_music_roots(&[ventoy, legacy.clone()]),
+            vec![legacy]
+        );
+    }
+
+    #[test]
+    fn explicit_source_prevents_duplicate_index_and_discovery_can_be_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let drive = temp.path().join("drive");
+        let dedicated = drive.join("Music");
+        let artist = dedicated.join("Artist");
+        fs::create_dir_all(&artist).unwrap();
+        let mut config = Config {
+            sources: vec![dedicated.clone()],
+            ..Config::default()
+        };
+        assert_eq!(
+            sources_for_mounts(&config, std::slice::from_ref(&drive)),
+            vec![dedicated]
+        );
+        config.auto_discover_removable = false;
+        assert_eq!(sources_for_mounts(&config, &[drive]), config.sources);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_music_tree_is_never_used_as_a_removable_root() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let drive = temp.path().join("Ventoy");
+        let outside = temp.path().join("external");
+        fs::create_dir_all(&drive).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, drive.join("Music")).unwrap();
+        assert!(removable_music_roots(&[drive]).is_empty());
+    }
 
     #[test]
     fn legacy_discord_preferences_and_image_choice_survive_roundtrip() {
