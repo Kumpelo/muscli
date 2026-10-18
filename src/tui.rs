@@ -414,7 +414,7 @@ fn start_player(
         let device = Some(config.audio_device.trim())
             .filter(|name| !name.is_empty())
             .map(str::to_string);
-        // The hybrid, not the native backend alone: a library with an Opus
+        // The hybrid, not the native backend alone: a library with a WavPack
         // file in it would otherwise skip past it, and the setting the
         // listener chose was "play this well", not "play some of this".
         match HybridPlayer::start(device, settings, &paths.mpv_socket(), events.clone()) {

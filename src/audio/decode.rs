@@ -8,7 +8,7 @@ use std::{fs::File, path::Path};
 
 use anyhow::{Context, Result, anyhow};
 use symphonia::core::{
-    codecs::audio::{AudioDecoder, AudioDecoderOptions},
+    codecs::audio::{AudioDecoder, AudioDecoderOptions, well_known::CODEC_ID_OPUS},
     errors::Error as SymphoniaError,
     formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType, probe::Hint},
     io::{MediaSourceStream, MediaSourceStreamOptions},
@@ -23,6 +23,12 @@ pub struct StreamSpec {
     pub sample_rate: u32,
     pub channels: u16,
     pub bits_per_sample: Option<u32>,
+}
+
+impl StreamSpec {
+    pub(crate) fn same_rate_and_channels(self, other: Self) -> bool {
+        self.sample_rate == other.sample_rate && self.channels == other.channels
+    }
 }
 
 /// A file being decoded to interleaved `f32`.
@@ -40,6 +46,8 @@ pub struct Decoder {
     /// Where the last seek landed, in frames from the start of the track.
     base_frames: u64,
     frames_since_seek: u64,
+    opus_pre_skip: Option<u64>,
+    seek_target: Option<u64>,
 }
 
 impl Decoder {
@@ -90,7 +98,7 @@ impl Decoder {
             .ok_or_else(|| anyhow!("{} has no codec parameters", path.display()))?
             .clone();
 
-        let duration_ms = track
+        let mut duration_ms = track
             .duration
             .map(|duration| duration.get() as u128 * u128::from(time_base.0) * 1_000)
             .map(|scaled| (scaled / u128::from(time_base.1)) as u64);
@@ -107,9 +115,23 @@ impl Decoder {
             bits_per_sample: parameters.bits_per_sample,
         };
 
-        let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&parameters, &AudioDecoderOptions::default())
-            .with_context(|| format!("no decoder for the codec in {}", path.display()))?;
+        let (decoder, opus_pre_skip): (Box<dyn AudioDecoder>, Option<u64>) = if parameters.codec
+            == CODEC_ID_OPUS
+        {
+            let decoder = super::opus::OpusDecoder::new(&parameters)?;
+            let pre_skip = decoder.pre_skip();
+            duration_ms = track.duration.map(|duration| {
+                (u128::from(duration.get().saturating_sub(pre_skip)) * 1_000 / 48_000) as u64
+            });
+            (Box::new(decoder), Some(pre_skip))
+        } else {
+            (
+                symphonia::default::get_codecs()
+                    .make_audio_decoder(&parameters, &AudioDecoderOptions::default())
+                    .with_context(|| format!("no decoder for the codec in {}", path.display()))?,
+                None,
+            )
+        };
 
         Ok(Self {
             reader,
@@ -121,6 +143,8 @@ impl Decoder {
             block: Vec::new(),
             base_frames: 0,
             frames_since_seek: 0,
+            opus_pre_skip,
+            seek_target: None,
         })
     }
 
@@ -161,7 +185,7 @@ impl Decoder {
 
             match self.decoder.decode(&packet) {
                 Ok(decoded) => {
-                    let frames = decoded.frames();
+                    let mut frames = decoded.frames();
                     if frames == 0 {
                         continue;
                     }
@@ -171,6 +195,20 @@ impl Decoder {
                     self.spec.sample_rate = decoded.spec().rate();
                     self.spec.channels = decoded.num_planes() as u16;
                     decoded.copy_to_vec_interleaved(&mut self.block);
+                    if let Some(target) = self.seek_target.take() {
+                        let raw_start = packet.pts.get().max(0) as u64 + packet.trim_start.get();
+                        let start = raw_start.saturating_sub(self.opus_pre_skip.unwrap_or(0));
+                        let discard = target.saturating_sub(start).min(frames as u64) as usize;
+                        self.block
+                            .drain(..discard * usize::from(self.spec.channels));
+                        frames -= discard;
+                        if frames == 0 {
+                            self.seek_target = Some(target);
+                            continue;
+                        }
+                        self.base_frames = start + discard as u64;
+                        self.frames_since_seek = 0;
+                    }
                     self.frames_since_seek += frames as u64;
                     return Ok(Some(&self.block));
                 }
@@ -186,10 +224,15 @@ impl Decoder {
 
     /// Seek so that the next block starts at or just before `position_ms`.
     pub fn seek_ms(&mut self, position_ms: u64) -> Result<()> {
+        // Warm up Opus for 250 ms after random access (RFC 7845 requires at least 80 ms).
+        // Container time includes pre-skip; the public position does not.
+        let seek_ms = self.opus_pre_skip.map_or(position_ms, |pre_skip| {
+            (position_ms.saturating_mul(48).saturating_add(pre_skip)).saturating_sub(12_000) / 48
+        });
         let landed = self.reader.seek(
             SeekMode::Accurate,
             SeekTo::Time {
-                time: Time::from_millis_u64(position_ms),
+                time: Time::from_millis_u64(seek_ms),
                 track_id: Some(self.track_id),
             },
         )?;
@@ -202,6 +245,11 @@ impl Decoder {
         self.base_frames = (ticks * u128::from(numerator) * u128::from(self.spec.sample_rate)
             / u128::from(denominator)) as u64;
         self.frames_since_seek = 0;
+        if self.opus_pre_skip.is_some() {
+            let target = position_ms.saturating_mul(48);
+            self.seek_target = Some(target);
+            self.base_frames = target;
+        }
         Ok(())
     }
 }

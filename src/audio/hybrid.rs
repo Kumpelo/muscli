@@ -1,7 +1,7 @@
 //! Routes each track to the native path or to mpv.
 //!
-//! The native decoder reads FLAC, MP3, AAC, ALAC, Vorbis, WAV and AIFF but not
-//! Opus, WavPack or Monkey's Audio; mpv reads all of them.
+//! The native decoder reads FLAC, MP3, AAC, ALAC, Vorbis, Opus, WAV and AIFF but not
+//! WavPack or Monkey's Audio; mpv reads all of them.
 //!
 //! The choice comes from opening the file, not from its extension: an Opus
 //! stream inside an `.ogg` container looks like a Vorbis one from outside.
@@ -226,5 +226,58 @@ impl AudioBackend for HybridPlayer {
         } else {
             self.native.position_ms()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opus_selects_native_and_unsupported_content_selects_fallback() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/opus/mono.opus");
+        assert!(HybridPlayer::native_can_play(&path));
+        let directory = tempfile::tempdir().unwrap();
+        let unknown = directory.path().join("unknown.opus");
+        std::fs::write(&unknown, b"unsupported audio content").unwrap();
+        assert!(!HybridPlayer::native_can_play(&unknown));
+    }
+
+    #[test]
+    #[ignore = "plays a short tone through the default physical audio device"]
+    fn opus_plays_on_real_device_without_starting_mpv() {
+        use std::time::{Duration, Instant};
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let directory = tempfile::tempdir().unwrap();
+        let mut player = HybridPlayer::start(
+            None,
+            Settings {
+                volume: 0.05,
+                ..Settings::default()
+            },
+            &directory.path().join("mpv.sock"),
+            sender,
+        )
+        .unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/opus/stereo.opus");
+        player.load(&path, 0).unwrap();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(10) && player.position_ms() < 500 {
+            std::thread::sleep(Duration::from_millis(20));
+            while let Ok(event) = events.try_recv() {
+                if let PlayerEvent::Error(message) = event {
+                    panic!("{message}");
+                }
+            }
+        }
+        assert!(player.position_ms() >= 500, "the device did not advance");
+        assert!(!player.on_mpv);
+        assert!(player.mpv.is_none());
+        println!(
+            "Native device: {}; played {} ms; mpv was never started",
+            player.device(),
+            player.position_ms()
+        );
+        player.stop().unwrap();
     }
 }

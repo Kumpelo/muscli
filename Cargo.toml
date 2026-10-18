@@ -29,6 +29,7 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 ratatui-image = { version = "11.0.8", default-features = false, features = ["crossterm"] }
 rtrb = "0.4.0"
 rubato = "5.0.0"
+ruopus = { version = "0.1.2", default-features = false, features = ["std"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 semver = "1"
 serde = { version = "1.0", features = ["derive"] }

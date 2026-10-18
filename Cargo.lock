@@ -1868,6 +1868,7 @@ dependencies = [
  "ratatui-image",
  "rtrb",
  "rubato",
+ "ruopus",
  "rusqlite",
  "semver",
  "serde",
@@ -2676,6 +2677,12 @@ dependencies = [
  "visibility",
  "windowfunctions",
 ]
+
+[[package]]
+name = "ruopus"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcfcd963c83fc1ada2180ccdac7f1568d87fb0f2ad7236b266fdc9fb9122fbfd"
 
 [[package]]
 name = "rusqlite"

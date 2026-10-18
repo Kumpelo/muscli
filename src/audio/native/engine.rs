@@ -741,10 +741,11 @@ impl Engine {
                 // announced, so appending it keeps the audio continuous
                 // however long the application took to arm it.
                 if !stream.announced_end
-                    && let Some((next_path, next)) = self
-                        .prefetch
-                        .take_if(|(_, next)| next.spec() == stream.decoder.spec())
+                    && let Some((next_path, next)) = self.prefetch.take_if(|(_, next)| {
+                        next.spec().same_rate_and_channels(stream.decoder.spec())
+                    })
                 {
+                    stream.source_spec = next.spec();
                     stream.decoder = next;
                     stream.path = next_path.clone();
                     // Announce the handover when the old track finishes, not
@@ -857,15 +858,15 @@ impl Engine {
                 // The converter is still filling; nothing to stage yet.
                 continue;
             }
-            // Crossfade only when the prefetched stream is exactly the same
-            // native format, with no resampling or channel duplication. If
+            // Crossfade only at the same rate and channel count, with no
+            // resampling or channel duplication. Both decoders produce f32. If
             // not, leave the proven gapless/normal transition untouched.
             if self.crossfade_seconds > 0.0
                 && !self.settings.bit_perfect
                 && stream.resampler.is_none()
                 && !stream.duplicate
                 && let Some((next_path, next)) = self.prefetch.as_mut()
-                && next.spec() == stream.source_spec
+                && next.spec().same_rate_and_channels(stream.source_spec)
             {
                 let mixed = self.crossfade.apply(
                     &mut stream.converted,
