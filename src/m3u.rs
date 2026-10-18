@@ -95,7 +95,10 @@ mod tests {
 
     #[test]
     fn malicious_extinf_label_cannot_emit_terminal_escapes() {
-        let parsed = parse("#EXTM3U\n#EXTINF:7,\u{1b}[31mDanger\u{202e}\nmissing.flac\n", Path::new("/music"));
+        let parsed = parse(
+            "#EXTM3U\n#EXTINF:7,\u{1b}[31mDanger\u{202e}\nmissing.flac\n",
+            Path::new("/music"),
+        );
         let label = parsed[0].label.as_deref().unwrap();
         assert!(!label.chars().any(char::is_control));
         assert!(!label.contains('\u{202e}'));
