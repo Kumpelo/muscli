@@ -253,7 +253,11 @@ mod tests {
 
     #[test]
     fn stderr_capture_is_bounded_and_preserves_final_summary() {
-        let data = format!("{}{}", "noise".repeat(50_000), "Summary:\nI: -13.5 LUFS\nPeak: -0.8 dBFS\n");
+        let data = format!(
+            "{}{}",
+            "noise".repeat(50_000),
+            "Summary:\nI: -13.5 LUFS\nPeak: -0.8 dBFS\n"
+        );
         let output = collect_stderr_tail(data.as_bytes()).unwrap();
         assert!(output.len() <= MAX_FFMPEG_LOG);
         assert!(String::from_utf8_lossy(&output).ends_with("Peak: -0.8 dBFS\n"));
