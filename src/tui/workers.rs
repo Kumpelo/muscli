@@ -273,14 +273,12 @@ pub(super) fn start_cover_decode_worker(
         .name("muscli-cover-decode".into())
         .spawn(move || {
             while let Ok(request) = requests.recv() {
-                let image = image::ImageReader::open(&request.path)
-                    .ok()
-                    .and_then(|reader| reader.decode().ok())
+                let image = crate::cover_security::decode_file(&request.path)
                     .map(|image| image.thumbnail(request.size, request.size));
                 let blend_frames = request
                     .blend_from
                     .as_ref()
-                    .and_then(|path| image::ImageReader::open(path).ok()?.decode().ok())
+                    .and_then(|path| crate::cover_security::decode_file(path))
                     .zip(image.as_ref())
                     .map_or_else(Vec::new, |(old, new)| blend_cover_frames(&old, new));
                 if results
