@@ -225,10 +225,10 @@ fn an_unplugged_source_keeps_its_tracks_for_offline_playlists() {
 }
 
 #[test]
-fn lucidaq_usb_reconnect_preserves_playlist_favorite_and_skips_ventoy_files() {
+fn removable_music_reconnect_preserves_playlist_favorite_and_skips_ventoy_files() {
     let fixture = Fixture::new();
     let drive = fixture.source().parent().unwrap().join("Ventoy");
-    let album = drive.join("Music/LucidaQ/Lechero Mon/Album");
+    let album = drive.join("Music/Lechero Mon/Album");
     write_track(&album.join("01.flac"), &TrackSpec::new("First"));
     write_track(
         &drive.join("Downloads/extra.flac"),
@@ -240,7 +240,7 @@ fn lucidaq_usb_reconnect_preserves_playlist_favorite_and_skips_ventoy_files() {
     let config = Config::default();
     let mut db = open_db(&fixture);
     let sources = sources_for_mounts(&config, std::slice::from_ref(&drive));
-    assert_eq!(sources, [drive.join("Music/LucidaQ")]);
+    assert_eq!(sources, [drive.join("Music")]);
     scan_to_database(&mut db, fixture.paths(), &sources, &options()).unwrap();
     let tracks = db.load_tracks().unwrap();
     assert_eq!(tracks.len(), 1);
