@@ -450,6 +450,10 @@ impl Database {
                     observed_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE
                  );
+                 CREATE TABLE track_aliases (
+                    old_id TEXT PRIMARY KEY,
+                    track_id TEXT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE
+                 );
                  CREATE INDEX tracks_physical_path ON tracks(path, file_size, modified_ns);
                  PRAGMA user_version = 10;",
             )?;
@@ -827,6 +831,17 @@ impl Database {
                 "UPDATE saved_queue_tracks SET track_id=?2 WHERE track_id=?1",
                 params![old_id, new_id],
             )?;
+            // A playback flush may arrive before the UI consumes the scan
+            // result. Keep those in-flight IDs valid for accounting and queues.
+            tx.execute(
+                "UPDATE track_aliases SET track_id=?2 WHERE track_id=?1",
+                params![old_id, new_id],
+            )?;
+            tx.execute(
+                "INSERT INTO track_aliases(old_id,track_id) VALUES(?1,?2)
+                        ON CONFLICT(old_id) DO UPDATE SET track_id=excluded.track_id",
+                params![old_id, new_id],
+            )?;
             tx.execute("DELETE FROM tracks WHERE id=?1", [old_id])?;
         }
         tx.commit()?;
@@ -1199,6 +1214,15 @@ impl Database {
         Ok(out)
     }
 
+    fn resolved_track_id(conn: &Connection, id: &str) -> Result<String> {
+        Ok(conn.query_row(
+            "SELECT COALESCE((SELECT id FROM tracks WHERE id=?1),
+                (SELECT track_id FROM track_aliases WHERE old_id=?1),?1)",
+            [id],
+            |r| r.get(0),
+        )?)
+    }
+
     fn save_playback_tx(
         tx: &rusqlite::Transaction<'_>,
         state: &SavedPlayback,
@@ -1211,7 +1235,11 @@ impl Database {
             [checkpoint],
         )?;
         if let Some(queue) = queue {
-            let queue = serde_json::to_string(queue)?;
+            let resolved = queue
+                .iter()
+                .map(|id| Self::resolved_track_id(tx, id))
+                .collect::<Result<Vec<_>>>()?;
+            let queue = serde_json::to_string(&resolved)?;
             tx.execute(
                 "INSERT INTO app_state(key,value) VALUES('playback_queue',?1)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1307,6 +1335,7 @@ impl Database {
     }
 
     fn update_history_tx(tx: &rusqlite::Transaction<'_>, update: HistoryUpdate<'_>) -> Result<()> {
+        let track_id = Self::resolved_track_id(tx, update.track_id)?;
         tx.execute(
             "UPDATE history SET listened_ms=listened_ms+?2,position_ms=?3,counted=counted OR ?4,completed=completed OR ?5 WHERE id=?1",
             params![
@@ -1326,7 +1355,7 @@ impl Database {
                 last_played_at=excluded.last_played_at,
                 resume_position_ms=excluded.resume_position_ms",
             params![
-                update.track_id,
+                track_id,
                 i64::from(update.count_now && !update.was_counted),
                 update.listened_delta_ms.min(i64::MAX as u64) as i64,
                 if update.completed { 0 } else { update.position_ms }
@@ -2479,6 +2508,27 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(db.load_track_stats()?["new"].play_count, 1);
+        // The audio thread still holds the pre-reconciliation ID until its
+        // queued scan message is handled. Its next flush must remain valid.
+        db.update_history(HistoryUpdate {
+            history_id,
+            track_id: "old",
+            listened_delta_ms: 1000,
+            position_ms: 7000,
+            was_counted: true,
+            count_now: false,
+            completed: false,
+        })?;
+        db.save_playback(
+            &SavedPlayback {
+                position_ms: 7000,
+                ..playback.clone()
+            },
+            Some(&playback.queue),
+        )?;
+        assert_eq!(db.load_track_stats()?["new"].total_listen_ms, 7000);
+        assert_eq!(db.load_playback()?.queue, vec!["new"]);
+        assert_eq!(db.load_history(500)?[0].position_ms, 7000);
         Ok(())
     }
 
