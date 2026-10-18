@@ -137,7 +137,15 @@ fn a_status_query_without_a_player_does_not_initialize_user_state() {
         .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .output()
         .unwrap();
-    assert!(!output.status.success());
+    assert!(
+        output.status.success(),
+        "remote status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("remote status must emit JSON");
+    assert_eq!(status["schema_version"], 1);
+    assert_eq!(status["available"], false);
     assert_eq!(
         fs::read_dir(root).unwrap().count(),
         0,
