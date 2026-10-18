@@ -300,7 +300,7 @@ mod tests {
         assert!(server.publish(&"x".repeat(MAX_RESPONSE)).is_err());
         assert_eq!(
             status(&socket).unwrap(),
-            value,
+            Some(value),
             "oversized publication keeps the last valid snapshot"
         );
         let start = Instant::now();
