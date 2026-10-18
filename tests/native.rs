@@ -828,59 +828,143 @@ fn an_album_with_global_mix_keeps_every_sample_at_the_join() {
 }
 
 #[test]
-fn a_queued_track_of_another_shape_is_not_forced_to_join() {
-    // Joining a stream at one rate to a file at another would play the second
-    // at the wrong speed. Better a gap, and an ordinary end of file, so the
-    // application reloads and the device reopens.
+fn songs_at_different_rates_join_without_restarting_the_device() {
+    // Exercise both directions, as found in the Windows user's audio log.
+    for (first_rate, next_rate) in [(44_100, 48_000), (48_000, 44_100)] {
+        let directory = TempDir::new().expect("a temporary directory");
+        let first = directory.path().join("one.flac");
+        let second = directory.path().join("two.flac");
+        fs::write(
+            &first,
+            common::flac_bytes(first_rate, &common::sine(first_rate, 440.0, 1_000)),
+        )
+        .expect("write outgoing file");
+        fs::write(
+            &second,
+            common::flac_bytes(next_rate, &common::sine(next_rate, 660.0, 1_000)),
+        )
+        .expect("write incoming file");
+
+        let (output, capture) = CaptureOutput::new(&[44_100, 48_000]);
+        let (sender, mut events) = unbounded_channel();
+        let position = Arc::new(Position::default());
+        let mut engine = Engine::new(
+            Box::new(output),
+            Settings::default(),
+            sender,
+            position,
+            Arc::new(Volume::default()),
+            Arc::new(AtomicBool::new(false)),
+        );
+        engine.handle(Command::Load {
+            path: first,
+            position_ms: 0,
+        });
+        engine.handle(Command::Prefetch(Some(second.clone())));
+
+        let boundary = first_rate as usize;
+        let mut heard = Vec::new();
+        while heard.len() < boundary * 2 {
+            engine.step();
+            heard.extend(capture.pull(BLOCK));
+        }
+
+        assert_eq!(
+            capture.starts(),
+            1,
+            "{first_rate} -> {next_rate} reopened the output device"
+        );
+        // Read all events once: checking errors separately would consume
+        // the very prefetch notification this assertion needs to observe.
+        let mut handovers = 0;
+        let mut ends = 0;
+        while let Ok(event) = events.try_recv() {
+            match event {
+                PlayerEvent::PrefetchedTrack(path) if path == second => handovers += 1,
+                PlayerEvent::EndOfFile => ends += 1,
+                PlayerEvent::Error(message) => panic!("transition error: {message}"),
+                _ => {}
+            }
+        }
+        assert_eq!(handovers, 1, "the next song was not adopted");
+        assert_eq!(ends, 0, "the old song emitted a premature end");
+
+        // A missing packet or device reopen leaves a near-silent window.
+        for (start, finish) in [(boundary - 2_048, boundary), (boundary, boundary + 2_048)] {
+            let level = muscli::audio::measure::rms(&heard[start..finish]);
+            assert!(
+                level > 0.08,
+                "{first_rate} -> {next_rate} went silent near the join: RMS {level:.3}"
+            );
+        }
+
+        // Resampling preserves musical pitch; it must not interpret incoming
+        // 48 kHz samples as 44.1 kHz (or the reverse).
+        let sample =
+            &heard[boundary + first_rate as usize / 4..boundary + first_rate as usize / 4 + 8_192];
+        let spectrum = muscli::audio::measure::spectrum(sample, first_rate);
+        let found = spectrum.frequency(spectrum.peak_bin());
+        assert!(
+            (found - 660.0).abs() < 8.0,
+            "{first_rate} -> {next_rate} changed pitch: {found:.1} Hz"
+        );
+    }
+}
+
+#[test]
+fn bit_perfect_refuses_cross_rate_handover() {
     let directory = TempDir::new().expect("a temporary directory");
     let first = directory.path().join("one.flac");
     let second = directory.path().join("two.flac");
     fs::write(
         &first,
-        common::flac_bytes(RATE, &common::sine(RATE, 440.0, 100)),
+        common::flac_bytes(44_100, &common::sine(44_100, 440.0, 250)),
     )
-    .expect("write the first fixture");
+    .expect("write outgoing file");
     fs::write(
         &second,
-        common::flac_bytes(48_000, &common::sine(48_000, 440.0, 100)),
+        common::flac_bytes(48_000, &common::sine(48_000, 440.0, 250)),
     )
-    .expect("write the second fixture");
+    .expect("write incoming file");
 
-    let (output, capture) = CaptureOutput::new(&[RATE, 48_000]);
+    let (output, capture) = CaptureOutput::new(&[44_100, 48_000]);
     let (sender, mut events) = unbounded_channel();
-    let position = Arc::new(Position::default());
     let mut engine = Engine::new(
         Box::new(output),
-        Settings::default(),
+        Settings {
+            bit_perfect: true,
+            ..Settings::default()
+        },
         sender,
-        position,
+        Arc::new(Position::default()),
         Arc::new(Volume::default()),
         Arc::new(AtomicBool::new(false)),
     );
-
     engine.handle(Command::Load {
-        path: first.clone(),
+        path: first,
         position_ms: 0,
     });
     engine.handle(Command::Prefetch(Some(second)));
 
-    let frames = RATE as usize / 10;
-    for _ in 0..(frames / BLOCK + 8) {
+    for _ in 0..30 {
         engine.step();
         capture.pull(BLOCK);
     }
-
     let mut ends = 0;
     let mut handovers = 0;
     while let Ok(event) = events.try_recv() {
         match event {
             PlayerEvent::EndOfFile => ends += 1,
             PlayerEvent::PrefetchedTrack(_) => handovers += 1,
+            PlayerEvent::Error(message) => panic!("{message}"),
             _ => {}
         }
     }
-    assert_eq!(handovers, 0, "a file at another rate was joined anyway");
-    assert_eq!(ends, 1, "the end of the first track was not announced");
+    assert_eq!(ends, 1, "bit-perfect should finish the current song");
+    assert_eq!(
+        handovers, 0,
+        "bit-perfect unexpectedly resampled the next song"
+    );
 }
 
 #[test]

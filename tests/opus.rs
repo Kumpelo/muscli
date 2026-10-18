@@ -286,6 +286,106 @@ fn opus_joins_native_tracks_without_losing_or_inserting_frames() {
 }
 
 #[test]
+fn opus_cross_rate_handovers_preserve_converted_samples_and_bit_perfect_fallback() {
+    use muscli::{
+        audio::{
+            dsp::{Chain, Settings, resample::Resampler},
+            native::{
+                engine::{Command, Engine, Position},
+                sink::{CaptureOutput, Volume},
+            },
+        },
+        model::PlayerEvent,
+    };
+    use std::sync::{Arc, atomic::AtomicBool};
+    let dir = tempfile::tempdir().unwrap();
+    let flac = dir.path().join("44100.flac");
+    std::fs::write(
+        &flac,
+        common::flac_bytes(44100, &common::sine(44100, 660.0, 137)),
+    )
+    .unwrap();
+    for paths in [
+        [flac.clone(), fixture("mono.opus"), flac.clone()],
+        [fixture("mono.opus"), flac.clone(), fixture("mono.opus")],
+    ] {
+        let rate = Decoder::open(&paths[0]).unwrap().spec().sample_rate;
+        for bit_perfect in [false, true] {
+            let settings = Settings {
+                bit_perfect,
+                ..Settings::default()
+            };
+            let mut expected = Vec::new();
+            for path in paths.iter().take(if bit_perfect { 1 } else { 3 }) {
+                let source_rate = Decoder::open(path).unwrap().spec().sample_rate;
+                let pcm = decode(path);
+                if source_rate == rate {
+                    expected.extend(pcm);
+                } else {
+                    let mut resampler = Resampler::new(source_rate, rate, 1).unwrap();
+                    resampler.process(&pcm, &mut expected).unwrap();
+                    resampler.flush(&mut expected).unwrap();
+                }
+            }
+            let mut chain = Chain::new(rate, 1, &settings);
+            chain.process(&mut expected);
+            let (output, capture) = CaptureOutput::new(&[44100, 48000]);
+            let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let mut engine = Engine::new(
+                Box::new(output),
+                settings,
+                sender,
+                Arc::new(Position::default()),
+                Arc::new(Volume::default()),
+                Arc::new(AtomicBool::new(false)),
+            );
+            engine.handle(Command::Load {
+                path: paths[0].clone(),
+                position_ms: 0,
+            });
+            engine.handle(Command::Prefetch(Some(paths[1].clone())));
+            let mut actual = Vec::new();
+            let mut handovers = Vec::new();
+            let mut ends = 0;
+            for _ in 0..(expected.len() / 256 + 12) {
+                engine.step();
+                actual.extend(capture.pull(256));
+                while let Ok(event) = events.try_recv() {
+                    match event {
+                        PlayerEvent::Error(message) => panic!("{message}"),
+                        PlayerEvent::PrefetchedTrack(path) => {
+                            handovers.push(path);
+                            if handovers.len() == 1 {
+                                engine.handle(Command::Prefetch(Some(paths[2].clone())));
+                            }
+                        }
+                        PlayerEvent::EndOfFile => ends += 1,
+                        _ => {}
+                    }
+                }
+            }
+            assert!(actual.len() >= expected.len());
+            let error = actual
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max);
+            assert!(
+                error < 0.00001,
+                "{rate} Hz, bit-perfect={bit_perfect}: error {error}"
+            );
+            assert_eq!(capture.starts(), 1);
+            if bit_perfect {
+                assert!(handovers.is_empty());
+            } else {
+                assert_eq!(handovers, paths[1..]);
+            }
+            assert_eq!(ends, 1);
+        }
+    }
+}
+
+#[test]
 fn opus_mix_carries_incoming_replaygain_into_the_next_track() {
     use muscli::{
         audio::{

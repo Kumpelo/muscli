@@ -232,6 +232,14 @@ pub(super) const BINDINGS: &[Binding] = &[
         Anywhere,
         A::Remote(RemoteCommand::VolumeDown),
     ),
+    // Ctrl+Up/Down are convenient on keyboards without a numeric keypad.
+    // Unlike system media keys, they control muscli's own volume on Windows.
+    ctrl(KeyCode::Up, Anywhere, A::Remote(RemoteCommand::VolumeUp)),
+    ctrl(
+        KeyCode::Down,
+        Anywhere,
+        A::Remote(RemoteCommand::VolumeDown),
+    ),
 ];
 
 /// Shift is already encoded in the character itself, so a binding on `J` must
@@ -1078,6 +1086,29 @@ mod tests {
             ),
             None,
             "the old key must stop quitting"
+        );
+    }
+
+    #[test]
+    fn ctrl_arrows_adjust_player_volume_without_changing_navigation() {
+        let bindings = effective_bindings(&KeyOverrides::default());
+        for (code, action) in [
+            (KeyCode::Up, RemoteCommand::VolumeUp),
+            (KeyCode::Down, RemoteCommand::VolumeDown),
+        ] {
+            assert_eq!(
+                resolve_with(
+                    &bindings,
+                    &with(code, KeyModifiers::CONTROL),
+                    View::Albums,
+                    Focus::Content,
+                ),
+                Some(Action::Remote(action)),
+            );
+        }
+        assert_eq!(
+            resolve_with(&bindings, &press(KeyCode::Up), View::Albums, Focus::Content),
+            Some(Action::AlbumRow(-1)),
         );
     }
 

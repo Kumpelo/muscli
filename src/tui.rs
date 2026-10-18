@@ -164,24 +164,23 @@ impl View {
     }
 
     fn icon(self) -> &'static str {
-        match self {
-            Self::Home => "󰋜",
-            Self::Albums => "󰀥",
-            Self::AlbumDetail => "󰀥",
-            Self::Artists => "󰠃",
-            Self::ArtistDetail => "󰠃",
-            Self::Genres | Self::GenreDetail => "󰌳",
-            Self::Tracks => "󰎆",
-            Self::Playlists => "󰲸",
-            Self::SmartPlaylists | Self::SmartPlaylistDetail => "󰘬",
-            Self::Favorites => "󰋑",
-            Self::History => "󰋚",
-            Self::Search => "󰍉",
-            Self::Queue => "󰕲",
-            Self::Settings => "󰒓",
-            Self::Help => "󰋖",
-            Self::Lyrics => "󰲹",
-        }
+        let (nerd, ascii) = match self {
+            Self::Home => ("󰋜", "H"),
+            Self::Albums | Self::AlbumDetail => ("󰀥", "A"),
+            Self::Artists | Self::ArtistDetail => ("󰠃", "@"),
+            Self::Genres | Self::GenreDetail => ("󰌳", "G"),
+            Self::Tracks => ("󰎆", "T"),
+            Self::Playlists => ("󰲸", "P"),
+            Self::SmartPlaylists | Self::SmartPlaylistDetail => ("󰘬", "S"),
+            Self::Favorites => ("󰋑", "*"),
+            Self::History => ("󰋚", "R"),
+            Self::Search => ("󰍉", "/"),
+            Self::Queue => ("󰕲", "Q"),
+            Self::Settings => ("󰒓", "#"),
+            Self::Help => ("󰋖", "?"),
+            Self::Lyrics => ("󰲹", "L"),
+        };
+        icons::display(nerd, ascii)
     }
 }
 
@@ -303,6 +302,7 @@ struct App {
     gain_tx: tokio_mpsc::UnboundedSender<GainMessage>,
     gain_rx: tokio_mpsc::UnboundedReceiver<GainMessage>,
     gain_running: bool,
+    gain_failed_count: usize,
     /// A scan changed the library during gain analysis. Run one more pass when
     /// the current batch finishes so new and modified tracks are not missed.
     gain_rescan_pending: bool,
@@ -573,6 +573,7 @@ async fn run_inner(
         gain_tx,
         gain_rx,
         gain_running: false,
+        gain_failed_count: 0,
         gain_rescan_pending: false,
         gain_progress: None,
         mix_analysis_tx,
@@ -1542,6 +1543,7 @@ fn resize_terminal_for_mode(compact: bool) -> Result<()> {
 }
 
 mod covers;
+mod icons;
 mod input;
 pub mod keys;
 mod library;

@@ -1,6 +1,6 @@
-//! Sample-rate conversion, used only when the device will not take the file's
-//! own rate. The alternative is letting a sound server do it with a filter
-//! chosen for latency rather than for the top octave.
+//! Sample-rate conversion when the output device does not match the file,
+//! including seamless handovers from prefetched songs with a different rate.
+//! The alternative is letting a sound server choose a filter of its own.
 //!
 //! Runs before the rest of the chain, so the equaliser, limiter and dither all
 //! work at the rate the device will play -- and the limiter sees the overshoot

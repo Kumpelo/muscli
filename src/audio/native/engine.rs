@@ -174,12 +174,12 @@ struct Stream {
     /// What was opened, so the stream can be rebuilt where it stands when a
     /// setting changes what the device negotiation would decide.
     path: PathBuf,
-    /// The shape the stream was negotiated for. A container that changes rate
-    /// or channels part way through has to be renegotiated, not carried on
-    /// with, or it plays at the wrong speed.
+    /// The current decoder's shape. A change *within* the same file requires
+    /// a reload; planned handovers update this field and retain the output.
     source_spec: StreamSpec,
     chain: Chain,
-    /// Present only when the device would not take the file's own rate.
+    /// Present when the current file's rate differs from the still-open
+    /// device's rate. Also used when a prefetched song changes sample rate.
     resampler: Option<Resampler>,
     /// Set when a mono file is going to a device that only does stereo.
     duplicate: bool,
@@ -737,26 +737,66 @@ impl Engine {
             }
 
             if stream.exhausted {
-                // A track queued late can still join. Nothing has been
-                // announced, so appending it keeps the audio continuous
-                // however long the application took to arm it.
-                if !stream.announced_end
-                    && let Some((next_path, next)) = self.prefetch.take_if(|(_, next)| {
-                        next.spec().same_rate_and_channels(stream.decoder.spec())
-                    })
-                {
-                    stream.source_spec = next.spec();
+                // A converter may still hold part of the outgoing file. Drain
+                // it *before* handing over or a rate change would truncate
+                // the last packet and introduce a discontinuity.
+                if stream.needs_flush {
+                    stream.needs_flush = false;
+                    let source_ms = stream.decoder.position_ms();
+                    stream.converted.clear();
+                    let flushed = match &mut stream.resampler {
+                        Some(resampler) => resampler.flush(&mut stream.converted).is_ok(),
+                        None => false,
+                    };
+                    if flushed {
+                        stream.stage(source_ms);
+                    }
+                    continue;
+                }
+
+                // Once the current decoder is fully drained, the prefetched
+                // decoder can join the same output at a different rate via
+                // the existing high-quality resampler. Bit-perfect must never
+                // do this conversion. Channel changes still use a normal load.
+                let compatible = !stream.announced_end
+                    && self.prefetch.as_ref().is_some_and(|(_, next)| {
+                        next.spec().same_rate_and_channels(stream.source_spec)
+                            || (!self.settings.bit_perfect
+                                && next.spec().channels == stream.source_spec.channels)
+                    });
+                if compatible {
+                    let next_spec = self.prefetch.as_ref().expect("checked above").1.spec();
+                    let next_resampler = if next_spec.sample_rate != stream.sample_rate {
+                        match Resampler::new(
+                            next_spec.sample_rate,
+                            stream.sample_rate,
+                            usize::from(next_spec.channels),
+                        ) {
+                            Ok(resampler) => Some(resampler),
+                            Err(error) => {
+                                // Preserve the old track and let the normal EOF
+                                // path load the next one instead of losing audio.
+                                let _ = self.events.send(PlayerEvent::Notice(format!(
+                                    "Gapless rate conversion unavailable: {error}"
+                                )));
+                                break;
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let (next_path, next) = self.prefetch.take().expect("checked above");
                     stream.decoder = next;
                     stream.path = next_path.clone();
+                    stream.source_spec = next_spec;
+                    stream.resampler = next_resampler;
                     // Announce the handover when the old track finishes, not
                     // when the buffered remainder of the next one finishes.
                     let handover_frame = stream.pushed
                         + stream.pending() as u64 / u64::from(stream.channels)
                         + stream.chain.latency_frames() as u64;
-                    // The MIX decoder reads in packets. Some samples from its
-                    // last decoded packet may not yet have joined the fade;
-                    // stage that remainder before requesting the next packet,
-                    // or the handover would silently skip up to a full block.
+                    // A same-format MIX may have decoded ahead in the incoming
+                    // packet. Keep those samples in their original order.
                     if let Some(gain) = self.prefetch_gain.take() {
                         self.settings.replay_gain_db = gain;
                         stream.chain.set_replay_gain(gain);
@@ -784,24 +824,18 @@ impl Engine {
                     stream.exhausted = false;
                     stream.needs_flush = false;
                     stream.ends_at = None;
-                    // Plus the chain's delay: at that frame the device is
-                    // still playing the limiter's hold of the last track.
+                    if let Some(log) = super::diagnostics::recorder() {
+                        log.record(serde_json::json!({
+                            "event":"prefetch_join",
+                            "source_rate":next_spec.sample_rate,
+                            "output_rate":stream.sample_rate,
+                            "resampled":stream.resampler.is_some()
+                        }));
+                    }
+                    // Keep the existing chain and device alive. Its limiter
+                    // delay is already counted by the audible handover mark.
                     stream.handovers.push_back((handover_frame, next_path));
                     worked = true;
-                    continue;
-                }
-
-                if stream.needs_flush {
-                    stream.needs_flush = false;
-                    let source_ms = stream.decoder.position_ms();
-                    stream.converted.clear();
-                    let flushed = match &mut stream.resampler {
-                        Some(resampler) => resampler.flush(&mut stream.converted).is_ok(),
-                        None => false,
-                    };
-                    if flushed {
-                        stream.stage(source_ms);
-                    }
                     continue;
                 }
 

@@ -208,8 +208,19 @@ impl App {
             SettingId::LiveMix if self.player.capabilities().name == "mpv" => {
                 t!("setting.value.unavailable").to_owned()
             }
-            SettingId::LiveMix if self.config.bit_perfect || !self.config.gapless => {
-                t!("setting.value.bypassed").to_owned()
+            SettingId::LiveMix if self.config.bit_perfect => {
+                format!(
+                    "{} · {}",
+                    mix_label(self.config.live_mix_mode(), false),
+                    t!("setting.mix_requires_bitperfect_off")
+                )
+            }
+            SettingId::LiveMix if !self.config.gapless => {
+                format!(
+                    "{} · {}",
+                    mix_label(self.config.live_mix_mode(), false),
+                    t!("setting.mix_requires_gapless")
+                )
             }
             SettingId::LiveMix => mix_label(
                 self.config.live_mix_mode(),
@@ -480,13 +491,26 @@ impl App {
                 if horizontal {
                     return Ok(());
                 }
-                self.start_gain_analysis()?;
+                // Manual action retries failures but leaves valid results cached.
+                self.retry_gain_analysis()?;
+                return Ok(());
             }
         }
         self.auto_dj_attempt = None;
         self.sync_crossfade()?;
         self.config.save(&self.paths)?;
-        self.status = t!("status.settings_saved").into();
+        self.status = if self.config.live_mix_mode() != crate::audio::smart_mix::LiveMixMode::Off
+            && !self.config.bit_perfect
+            && !self.config.gapless
+        {
+            t!("status.mix_needs_gapless").into()
+        } else if self.config.live_mix_mode() != crate::audio::smart_mix::LiveMixMode::Off
+            && self.config.bit_perfect
+        {
+            t!("status.mix_needs_bitperfect_off").into()
+        } else {
+            t!("status.settings_saved").into()
+        };
         self.dirty = true;
         Ok(())
     }

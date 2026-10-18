@@ -690,21 +690,34 @@ impl App {
     }
 
     pub(super) fn start_gain_analysis(&mut self) -> Result<()> {
+        self.start_gain_analysis_with_retry(false)
+    }
+
+    pub(super) fn retry_gain_analysis(&mut self) -> Result<()> {
+        self.start_gain_analysis_with_retry(true)
+    }
+
+    fn start_gain_analysis_with_retry(&mut self, retry_failed: bool) -> Result<()> {
         if !self.config.replaygain_enabled || self.gain_running {
             return Ok(());
         }
-        let candidates = self.db.gain_analysis_candidates(false)?;
+        let candidates = self.db.gain_analysis_candidates(retry_failed)?;
         if candidates.is_empty() {
+            self.status = t!("status.gain_nothing_to_analyze").to_owned();
+            self.dirty = true;
             return Ok(());
         }
         let total = candidates.len();
         self.gain_running = true;
+        self.gain_failed_count = 0;
         replaygain::start(
             candidates,
             self.config.replaygain_target_lufs,
             self.gain_tx.clone(),
         );
         self.gain_progress = Some((0, total));
+        self.status = t!("status.gain_started", total = total);
+        self.dirty = true;
         Ok(())
     }
 
@@ -723,14 +736,31 @@ impl App {
                 self.status = t!("status.gain_progress", completed = completed, total = total);
                 self.dirty = true;
             }
-            GainMessage::Error(error) => {
-                self.status = format!("ReplayGain: {error}");
+            GainMessage::Error {
+                track_id,
+                message,
+                size,
+                modified,
+                completed,
+                total,
+            } => {
+                self.db.save_gain_failure(&track_id, size, modified)?;
+                self.gain_failed_count += 1;
+                self.gain_progress = Some((completed, total));
+                self.status = format!("ReplayGain: {message}");
                 self.dirty = true;
             }
             GainMessage::Done => {
                 self.gain_running = false;
                 self.gain_progress = None;
-                self.status = t!("status.gain_finished").into();
+                self.status = if self.gain_failed_count > 0 {
+                    t!(
+                        "status.gain_finished_with_failures",
+                        count = self.gain_failed_count
+                    )
+                } else {
+                    t!("status.gain_finished").into()
+                };
                 self.dirty = true;
                 if self.gain_rescan_pending {
                     self.gain_rescan_pending = false;

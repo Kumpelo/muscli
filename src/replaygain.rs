@@ -19,7 +19,14 @@ pub enum GainMessage {
         completed: usize,
         total: usize,
     },
-    Error(String),
+    Error {
+        track_id: String,
+        message: String,
+        size: u64,
+        modified: i64,
+        completed: usize,
+        total: usize,
+    },
     Done,
 }
 
@@ -50,8 +57,19 @@ pub fn start(
                         }
                     }
                     Err(error) => {
-                        let _ =
-                            tx.send(GainMessage::Error(format!("{}: {error:#}", path.display())));
+                        if tx
+                            .send(GainMessage::Error {
+                                track_id,
+                                message: format!("{}: {error:#}", path.display()),
+                                size,
+                                modified,
+                                completed: index + 1,
+                                total,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
                     }
                 }
             }

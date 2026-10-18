@@ -61,6 +61,14 @@ En Ajustes, **MIX en vivo** permite elegir:
 nativo, reproducción sin huecos activada, bit-perfect desactivado y formatos
 compatibles entre las pistas y la salida. Si no se cumplen esas condiciones,
 las canciones pasan de una a otra mediante la reproducción habitual.
+Ajustes indica ahora si falta activar gapless o desactivar bit-perfect;
+seleccionar AutoDJ no cambia esas preferencias automáticamente.
+
+AutoDJ espera hasta agotar las canciones elegidas en la cola antes de agregar
+una recomendación; no reordena una cola manual. La transición Smart/AutoDJ
+puede durar menos que el máximo configurado, o quedar en cero cuando los datos
+no permiten una mezcla fiable. El modo Clásico ayuda a comprobar que el motor
+hace un solapamiento audible en dos pistas compatibles.
 
 AutoDJ respeta las canciones ya elegidas y la prioridad de **Reproducir
 siguiente**. Se suspende durante una sesión de álbum, con bit-perfect o con la
@@ -80,6 +88,16 @@ análisis automático, usa `mix_analysis_enabled = false` en `config.toml`.
 Durante una mezcla, el título, la portada y el progreso muestran la canción
 entrante cuando empieza a oírse. Pausar detiene ambas canciones; buscar otra
 posición o saltar de pista toma como referencia la canción presentada.
+
+## Análisis ReplayGain
+
+El análisis se ejecuta en segundo plano sin modificar los archivos de audio.
+Los resultados exitosos y los errores se guardan con el tamaño y fecha de
+modificación del archivo. Una canción sin cambios no vuelve a procesarse
+automáticamente, incluso cuando su análisis falló. **Analizar ReplayGain**
+en Ajustes reintenta únicamente los archivos fallidos y los nuevos o
+modificados, sin descartar los resultados correctos. Los fallos vuelven a
+ser candidatos si cambia el archivo.
 
 ## Pausa gradual
 

@@ -653,7 +653,17 @@ fn lyrics_name_for_track(db: &Database, id: &str) -> Result<String> {
 }
 
 fn print_remote_status(paths: &AppPaths, json: bool) -> Result<()> {
-    let snapshot = control::status(&paths.control_socket())?;
+    let Some(snapshot) = control::status(&paths.control_socket())? else {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"schema_version":1,"available":false})
+            );
+        } else {
+            println!("{}", t!("cli.remote_not_running"));
+        }
+        return Ok(());
+    };
     if json {
         println!("{}", serde_json::to_string(&snapshot)?);
     } else {

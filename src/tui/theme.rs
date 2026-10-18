@@ -171,12 +171,12 @@ impl UiTheme {
         }
     }
 
-    /// Deliberately the terminal's own palette rather than fixed values: a
-    /// terminal already themed dark should keep its own black and magenta.
+    /// Neutral Windows-inspired accents, with the existing black canvas.
+    /// Unlike ANSI magenta, these do not change with the terminal palette.
     pub(super) const fn dark() -> Self {
         Self {
-            accent: Color::Magenta,
-            selection: Color::Magenta,
+            accent: rgb(0x8fa8b8),
+            selection: rgb(0x39424b),
             foreground: Color::White,
             background: Color::Black,
             muted: Color::Gray,
@@ -328,6 +328,15 @@ mod tests {
         assert_eq!(fallback.border, rgb(0x39424b));
         assert_ne!(fallback.selection, fallback.background);
         assert_eq!(UiTheme::load(ThemeChoice::Dark).0, UiTheme::dark());
+    }
+
+    #[test]
+    fn dark_has_no_magenta_and_preserves_black_background() {
+        let dark = UiTheme::dark();
+        assert_eq!(dark.accent, UiTheme::steel_blue().accent);
+        assert_eq!(dark.selection, UiTheme::steel_blue().selection);
+        assert_eq!(dark.background, Color::Black);
+        assert_ne!(dark.foreground, dark.selection);
     }
 
     #[test]
