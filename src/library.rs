@@ -632,6 +632,10 @@ fn cover_cache_key(data: &[u8]) -> String {
 }
 
 fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Result<Option<PathBuf>> {
+    // Avoid hashing or decoding oversized pictures embedded in audio metadata.
+    if data.len() as u64 > crate::cover_security::MAX_COVER_BYTES {
+        return Ok(None);
+    }
     let key = cover_cache_key(data);
     if let Some(cached) = caches
         .artwork
