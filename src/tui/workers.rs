@@ -96,6 +96,7 @@ fn watch_path_may_affect_library(kind: &EventKind, path: &Path, extensions: &[St
 
 pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<WatchEvent>) {
     let configured = config.sources.clone();
+    let watch_config = config.clone();
     let extensions = config.scan_options().extensions;
     thread::Builder::new()
         .name("muscli-watcher".into())
@@ -149,16 +150,25 @@ pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<Wa
                 let _ = watcher.watch(&parent, RecursiveMode::NonRecursive);
             }
 
-            let mut known_removable = crate::config::discover_removable_roots()
+            // Observe only active music sources. A Ventoy data partition may
+            // contain many ISOs; watching and recursively scanning its root is
+            // unnecessary when a conventional music directory is the intended source.
+            let discover_music = || -> BTreeSet<PathBuf> {
+                if !watch_config.auto_discover_removable {
+                    return BTreeSet::new();
+                }
+                crate::config::sources_for_mounts(
+                    &watch_config,
+                    &crate::config::discover_removable_roots(),
+                )
                 .into_iter()
-                .filter(|path| path.exists())
-                .collect::<BTreeSet<_>>();
+                .filter(|root| !configured.contains(root))
+                .collect()
+            };
+            let mut known_removable = discover_music();
             let mut watched_removable = BTreeSet::new();
             loop {
-                let current_removable = crate::config::discover_removable_roots()
-                    .into_iter()
-                    .filter(|path| path.exists())
-                    .collect::<BTreeSet<_>>();
+                let current_removable = discover_music();
 
                 if current_removable != known_removable {
                     let _ = tx.send(WatchEvent::SourcesChanged);
