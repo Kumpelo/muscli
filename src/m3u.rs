@@ -43,7 +43,9 @@ pub fn parse(source: &str, base: &Path) -> Vec<Entry> {
         if let Some(rest) = line.strip_prefix("#EXTINF:") {
             // "#EXTINF:<seconds>,<name>"; the name is everything after the
             // first comma, which may itself contain commas.
-            pending_label = rest.split_once(',').map(|(_, name)| name.trim().to_owned());
+            pending_label = rest
+                .split_once(',')
+                .map(|(_, name)| crate::model::terminal_safe_text(name.trim()));
             continue;
         }
         if line.starts_with('#') {
