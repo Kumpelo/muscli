@@ -93,6 +93,41 @@ M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio.
 Use `muscli library --help` for source removal, pruning and resume-position
 commands. `muscli summary` shows listening history stored on this computer.
 
+### Removable music: LucidaQ, HiBy R1 and Ventoy
+
+Automatic removable discovery is enabled by default (`auto_discover_removable = true`).
+A mounted USB drive or SD card containing `Music/LucidaQ/` is indexed **only**
+below that folder. For example, `Music/LucidaQ/Artist/Album/01.flac` becomes
+available in the normal muscli library. It does not scan ISO files, Ventoy
+boot files or unrelated folders on the same volume. A drive named `Ventoy`
+or `VTOYEFI` without the dedicated music folder is skipped, not scanned
+recursively. Other removable music drives without the dedicated folder keep
+the previous whole-drive discovery behaviour.
+
+To use a Ventoy USB stick, create `Music/LucidaQ` in its existing writable
+data partition and copy albums there; **do not** repartition or reformat it.
+For HiBy R1, connect its microSD through a mounted card reader or a USB
+mass-storage mode that your computer actually exposes. The R1's music over
+USB OTG is not simultaneously accessible from your PC while connected to
+the player. Android MTP/PTP device listings are **not** filesystem mounts
+and are not automatically scanned.
+
+When a drive is unplugged, muscli keeps playlists, favourites and track
+metadata offline. Reinserting the same mounted filesystem restores the
+tracks; filesystem UUID / volume identity is used where available so
+mount path changes do not create a new source. On some drives without a
+stable filesystem identity, manual remounts under a different path can look
+like a different source; check `muscli library --help` to manage sources.
+
+A manually configured source takes precedence over overlapping automatically
+discovered roots, avoiding double-indexing. `auto_discover_removable = false`
+disables discovery but keeps explicitly configured sources available.
+
+If a USB stick is not exposed by the operating system as removable storage,
+add the mounted `Music/LucidaQ` directory explicitly, rather than the
+entire USB root. On Linux, inspect mounts with `lsblk -f` or `findmnt`
+first. These operations never write to the music files.
+
 ## Audio
 
 mpv is the default backend. Select the native backend in Settings or set
