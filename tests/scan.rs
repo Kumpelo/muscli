@@ -8,8 +8,8 @@ mod common;
 use std::{fs, path::PathBuf};
 
 use muscli::{
-    db::Database,
     config::{Config, sources_for_mounts},
+    db::Database,
     library::{ScanOptions, prune_cover_cache, scan_source_with_database, scan_to_database},
 };
 
@@ -230,7 +230,10 @@ fn lucidaq_usb_reconnect_preserves_playlist_favorite_and_skips_ventoy_files() {
     let drive = fixture.source().parent().unwrap().join("Ventoy");
     let album = drive.join("Music/LucidaQ/Lechero Mon/Album");
     write_track(&album.join("01.flac"), &TrackSpec::new("First"));
-    write_track(&drive.join("Downloads/extra.flac"), &TrackSpec::new("Outside"));
+    write_track(
+        &drive.join("Downloads/extra.flac"),
+        &TrackSpec::new("Outside"),
+    );
     fs::create_dir_all(drive.join("ISOs")).unwrap();
     fs::write(drive.join("ISOs/example.iso"), b"not music").unwrap();
 
