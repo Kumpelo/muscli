@@ -298,8 +298,7 @@ pub fn discover_removable_roots() -> Vec<PathBuf> {
 const LUCIDAQ_SUBDIR: [&str; 2] = ["Music", "LucidaQ"];
 
 fn is_real_directory(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .is_ok_and(|meta| meta.file_type().is_dir())
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
 }
 
 /// Find a removable music source without following a symbolic link from the
@@ -450,7 +449,10 @@ mod tests {
             sources: vec![dedicated.clone()],
             ..Config::default()
         };
-        assert_eq!(sources_for_mounts(&config, &[drive.clone()]), vec![dedicated]);
+        assert_eq!(
+            sources_for_mounts(&config, &[drive.clone()]),
+            vec![dedicated]
+        );
         config.auto_discover_removable = false;
         assert_eq!(sources_for_mounts(&config, &[drive]), config.sources);
     }
@@ -467,7 +469,6 @@ mod tests {
         symlink(&outside, drive.join("Music")).unwrap();
         assert!(removable_music_roots(&[drive]).is_empty());
     }
-
 
     #[test]
     fn legacy_discord_preferences_and_image_choice_survive_roundtrip() {
