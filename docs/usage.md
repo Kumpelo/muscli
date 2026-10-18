@@ -93,40 +93,52 @@ M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio.
 Use `muscli library --help` for source removal, pruning and resume-position
 commands. `muscli summary` shows listening history stored on this computer.
 
-### Removable music: LucidaQ, HiBy R1 and Ventoy
+### Removable music: USB drives, SD cards and HiBy players
 
 Automatic removable discovery is enabled by default (`auto_discover_removable = true`).
-A mounted USB drive or SD card containing `Music/LucidaQ/` is indexed **only**
-below that folder. For example, `Music/LucidaQ/Artist/Album/01.flac` becomes
-available in the normal muscli library. It does not scan ISO files, Ventoy
-boot files or unrelated folders on the same volume. A drive named `Ventoy`
-or `VTOYEFI` without the dedicated music folder is skipped, not scanned
-recursively. Other removable music drives without the dedicated folder keep
-the previous whole-drive discovery behaviour.
+On a mounted removable drive, muscli looks for a conventional top-level
+`Music/`, `Música/` or `Musica/` folder (in that order) and indexes **only**
+the music beneath that folder. Other folders on the volume, including ISO
+images, installers and boot files, are not traversed. For example:
 
-To use a Ventoy USB stick, create `Music/LucidaQ` in its existing writable
-data partition and copy albums there; **do not** repartition or reformat it.
-For HiBy R1, connect its microSD through a mounted card reader or a USB
-mass-storage mode that your computer actually exposes. The R1's music over
-USB OTG is not simultaneously accessible from your PC while connected to
-the player. Android MTP/PTP device listings are **not** filesystem mounts
-and are not automatically scanned.
+```text
+USB/
+├── ISOs/
+├── ventoy/
+└── Music/
+    └── Artist/
+        └── Album/
+            └── 01.flac
+```
 
-When a drive is unplugged, muscli keeps playlists, favourites and track
-metadata offline. Reinserting the same mounted filesystem restores the
-tracks; filesystem UUID / volume identity is used where available so
-mount path changes do not create a new source. On some drives without a
-stable filesystem identity, manual remounts under a different path can look
-like a different source; check `muscli library --help` to manage sources.
+A Ventoy drive without one of these music folders is skipped rather than
+recursively indexed. Ordinary legacy removable drives without a conventional
+music folder retain the previous whole-volume indexing behaviour.
 
-A manually configured source takes precedence over overlapping automatically
-discovered roots, avoiding double-indexing. `auto_discover_removable = false`
-disables discovery but keeps explicitly configured sources available.
+**No particular download manager, naming scheme or manifest is required.**
+You can copy music into `Music/Artist/Album/` using any file manager; muscli
+only reads files and does not manage transfers or reserve free space.
 
-If a USB stick is not exposed by the operating system as removable storage,
-add the mounted `Music/LucidaQ` directory explicitly, rather than the
-entire USB root. On Linux, inspect mounts with `lsblk -f` or `findmnt`
-first. These operations never write to the music files.
+A HiBy player or its microSD is detectable only when its filesystem is mounted
+by the computer, for example through a card reader or a supported USB
+mass-storage mode. An MTP/PTP device is not an ordinary filesystem mount; it
+is not indexed automatically. Likewise, a USB stick connected to the player
+via USB OTG is not simultaneously accessible to the PC.
+
+When a drive is unplugged, muscli keeps playlists, favourites and offline
+track metadata. Reinserting the same filesystem restores them; when available,
+filesystem UUID / volume identity is used to keep the source stable if its
+mount point changes. Drives without stable filesystem identity may need to be
+added manually if their mount path changes.
+
+Manually configured sources take precedence over overlapping automatically
+discovered directories, avoiding duplicate indexing.
+`auto_discover_removable = false` disables automatic discovery without
+removing manually configured sources. If the operating system reports the
+USB drive as fixed storage rather than removable, explicitly add its mounted
+`Music` directory to the library. On Linux, `lsblk -f` and `findmnt` can
+help identify the correct mounted device before adding it.
+
 
 ## Audio
 
