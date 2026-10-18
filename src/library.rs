@@ -611,10 +611,7 @@ fn find_or_cache_cover(
         "Folder.jpg",
     ] {
         let candidate = dir.join(name);
-        if !candidate.is_file() {
-            continue;
-        }
-        let Ok(data) = fs::read(&candidate) else {
+        let Some(data) = crate::cover_security::read_file(&candidate) else {
             continue;
         };
         if let Some(cached) = cache_cover_data(paths, &data, caches)? {
@@ -665,7 +662,7 @@ fn cache_cover_data(paths: &AppPaths, data: &[u8], caches: &ScanCaches) -> Resul
 
     let cached = if let Some(existing) = existing_cover(paths, &key) {
         Some(existing)
-    } else if let Ok(image) = image::load_from_memory(data) {
+    } else if let Some(image) = crate::cover_security::decode_bytes(data) {
         Some(cache_cover(paths, &key, image)?)
     } else {
         None
