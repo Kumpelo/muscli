@@ -96,10 +96,7 @@ impl DiscordPresence {
                                 if let Some(presence) = current.as_ref() {
                                     let live = extrapolate_presence(presence, current_received_at);
                                     if (!connected
-                                        || needs_presence_update(
-                                            &live,
-                                            last_published.as_ref(),
-                                        ))
+                                        || needs_presence_update(&live, last_published.as_ref()))
                                         && publish_to_discord(
                                             &mut client,
                                             &mut connected,
@@ -278,17 +275,14 @@ impl Drop for DiscordPresence {
 const PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const TIMELINE_DRIFT_TOLERANCE_MS: u64 = 3_000;
 
-fn needs_presence_update(
-    presence: &Presence,
-    last: Option<&(Presence, Instant)>,
-) -> bool {
+fn needs_presence_update(presence: &Presence, last: Option<&(Presence, Instant)>) -> bool {
     let Some((published, sent_at)) = last else {
         return true;
     };
     let elapsed = sent_at.elapsed();
-    let expected_position = published.position_ms.saturating_add(
-        elapsed.as_millis().min(u64::MAX as u128) as u64,
-    );
+    let expected_position = published
+        .position_ms
+        .saturating_add(elapsed.as_millis().min(u64::MAX as u128) as u64);
     elapsed >= PRESENCE_REFRESH_INTERVAL
         || presence.track_id != published.track_id
         || presence.title != published.title
@@ -744,10 +738,7 @@ mod tests {
     #[test]
     fn normal_progress_does_not_spam_discord_but_seeks_are_published() {
         let original = sample_presence();
-        let last = (
-            original.clone(),
-            Instant::now() - Duration::from_secs(10),
-        );
+        let last = (original.clone(), Instant::now() - Duration::from_secs(10));
         let mut next = original.clone();
         next.position_ms += 10_000;
         assert!(!needs_presence_update(&next, Some(&last)));
@@ -758,10 +749,7 @@ mod tests {
     #[test]
     fn scheduled_refresh_and_reconnect_preserve_the_current_timeline() {
         let original = sample_presence();
-        let old = (
-            original.clone(),
-            Instant::now() - PRESENCE_REFRESH_INTERVAL,
-        );
+        let old = (original.clone(), Instant::now() - PRESENCE_REFRESH_INTERVAL);
         assert!(needs_presence_update(&original, Some(&old)));
         let received = Instant::now() - Duration::from_secs(5);
         let live = extrapolate_presence(&original, received);
