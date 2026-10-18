@@ -292,14 +292,89 @@ pub fn discover_removable_roots() -> Vec<PathBuf> {
         .collect()
 }
 
-pub fn all_sources(config: &Config) -> Vec<PathBuf> {
+/// The music tree exported by LucidaQ on a removable filesystem.
+/// A dedicated tree takes precedence over a drive-wide scan so that Ventoy
+/// ISO folders, installer files and backups are never traversed.
+const LUCIDAQ_SUBDIR: [&str; 2] = ["Music", "LucidaQ"];
+
+fn is_real_directory(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|meta| meta.file_type().is_dir())
+}
+
+/// Find a removable music source without following a symbolic link from the
+/// mount root into an unrelated tree. Legacy music USBs without LucidaQ keep
+/// their previous whole-volume indexing behaviour.
+fn music_source_on_mount(mount: &Path) -> Option<PathBuf> {
+    if !is_real_directory(mount) {
+        return None;
+    }
+    let music = mount.join(LUCIDAQ_SUBDIR[0]);
+    let folder = music.join(LUCIDAQ_SUBDIR[1]);
+    if is_real_directory(&music) && is_real_directory(&folder) {
+        return Some(folder);
+    }
+
+    // A symlink named Music/LucidaQ is not a legitimate portable library.
+    // Do not fall back to scanning the entire drive in this situation.
+    if [music.as_path(), folder.as_path()]
+        .iter()
+        .any(|path| fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()))
+    {
+        return None;
+    }
+
+    // These are Ventoy's usual volume labels. If the intended music folder
+    // is absent, indexing its large ISO tree is neither useful nor safe.
+    let is_ventoy = mount
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("ventoy") || name.eq_ignore_ascii_case("vtoyefi")
+        })
+        || mount.join("ventoy").join("ventoy.json").is_file();
+    (!is_ventoy).then(|| mount.to_path_buf())
+}
+
+/// Convert a list of removable mount points into scan roots.
+/// Exposed to the watcher so that a new LucidaQ folder (or unplug) is
+/// detected even if the mount point itself does not change.
+pub fn removable_music_roots(mounts: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots: Vec<_> = mounts
+        .iter()
+        .filter_map(|root| music_source_on_mount(root))
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Preserve explicitly configured sources. A discovered source must not
+/// overlap a configured source or another already accepted source: otherwise
+/// one song appears twice with different source IDs and separate history.
+pub fn sources_for_mounts(config: &Config, mounts: &[PathBuf]) -> Vec<PathBuf> {
     let mut sources = config.sources.clone();
     if config.auto_discover_removable {
-        sources.extend(discover_removable_roots());
+        for root in removable_music_roots(mounts) {
+            if !sources
+                .iter()
+                .any(|configured| root.starts_with(configured) || configured.starts_with(&root))
+            {
+                sources.push(root);
+            }
+        }
     }
     sources.sort();
     sources.dedup();
     sources
+}
+
+pub fn all_sources(config: &Config) -> Vec<PathBuf> {
+    if config.auto_discover_removable {
+        sources_for_mounts(config, &discover_removable_roots())
+    } else {
+        sources_for_mounts(config, &[])
+    }
 }
 
 impl Config {
@@ -336,6 +411,63 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removable_lucidaq_tree_is_preferred_without_scanning_iso_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let usb = temp.path().join("Ventoy");
+        let music = usb.join("Music/LucidaQ/Artist/Album");
+        fs::create_dir_all(&music).unwrap();
+        fs::create_dir_all(usb.join("ISOs")).unwrap();
+        fs::write(usb.join("ISOs/linux.iso"), b"test ISO").unwrap();
+
+        let sources = sources_for_mounts(&Config::default(), &[usb.clone()]);
+        assert_eq!(sources, vec![usb.join("Music/LucidaQ")]);
+        assert!(!sources[0].starts_with(usb.join("ISOs")));
+    }
+
+    #[test]
+    fn ventoy_without_lucidaq_is_not_scanned_and_legacy_music_usb_still_works() {
+        let temp = tempfile::tempdir().unwrap();
+        let ventoy = temp.path().join("Ventoy");
+        let legacy = temp.path().join("RegularMusic");
+        fs::create_dir_all(&ventoy).unwrap();
+        fs::create_dir_all(&legacy).unwrap();
+        assert_eq!(
+            removable_music_roots(&[ventoy, legacy.clone()]),
+            vec![legacy]
+        );
+    }
+
+    #[test]
+    fn explicit_source_prevents_duplicate_index_and_discovery_can_be_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let drive = temp.path().join("drive");
+        let dedicated = drive.join("Music/LucidaQ");
+        let artist = dedicated.join("Artist");
+        fs::create_dir_all(&artist).unwrap();
+        let mut config = Config {
+            sources: vec![dedicated.clone()],
+            ..Config::default()
+        };
+        assert_eq!(sources_for_mounts(&config, &[drive.clone()]), vec![dedicated]);
+        config.auto_discover_removable = false;
+        assert_eq!(sources_for_mounts(&config, &[drive]), config.sources);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_music_tree_is_never_used_as_a_removable_root() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let drive = temp.path().join("Ventoy");
+        let outside = temp.path().join("external");
+        fs::create_dir_all(&drive).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, drive.join("Music")).unwrap();
+        assert!(removable_music_roots(&[drive]).is_empty());
+    }
+
 
     #[test]
     fn legacy_discord_preferences_and_image_choice_survive_roundtrip() {
