@@ -255,10 +255,15 @@ fn scan_source_inner(
         .and_then(|v| v.to_str())
         .unwrap_or("Music")
         .to_owned();
+    #[cfg(unix)]
+    let source_device = {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(&root)?.dev()
+    };
     let observed_id = source_id(&root);
     let id = match database {
         Some(db) => db.resolve_source_id(&observed_id, &root)?,
-        None => observed_id,
+        None => observed_id.clone(),
     };
     let cached = database
         .map(|db| db.scan_cache_for_root(&id, &root))
@@ -328,6 +333,21 @@ fn scan_source_inner(
     anyhow::ensure!(
         root.is_dir(),
         "source disconnected during scan: {}",
+        root.display()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        anyhow::ensure!(
+            fs::metadata(&root)?.dev() == source_device,
+            "source device changed during scan: {}",
+            root.display()
+        );
+    }
+    #[cfg(windows)]
+    anyhow::ensure!(
+        source_id(&root) == observed_id,
+        "source device changed during scan: {}",
         root.display()
     );
     Ok(scan)

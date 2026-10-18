@@ -445,7 +445,8 @@ impl Database {
             .conn
             .pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version == 9 {
-            self.conn.execute_batch(
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
                 "CREATE TABLE source_aliases (
                     observed_id TEXT PRIMARY KEY,
                     source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE
@@ -457,6 +458,7 @@ impl Database {
                  CREATE INDEX tracks_physical_path ON tracks(path, file_size, modified_ns);
                  PRAGMA user_version = 10;",
             )?;
+            tx.commit()?;
         }
         Ok(())
     }
