@@ -173,15 +173,27 @@ impl Client {
 }
 
 /// Bounded read-only client. It never opens the library or starts a player.
-pub fn status(socket: &Path) -> Result<serde_json::Value> {
+pub fn status(socket: &Path) -> Result<Option<serde_json::Value>> {
     let name = socket.to_fs_name::<GenericFilePath>()?;
-    let mut stream: Stream = ConnectOptions::new()
+    let mut stream: Stream = match ConnectOptions::new()
         .name(name)
         .wait_mode(interprocess::ConnectWaitMode::Timeout(
             Duration::from_millis(500),
         ))
         .nonblocking_stream(true)
-        .connect_sync()?;
+        .connect_sync()
+    {
+        Ok(stream) => stream,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
     let deadline = Instant::now() + Duration::from_secs(2);
     let request = b"status v1\n";
     let mut written = 0;
@@ -206,7 +218,7 @@ pub fn status(socket: &Path) -> Result<serde_json::Value> {
                         "control response is too large"
                     );
                     if response.last() == Some(&b'\n') {
-                        return Ok(serde_json::from_slice(&response)?);
+                        return Ok(Some(serde_json::from_slice(&response)?));
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -280,11 +292,11 @@ mod tests {
         server.publish(&value).unwrap();
         let idle =
             Stream::connect(socket.as_path().to_fs_name::<GenericFilePath>().unwrap()).unwrap();
-        assert_eq!(status(&socket).unwrap(), value);
+        assert_eq!(status(&socket).unwrap(), Some(value.clone()));
         let mut large =
             Stream::connect(socket.as_path().to_fs_name::<GenericFilePath>().unwrap()).unwrap();
         large.write_all(&vec![b'x'; MAX_REQUEST + 1]).unwrap();
-        assert_eq!(status(&socket).unwrap(), value);
+        assert_eq!(status(&socket).unwrap(), Some(value.clone()));
         assert!(server.publish(&"x".repeat(MAX_RESPONSE)).is_err());
         assert_eq!(
             status(&socket).unwrap(),
@@ -299,6 +311,23 @@ mod tests {
         );
         drop(idle);
         assert!(!socket.exists());
+    }
+
+    #[test]
+    fn status_without_a_running_instance_is_unavailable() {
+        #[cfg(unix)]
+        let temporary = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let socket = temporary.path().join("missing-control.sock");
+        #[cfg(windows)]
+        let socket = PathBuf::from(format!(
+            r"\\.\pipe\muscli-test-missing-control-{}",
+            std::process::id()
+        ));
+        assert!(
+            status(&socket).unwrap().is_none(),
+            "an absent control server must not be an operating-system error"
+        );
     }
 
     #[test]

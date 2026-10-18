@@ -59,6 +59,7 @@
 "cli.playlist_imported" = "Imported {count} tracks into {name}"
 "cli.prune_requested" = "Maintenance requested from the running muscli instance"
 "cli.pruned" = "Pruned {tracks} missing tracks and {covers} dangling cover references"
+"cli.remote_not_running" = "No muscli instance is running"
 "cli.removable" = "removable"
 "cli.removed" = "Removed {path}"
 "cli.rescan_requested" = "Rescan requested from the running muscli instance"
