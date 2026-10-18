@@ -301,6 +301,41 @@ fn is_real_directory(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir())
 }
 
+/// On Windows a drive root is e.g. E:\\, whose final path component is not
+/// its volume label. Check that label before ever scanning a Ventoy ISO tree.
+#[cfg(windows)]
+fn has_ventoy_volume_label(mount: &Path) -> bool {
+    use windows::{Win32::Storage::FileSystem::GetVolumeInformationW, core::PCWSTR};
+
+    let wide: Vec<u16> = mount
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut label = [0u16; 256];
+    let result = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(wide.as_ptr()),
+            Some(&mut label),
+            None,
+            None,
+            None,
+            None,
+        )
+    };
+    if result.is_err() {
+        return false;
+    }
+    let end = label.iter().position(|ch| *ch == 0).unwrap_or(label.len());
+    let label = String::from_utf16_lossy(&label[..end]);
+    label.eq_ignore_ascii_case("ventoy") || label.eq_ignore_ascii_case("vtoyefi")
+}
+
+#[cfg(not(windows))]
+fn has_ventoy_volume_label(_mount: &Path) -> bool {
+    false
+}
+
 /// Find a removable music source without following a symbolic link from the
 /// mount root into an unrelated tree. Legacy music USBs without LucidaQ keep
 /// their previous whole-volume indexing behaviour.
@@ -331,7 +366,8 @@ fn music_source_on_mount(mount: &Path) -> Option<PathBuf> {
         .is_some_and(|name| {
             name.eq_ignore_ascii_case("ventoy") || name.eq_ignore_ascii_case("vtoyefi")
         })
-        || mount.join("ventoy").join("ventoy.json").is_file();
+        || mount.join("ventoy").join("ventoy.json").is_file()
+        || has_ventoy_volume_label(mount);
     (!is_ventoy).then(|| mount.to_path_buf())
 }
 
