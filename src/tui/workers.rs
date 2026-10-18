@@ -152,7 +152,7 @@ pub(super) fn start_watchers(config: &Config, tx: tokio_mpsc::UnboundedSender<Wa
 
             // Observe only active music sources. A Ventoy data partition may
             // contain many ISOs; watching and recursively scanning its root is
-            // unnecessary when Music/LucidaQ is the intended source.
+            // unnecessary when a conventional music directory is the intended source.
             let discover_music = || -> BTreeSet<PathBuf> {
                 if !watch_config.auto_discover_removable {
                     return BTreeSet::new();
