@@ -9,6 +9,7 @@ use std::{fs, path::PathBuf};
 
 use muscli::{
     db::Database,
+    config::{Config, sources_for_mounts},
     library::{ScanOptions, prune_cover_cache, scan_source_with_database, scan_to_database},
 };
 
@@ -221,6 +222,50 @@ fn an_unplugged_source_keeps_its_tracks_for_offline_playlists() {
         !tracks[0].available,
         "but they should be marked unavailable"
     );
+}
+
+#[test]
+fn lucidaq_usb_reconnect_preserves_playlist_favorite_and_skips_ventoy_files() {
+    let fixture = Fixture::new();
+    let drive = fixture.source().parent().unwrap().join("Ventoy");
+    let album = drive.join("Music/LucidaQ/Lechero Mon/Album");
+    write_track(&album.join("01.flac"), &TrackSpec::new("First"));
+    write_track(&drive.join("Downloads/extra.flac"), &TrackSpec::new("Outside"));
+    fs::create_dir_all(drive.join("ISOs")).unwrap();
+    fs::write(drive.join("ISOs/example.iso"), b"not music").unwrap();
+
+    let config = Config::default();
+    let mut db = open_db(&fixture);
+    let sources = sources_for_mounts(&config, std::slice::from_ref(&drive));
+    assert_eq!(sources, [drive.join("Music/LucidaQ")]);
+    scan_to_database(&mut db, fixture.paths(), &sources, &options()).unwrap();
+    let tracks = db.load_tracks().unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].title, "First");
+    let id = tracks[0].id.clone();
+    db.toggle_favorite(&id).unwrap();
+    let playlist = db.create_playlist("Portable").unwrap();
+    db.add_to_playlist(playlist, &id).unwrap();
+
+    // The filesystem disappears, but the library keeps the old metadata.
+    fs::remove_dir_all(&drive).unwrap();
+    let missing_sources = sources_for_mounts(&config, &[]);
+    scan_to_database(&mut db, fixture.paths(), &missing_sources, &options()).unwrap();
+    let offline = db.load_tracks().unwrap();
+    assert_eq!(offline.len(), 1);
+    assert!(!offline[0].available);
+    assert!(offline[0].favorite);
+
+    // The same volume is plugged in again with its music directory intact.
+    write_track(&album.join("01.flac"), &TrackSpec::new("First"));
+    let reconnected = sources_for_mounts(&config, std::slice::from_ref(&drive));
+    scan_to_database(&mut db, fixture.paths(), &reconnected, &options()).unwrap();
+    let after = db.load_tracks().unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, id);
+    assert!(after[0].available);
+    assert!(after[0].favorite);
+    assert_eq!(db.load_playlists().unwrap()[0].track_ids, [id]);
 }
 
 #[test]
