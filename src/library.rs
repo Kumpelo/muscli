@@ -515,13 +515,13 @@ fn read_track(
 
     let title = value(ItemKey::TrackTitle)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| strip_track_prefix(stem));
+        .unwrap_or_else(|| normalize_text(&strip_track_prefix(stem)));
     let artist = value(ItemKey::TrackArtist)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| parent_artist.to_owned());
+        .unwrap_or_else(|| normalize_text(parent_artist));
     let album = value(ItemKey::AlbumTitle)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| parent_album.to_owned());
+        .unwrap_or_else(|| normalize_text(parent_album));
     let album_artist = value(ItemKey::AlbumArtist)
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
