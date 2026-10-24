@@ -801,6 +801,8 @@ async fn run_inner(
             // sync_prefetch.
             app.sync_prefetch()?;
             app.sync_lyrics();
+            // Publish track transitions independently of drawing and MPRIS IPC.
+            app.sync_discord();
 
             if app.dirty || periodic_draw_due {
                 app.refresh_cover();
@@ -822,7 +824,6 @@ async fn run_inner(
                     }
                 }
                 app.sync_mpris().await;
-                app.sync_discord();
                 app.dirty = false;
                 last_draw = Instant::now();
             }

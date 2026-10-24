@@ -21,6 +21,7 @@ use crate::{
 
 #[derive(Debug, Clone)]
 struct Presence {
+    track_id: String,
     title: String,
     artist: String,
     album_artist: String,
@@ -81,26 +82,76 @@ impl DiscordPresence {
                 let mut current = None::<Presence>;
                 let mut client = DiscordIpcClient::new(MUSCLI_DISCORD_APPLICATION_ID);
                 let mut connected = false;
-                while let Ok(command) = rx.recv() {
+                let mut last_published = None::<(Presence, Instant)>;
+                let mut current_received_at = Instant::now();
+                let mut queued_command = None::<Command>;
+                loop {
+                    let command = match queued_command.take() {
+                        Some(command) => command,
+                        None => match rx.recv_timeout(Duration::from_secs(5)) {
+                            Ok(command) => command,
+                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                // Discord may restart while playback is unchanged.
+                                // Retry independently of TUI redraws or track changes.
+                                if let Some(presence) = current.as_ref() {
+                                    let live = extrapolate_presence(presence, current_received_at);
+                                    if (!connected
+                                        || needs_presence_update(&live, last_published.as_ref()))
+                                        && publish_to_discord(
+                                            &mut client,
+                                            &mut connected,
+                                            &live,
+                                            &large_image,
+                                            show_images,
+                                            covers
+                                                .get(&AlbumIdentity::from_presence(&live))
+                                                .and_then(Option::as_deref),
+                                        )
+                                    {
+                                        last_published = Some((live, Instant::now()));
+                                    }
+                                }
+                                continue;
+                            }
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        },
+                    };
+
+                    // A slow IPC send must not replay obsolete intermediate tracks
+                    // when the listener has already skipped ahead.
+                    let command = match command {
+                        Command::Update(mut latest) => {
+                            while let Ok(next) = rx.try_recv() {
+                                match next {
+                                    Command::Update(presence) => latest = presence,
+                                    other => {
+                                        queued_command = Some(other);
+                                        break;
+                                    }
+                                }
+                            }
+                            Command::Update(latest)
+                        }
+                        other => other,
+                    };
+
                     match command {
                         Command::Update(presence) => {
+                            current_received_at = Instant::now();
                             let identity = AlbumIdentity::from_presence(&presence);
                             let cover = covers.get(&identity).and_then(Option::as_deref);
-                            if !connected {
-                                connected = client.connect().is_ok();
-                            }
-                            if connected
-                                && client
-                                    .set_activity(activity(
-                                        &presence,
-                                        &large_image,
-                                        show_images,
-                                        cover,
-                                    ))
-                                    .is_err()
+                            if (!connected
+                                || needs_presence_update(&presence, last_published.as_ref()))
+                                && publish_to_discord(
+                                    &mut client,
+                                    &mut connected,
+                                    &presence,
+                                    &large_image,
+                                    show_images,
+                                    cover,
+                                )
                             {
-                                let _ = client.close();
-                                connected = false;
+                                last_published = Some((presence.clone(), Instant::now()));
                             }
                             if show_images
                                 && !covers.contains_key(&identity)
@@ -121,26 +172,50 @@ impl DiscordPresence {
                                 && let Some(presence) = current.as_ref().filter(|presence| {
                                     AlbumIdentity::from_presence(presence) == identity
                                 })
-                                && connected
                             {
+                                let live = extrapolate_presence(presence, current_received_at);
                                 let cover = covers.get(&identity).and_then(Option::as_deref);
-                                if client
-                                    .set_activity(activity(presence, &large_image, true, cover))
-                                    .is_err()
-                                {
-                                    let _ = client.close();
-                                    connected = false;
+                                if publish_to_discord(
+                                    &mut client,
+                                    &mut connected,
+                                    &live,
+                                    &large_image,
+                                    show_images,
+                                    cover,
+                                ) {
+                                    last_published = Some((live, Instant::now()));
                                 }
                             }
                         }
                         Command::Clear => {
                             current = None;
+                            last_published = None;
                             if connected && client.clear_activity().is_err() {
                                 let _ = client.close();
                                 connected = false;
                             }
                         }
-                        Command::Images(enabled) => show_images = enabled,
+                        Command::Images(enabled) => {
+                            if show_images != enabled {
+                                show_images = enabled;
+                                if let Some(presence) = current.as_ref() {
+                                    let live = extrapolate_presence(presence, current_received_at);
+                                    let cover = covers
+                                        .get(&AlbumIdentity::from_presence(&live))
+                                        .and_then(Option::as_deref);
+                                    if publish_to_discord(
+                                        &mut client,
+                                        &mut connected,
+                                        &live,
+                                        &large_image,
+                                        show_images,
+                                        cover,
+                                    ) {
+                                        last_published = Some((live, Instant::now()));
+                                    }
+                                }
+                            }
+                        }
                         Command::Shutdown => {
                             if connected {
                                 let _ = client.clear_activity();
@@ -166,6 +241,7 @@ impl DiscordPresence {
     pub fn sync(&self, track: Option<&Track>, state: &PlaybackState) {
         let command = match track {
             Some(track) if publish_presence(state.status) => Command::Update(Presence {
+                track_id: track.id.clone(),
                 title: track.title.clone(),
                 artist: track.artist.clone(),
                 album_artist: track.album_artist.clone(),
@@ -192,6 +268,70 @@ impl Drop for DiscordPresence {
             let _ = worker.join();
         }
     }
+}
+
+// Only send a new activity when the track, metadata or playback timeline
+// actually changes. Discord advances the timestamp bar on its own.
+const PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const TIMELINE_DRIFT_TOLERANCE_MS: u64 = 3_000;
+
+fn needs_presence_update(presence: &Presence, last: Option<&(Presence, Instant)>) -> bool {
+    let Some((published, sent_at)) = last else {
+        return true;
+    };
+    let elapsed = sent_at.elapsed();
+    let expected_position = published
+        .position_ms
+        .saturating_add(elapsed.as_millis().min(u64::MAX as u128) as u64);
+    elapsed >= PRESENCE_REFRESH_INTERVAL
+        || presence.track_id != published.track_id
+        || presence.title != published.title
+        || presence.artist != published.artist
+        || presence.album_artist != published.album_artist
+        || presence.album != published.album
+        || presence.release_id != published.release_id
+        || presence.year != published.year
+        || presence.genre != published.genre
+        || presence.status != published.status
+        || presence.duration_ms != published.duration_ms
+        || presence.position_ms.abs_diff(expected_position) > TIMELINE_DRIFT_TOLERANCE_MS
+}
+
+fn extrapolate_presence(presence: &Presence, received_at: Instant) -> Presence {
+    let mut live = presence.clone();
+    if live.status == PlaybackStatus::Playing {
+        let elapsed_ms = received_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        live.position_ms = live
+            .position_ms
+            .saturating_add(elapsed_ms)
+            .min(live.duration_ms);
+    }
+    live
+}
+
+fn publish_to_discord(
+    client: &mut DiscordIpcClient,
+    connected: &mut bool,
+    presence: &Presence,
+    large_image: &str,
+    show_images: bool,
+    cover: Option<&str>,
+) -> bool {
+    if !*connected {
+        *connected = client.connect().is_ok();
+    }
+    if !*connected {
+        return false;
+    }
+    if client
+        .set_activity(activity(presence, large_image, show_images, cover))
+        .is_err()
+    {
+        let _ = client.close();
+        *connected = false;
+        return false;
+    }
+    true
 }
 
 fn activity<'a>(
@@ -548,6 +688,7 @@ mod tests {
 
     fn sample_presence() -> Presence {
         Presence {
+            track_id: "song-id".into(),
             title: "Song".into(),
             artist: "Artist".into(),
             album_artist: "Artist".into(),
@@ -582,6 +723,49 @@ mod tests {
             available: true,
             favorite: false,
         }
+    }
+
+    #[test]
+    fn new_track_is_published_even_with_identical_metadata() {
+        let original = sample_presence();
+        let last = (original.clone(), Instant::now());
+        let mut next = original.clone();
+        next.track_id = "next-track-id".into();
+        assert!(needs_presence_update(&next, Some(&last)));
+        assert!(!needs_presence_update(&original, Some(&last)));
+    }
+
+    #[test]
+    fn normal_progress_does_not_spam_discord_but_seeks_are_published() {
+        let original = sample_presence();
+        let last = (original.clone(), Instant::now() - Duration::from_secs(10));
+        let mut next = original.clone();
+        next.position_ms += 10_000;
+        assert!(!needs_presence_update(&next, Some(&last)));
+        next.position_ms += 10_000;
+        assert!(needs_presence_update(&next, Some(&last)));
+    }
+
+    #[test]
+    fn scheduled_refresh_and_reconnect_preserve_the_current_timeline() {
+        let original = sample_presence();
+        let old = (original.clone(), Instant::now() - PRESENCE_REFRESH_INTERVAL);
+        assert!(needs_presence_update(&original, Some(&old)));
+        let received = Instant::now() - Duration::from_secs(5);
+        let live = extrapolate_presence(&original, received);
+        assert!(live.position_ms >= original.position_ms + 5_000);
+        assert!(live.position_ms <= original.duration_ms);
+        assert!(needs_presence_update(&live, None));
+    }
+
+    #[test]
+    fn an_old_album_cover_cannot_match_a_different_current_album() {
+        let original = sample_presence();
+        let old_identity = AlbumIdentity::from_presence(&original);
+        let mut new_track = original.clone();
+        new_track.track_id = "next-track".into();
+        new_track.album = "Next album".into();
+        assert_ne!(AlbumIdentity::from_presence(&new_track), old_identity);
     }
 
     #[test]
