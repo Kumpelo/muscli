@@ -753,6 +753,45 @@ fn a_partial_scan_does_not_declare_other_sources_missing() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_failed_full_scan_preserves_the_previous_source_state() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    write_track(
+        &fixture.source().join("album/track.flac"),
+        &TrackSpec::new("Still Here"),
+    );
+    let mut db = open_db(&fixture);
+    scan(&fixture, &mut db);
+
+    let mut permissions = fs::metadata(fixture.source()).unwrap().permissions();
+    let original_mode = permissions.mode();
+    permissions.set_mode(0o000);
+    fs::set_permissions(fixture.source(), permissions).unwrap();
+
+    let roots = vec![fixture.source()];
+    let report = scan_to_database(&mut db, fixture.paths(), &roots, &options())
+        .expect("a source failure is reported without aborting the full pass");
+
+    let mut permissions = fs::metadata(fixture.source()).unwrap().permissions();
+    permissions.set_mode(original_mode);
+    fs::set_permissions(fixture.source(), permissions).unwrap();
+
+    assert!(
+        !report.errors.is_empty(),
+        "the scan failure must be visible"
+    );
+    assert!(
+        db.load_tracks()
+            .unwrap()
+            .iter()
+            .all(|track| track.available),
+        "an unreadable source must keep its previous availability"
+    );
+}
+
 #[test]
 fn a_scan_reports_how_far_along_it_is() {
     // A first import of a large drive used to show nothing until the whole

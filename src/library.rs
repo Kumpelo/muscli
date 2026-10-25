@@ -100,7 +100,7 @@ fn worker_count(configured: usize, work: usize) -> usize {
             .map_or(1, std::num::NonZero::get)
             .min(MAX_SCAN_THREADS)
     } else {
-        configured
+        configured.min(MAX_SCAN_THREADS)
     };
     requested.clamp(1, work)
 }
@@ -193,7 +193,14 @@ pub fn scan_to_database(
                 )?;
                 db.prune_missing_for_source(&scan.id, &scan.failed_paths)?;
             }
-            Err(error) => report.errors.push(format!("{}: {error:#}", root.display())),
+            Err(error) => {
+                report.errors.push(format!("{}: {error:#}", root.display()));
+                if !source_is_definitively_missing(root)
+                    && let Some(id) = db.source_id_by_root(root)?
+                {
+                    ids.insert(id);
+                }
+            }
         }
     }
     if options.full {
@@ -203,6 +210,10 @@ pub fn scan_to_database(
     let removed = prune_cover_cache(&paths.cover_cache_dir(), options.cover_cache_bytes)?;
     db.clear_cover_paths(&removed)?;
     Ok(report)
+}
+
+pub(crate) fn source_is_definitively_missing(root: &Path) -> bool {
+    matches!(root.try_exists(), Ok(false))
 }
 
 /// Called as files are read, with the count done so far and the total.
@@ -286,7 +297,7 @@ fn scan_source_inner(
         cached: &cached,
         caches: &caches,
     };
-    let outcomes = read_candidates(&context, &candidates, options.threads, progress);
+    let outcomes = read_candidates(&context, &candidates, options.threads, progress)?;
 
     // Phase 3: fold the outcomes back together in walk order.
     let mut scan = SourceScan {
@@ -412,7 +423,20 @@ fn read_candidates(
     candidates: &[(PathBuf, String)],
     threads: usize,
     progress: Option<ProgressFn<'_>>,
-) -> Vec<ScanOutcome> {
+) -> Result<Vec<ScanOutcome>> {
+    read_candidates_with(context, candidates, threads, progress, &read_candidate)
+}
+
+fn read_candidates_with<F>(
+    context: &ReadContext<'_>,
+    candidates: &[(PathBuf, String)],
+    threads: usize,
+    progress: Option<ProgressFn<'_>>,
+    reader: &F,
+) -> Result<Vec<ScanOutcome>>
+where
+    F: Fn(&ReadContext<'_>, &Path, &str) -> ScanOutcome + Sync,
+{
     let total = candidates.len();
     let done = AtomicUsize::new(0);
     let report = |count: usize| {
@@ -423,17 +447,17 @@ fn read_candidates(
 
     let workers = worker_count(threads, total);
     if workers <= 1 {
-        return candidates
+        return Ok(candidates
             .iter()
             .enumerate()
             .map(|(index, (path, relative))| {
-                let outcome = read_candidate(context, path, relative);
+                let outcome = reader(context, path, relative);
                 if index % CLAIM_BATCH == CLAIM_BATCH - 1 || index + 1 == total {
                     report(1 + index % CLAIM_BATCH);
                 }
                 outcome
             })
-            .collect();
+            .collect());
     }
 
     // A shared cursor rather than fixed slices: per-file cost varies far too
@@ -456,7 +480,7 @@ fn read_candidates(
                         let end = (start + CLAIM_BATCH).min(candidates.len());
                         for (offset, (path, relative)) in candidates[start..end].iter().enumerate()
                         {
-                            local.push((start + offset, read_candidate(context, path, relative)));
+                            local.push((start + offset, reader(context, path, relative)));
                         }
                         report(end - start);
                     }
@@ -466,16 +490,20 @@ fn read_candidates(
             .collect();
         handles
             .into_iter()
-            .map(|handle| handle.join().unwrap_or_default())
-            .collect()
-    });
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("scanner worker panicked"))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
 
     // Reassemble in walk order so the result does not depend on thread timing.
     let mut ordered: Vec<Option<ScanOutcome>> = (0..candidates.len()).map(|_| None).collect();
     for (index, outcome) in collected.drain(..).flatten() {
         ordered[index] = Some(outcome);
     }
-    ordered.into_iter().flatten().collect()
+    Ok(ordered.into_iter().flatten().collect())
 }
 
 fn read_candidate(context: &ReadContext<'_>, path: &Path, relative: &str) -> ScanOutcome {
@@ -1005,6 +1033,46 @@ mod tests {
             cache_dir: root.join("cache"),
             runtime_dir: root.join("runtime"),
         }
+    }
+
+    #[test]
+    fn configured_scan_threads_are_capped() {
+        assert_eq!(
+            worker_count(usize::MAX, PARALLEL_THRESHOLD),
+            MAX_SCAN_THREADS
+        );
+    }
+
+    #[test]
+    fn scanner_worker_panics_are_reported_as_errors() {
+        let paths = test_paths("worker-panic");
+        let root = paths.data_dir.join("music");
+        let cached = HashMap::new();
+        let caches = ScanCaches::default();
+        let context = ReadContext {
+            paths: &paths,
+            source_id: "source",
+            root: &root,
+            cached: &cached,
+            caches: &caches,
+        };
+        let candidates: Vec<_> = (0..PARALLEL_THRESHOLD)
+            .map(|index| {
+                let relative = format!("{index}.flac");
+                (root.join(&relative), relative)
+            })
+            .collect();
+
+        let result = read_candidates_with(&context, &candidates, 2, None, &|_, _, relative| {
+            assert_ne!(relative, "0.flac", "injected worker panic");
+            ScanOutcome::Unchanged
+        });
+
+        let error = match result {
+            Ok(_) => panic!("a worker panic must fail the scan"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("scanner worker panicked"));
     }
 
     #[test]

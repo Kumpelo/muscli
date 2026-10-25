@@ -878,6 +878,18 @@ impl Database {
         Ok(changed)
     }
 
+    pub fn source_id_by_root(&self, root: &Path) -> Result<Option<String>> {
+        let root = root.to_string_lossy();
+        self.conn
+            .query_row(
+                "SELECT id FROM sources WHERE root=?1",
+                [root.as_ref()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn mark_missing_sources(&mut self, available_ids: &BTreeSet<String>) -> Result<usize> {
         let ids = {
             let mut stmt = self.conn.prepare("SELECT id FROM sources")?;

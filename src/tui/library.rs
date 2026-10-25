@@ -460,7 +460,7 @@ impl App {
                         Err(error) => {
                             let _ = tx
                                 .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
-                            if !full {
+                            if crate::library::source_is_definitively_missing(&root) && !full {
                                 match db.mark_source_unavailable_by_root(&root) {
                                     Ok(count) => changed |= count > 0,
                                     Err(mark_error) => {
@@ -470,6 +470,8 @@ impl App {
                                         )));
                                     }
                                 }
+                            } else if full && let Ok(Some(id)) = db.source_id_by_root(&root) {
+                                ids.insert(id);
                             }
                             continue;
                         }
