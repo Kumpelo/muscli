@@ -12,6 +12,21 @@ use crate::t;
 /// How many files between progress messages.
 const PROGRESS_STEP: usize = 250;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailedScanAction {
+    MarkUnavailable,
+    Preserve,
+    NoDatabaseChange,
+}
+
+fn failed_scan_action(full: bool, definitively_missing: bool) -> FailedScanAction {
+    match (full, definitively_missing) {
+        (false, true) => FailedScanAction::MarkUnavailable,
+        (true, false) => FailedScanAction::Preserve,
+        _ => FailedScanAction::NoDatabaseChange,
+    }
+}
+
 /// Sources waiting to be rescanned.
 ///
 /// A file change only ever affects one source, so tracking which one avoids
@@ -460,16 +475,27 @@ impl App {
                         Err(error) => {
                             let _ = tx
                                 .send(ScanMessage::Error(format!("{}: {error:#}", root.display())));
-                            if !full {
-                                match db.mark_source_unavailable_by_root(&root) {
-                                    Ok(count) => changed |= count > 0,
-                                    Err(mark_error) => {
-                                        let _ = tx.send(ScanMessage::Error(format!(
+                            match failed_scan_action(
+                                full,
+                                crate::library::source_is_definitively_missing(&root),
+                            ) {
+                                FailedScanAction::MarkUnavailable => {
+                                    match db.mark_source_unavailable_by_root(&root) {
+                                        Ok(count) => changed |= count > 0,
+                                        Err(mark_error) => {
+                                            let _ = tx.send(ScanMessage::Error(format!(
                                             "{}: could not mark source unavailable: {mark_error:#}",
                                             root.display()
                                         )));
+                                        }
                                     }
                                 }
+                                FailedScanAction::Preserve => {
+                                    if let Ok(Some(id)) = db.source_id_by_root(&root) {
+                                        ids.insert(id);
+                                    }
+                                }
+                                FailedScanAction::NoDatabaseChange => {}
                             }
                             continue;
                         }
@@ -790,6 +816,14 @@ mod tests {
 
     fn root(name: &str) -> PathBuf {
         PathBuf::from(name)
+    }
+
+    #[test]
+    fn a_missing_source_in_a_full_scan_is_left_for_global_reconciliation() {
+        assert_eq!(
+            failed_scan_action(true, true),
+            FailedScanAction::NoDatabaseChange
+        );
     }
 
     #[test]
