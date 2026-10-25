@@ -1170,6 +1170,30 @@ impl Database {
             })?)
     }
 
+    pub fn replace_playlist(&mut self, name: &str, track_ids: &[String]) -> Result<i64> {
+        let tx = self.conn.transaction()?;
+        tx.execute("INSERT OR IGNORE INTO playlists(name) VALUES(?1)", [name])?;
+        let playlist_id = tx.query_row(
+            "SELECT id FROM playlists WHERE name=?1 COLLATE NOCASE",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )?;
+        tx.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id=?1",
+            [playlist_id],
+        )?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO playlist_tracks(playlist_id, position, track_id) VALUES(?1, ?2, ?3)",
+            )?;
+            for (position, track_id) in track_ids.iter().enumerate() {
+                insert.execute(params![playlist_id, position as i64, track_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(playlist_id)
+    }
+
     pub fn create_playlist(&self, name: &str) -> Result<i64> {
         self.conn
             .execute("INSERT OR IGNORE INTO playlists(name) VALUES(?1)", [name])?;
@@ -2651,6 +2675,51 @@ mod tests {
         )?;
         assert_eq!(db.mix_analysis_candidates(false)?.len(), 1);
         assert!(!db.save_mix_failure("unsupported", "stale failure", 42, 7)?);
+        Ok(())
+    }
+
+    #[test]
+    fn replacing_a_playlist_is_idempotent() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let scanned = [
+            ScannedTrack {
+                track: track("one", 1),
+                file_size: 1,
+                modified_ns: 1,
+            },
+            ScannedTrack {
+                track: track("two", 2),
+                file_size: 1,
+                modified_ns: 1,
+            },
+        ];
+        db.upsert_scan("s", Path::new("/music"), "Music", &scanned, &[])?;
+
+        db.replace_playlist("Mix", &["one".into(), "two".into()])?;
+        db.replace_playlist("Mix", &["one".into(), "two".into()])?;
+
+        let playlists = db.load_playlists()?;
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].track_ids, ["one", "two"]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_failed_playlist_replacement_rolls_back() -> Result<()> {
+        let mut db = Database::open_memory()?;
+        let scanned = [ScannedTrack {
+            track: track("one", 1),
+            file_size: 1,
+            modified_ns: 1,
+        }];
+        db.upsert_scan("s", Path::new("/music"), "Music", &scanned, &[])?;
+        db.replace_playlist("Mix", &["one".into()])?;
+
+        assert!(
+            db.replace_playlist("Mix", &["one".into(), "missing".into()])
+                .is_err()
+        );
+        assert_eq!(db.load_playlists()?[0].track_ids, ["one"]);
         Ok(())
     }
 

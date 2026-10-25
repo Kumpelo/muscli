@@ -86,8 +86,11 @@ muscli playlist import playlist.m3u8
 muscli summary --days 30
 ```
 
-The local index retains playlists when a drive is disconnected. Scans read tags
-and artwork without changing the audio. Supported formats include FLAC, MP3,
+The local index retains playlists when a drive is disconnected. Importing an M3U
+replaces any existing playlist with the same name in one transaction, so repeating
+an import does not duplicate its entries and a failed import leaves the old playlist
+untouched. Scans read tags and artwork without changing the audio. Supported formats
+include FLAC, MP3,
 M4A/AAC/ALAC, Ogg, Opus, WAV, AIFF, WavPack and Monkey's Audio.
 
 Use `muscli library --help` for source removal, pruning and resume-position
