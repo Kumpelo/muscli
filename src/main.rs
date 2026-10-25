@@ -440,14 +440,13 @@ fn main() -> Result<()> {
                 let base = path.parent().unwrap_or(Path::new(".")).to_path_buf();
                 let entries = m3u::parse(&source, &base);
 
-                let db = Database::open(&paths.database_file())?;
+                let mut db = Database::open(&paths.database_file())?;
                 let tracks = db.load_tracks()?;
                 let name = name.unwrap_or_else(|| {
                     path.file_stem()
                         .map(|stem| stem.to_string_lossy().into_owned())
                         .unwrap_or_else(|| "Imported".to_owned())
                 });
-                let playlist = db.create_playlist(&name)?;
 
                 // Build the lookup once. Canonicalizing every library path for
                 // every playlist entry turns a large import into O(n*m)
@@ -465,7 +464,7 @@ fn main() -> Result<()> {
                     }
                 }
 
-                let mut added = 0usize;
+                let mut imported_track_ids = Vec::new();
                 let mut missing = Vec::new();
                 for entry in entries {
                     // Match on both the written path and its canonical spelling
@@ -477,10 +476,7 @@ fn main() -> Result<()> {
                             .and_then(|canonical| tracks_by_path.get(canonical))
                     });
                     match track_id {
-                        Some(track_id) => {
-                            db.add_to_playlist(playlist, track_id)?;
-                            added += 1;
-                        }
+                        Some(track_id) => imported_track_ids.push(track_id.clone()),
                         None => missing.push(
                             entry
                                 .label
@@ -488,12 +484,13 @@ fn main() -> Result<()> {
                         ),
                     }
                 }
+                db.replace_playlist(&name, &imported_track_ids)?;
                 println!(
                     "{}",
                     t!(
                         "cli.playlist_imported",
                         name = muscli::model::terminal_safe_text(&name),
-                        count = added
+                        count = imported_track_ids.len()
                     )
                 );
                 for entry in &missing {
